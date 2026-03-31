@@ -18,6 +18,7 @@ venv/
 # Project data (generated/runtime)
 data/
 checkpoint/
+Raw Data/
 
 # OS
 .DS_Store
@@ -39,4 +40,3 @@ htmlcov/
 
 # Binary / large files
 *.pdf
-!Raw Data/**/*.pdf
