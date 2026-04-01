@@ -5,9 +5,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import ClassVar
+from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 # ── 枚举 ──────────────────────────────────────────────
@@ -25,6 +25,7 @@ class QuestionType(str, Enum):
     CONSTRUCTION = "construction"
     TRUE_FALSE = "true_false"
     CHOICE = "choice"
+    FILL_BLANK = "fill_blank"
 
 
 class KPType(str, Enum):
@@ -37,6 +38,7 @@ class KPType(str, Enum):
     REMARK = "remark"
     PROOF_TECHNIQUE = "proof_technique"
     FORMULA = "formula"
+    METHOD = "method"
 
 
 class VariantStrategy(str, Enum):
@@ -87,6 +89,46 @@ class DocumentFormat(str, Enum):
     PDF = "pdf"
     DOCX = "docx"
     CSV = "csv"
+    PPTX = "pptx"
+    EPUB = "epub"
+
+
+class SubjectDomain(str, Enum):
+    MATH = "math"
+    PHYSICS = "physics"
+    CS = "cs"
+
+
+class EducationLevel(str, Enum):
+    HIGH_SCHOOL = "high_school"
+    UNDERGRADUATE = "undergraduate"
+    GRADUATE = "graduate"
+
+
+class PedagogicalLevel(str, Enum):
+    BASIC = "basic"
+    STANDARD = "standard"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+    COMPETITION = "competition"
+
+
+class RelationType(str, Enum):
+    PREREQUISITE = "prerequisite"
+    SUCCESSOR = "successor"
+    COROLLARY_OF = "corollary_of"
+    GENERALIZATION = "generalization"
+    SPECIALIZATION = "specialization"
+    EQUIVALENT = "equivalent"
+    RELATED = "related"
+    TESTS = "tests"
+    ILLUSTRATES = "illustrates"
+    APPLIES_METHOD = "applies_method"
+    VARIANT_OF = "variant_of"
+    HARDER_THAN = "harder_than"
+    SIMILAR_TO = "similar_to"
+    PART_OF = "part_of"
+    PROOF_OF = "proof_of"
 
 
 # ── 来源元数据 ────────────────────────────────────────
@@ -161,6 +203,8 @@ class Solution(BaseModel):
     step_count: int = Field(ge=0, default=0)
     confidence: str = "medium"
     is_verified: bool = False
+    conversation_history: list[ConversationMessage] = Field(default_factory=list)
+    tool_calls_made: int = 0
 
 
 class DifficultyScore(BaseModel):
@@ -199,6 +243,129 @@ class DifficultyScore(BaseModel):
         return self.overall
 
 
+# ── LLM Tool Calling ────────────────────────────────────
+
+
+class ToolDefinition(BaseModel):
+    """LLM 可调用工具的定义"""
+    name: str
+    description: str
+    parameters: dict = Field(default_factory=dict)
+
+
+class ToolCall(BaseModel):
+    """LLM 发出的工具调用"""
+    tool_name: str
+    arguments: dict = Field(default_factory=dict)
+    call_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+
+class ToolResult(BaseModel):
+    """工具执行结果"""
+    call_id: str
+    output: str = ""
+    is_error: bool = False
+
+
+class ConversationMessage(BaseModel):
+    """多轮对话中的一条消息"""
+    role: Literal["user", "assistant", "tool"] = "user"
+    content: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_results: list[ToolResult] = Field(default_factory=list)
+
+
+# ── 代码执行与数值验证 ──────────────────────────────────
+
+
+class CodeExecutionResult(BaseModel):
+    """沙箱代码执行结果"""
+    code: str = ""
+    stdout: str = ""
+    stderr: str = ""
+    return_value: str | None = None
+    success: bool = True
+    timeout: bool = False
+    execution_time_ms: int = 0
+
+
+class NumericalVerification(BaseModel):
+    """数值验证结果"""
+    test_cases: list[dict] = Field(default_factory=list)
+    all_passed: bool = False
+    discrepancies: list[str] = Field(default_factory=list)
+    code_used: str = ""
+    execution: CodeExecutionResult | None = None
+
+
+# ── 流水线阶段中间结果 ──────────────────────────────────
+
+
+class PipelineStageResult(BaseModel):
+    """流水线各阶段间传递的中间结果"""
+    candidate: Question | None = None
+    solution: Solution | None = None
+    verification: VerificationResult | None = None
+    difficulty_score: DifficultyScore | None = None
+    stage: Literal[
+        "generated", "solved", "verified", "annotated", "failed"
+    ] = "generated"
+    error: str | None = None
+
+
+# ── 进化引擎 ────────────────────────────────────────────
+
+
+class CandidateRecord(BaseModel):
+    """候选题的完整记录（含通过/失败状态），用于进化追踪"""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    question: Question
+    solution: Solution | None = None
+    verification: VerificationResult | None = None
+    difficulty_score: DifficultyScore | None = None
+    passed: bool = False
+    failure_reasons: list[str] = Field(default_factory=list)
+    parent_id: str | None = None
+    generation: int = 0
+    improvement_strategy: str = ""
+    improvement_directive: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class EvolutionSession(BaseModel):
+    """进化会话快照，用于 checkpoint/resume"""
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    request: GenerationRequest | None = None
+    candidates: list[CandidateRecord] = Field(default_factory=list)
+    best_result: GeneratedQuestion | None = None
+    round_num: int = 0
+    max_rounds: int = 3
+    improvement_rounds: int = 0
+    max_improvement_rounds: int = 2
+    iteration_summaries: list[str] = Field(default_factory=list)
+    started_at: datetime = Field(default_factory=datetime.now)
+    last_checkpoint_at: datetime | None = None
+
+
+# ── 层级标签 ────────────────────────────────────────────
+
+
+class HierarchicalTag(BaseModel):
+    """层级标签，支持多级标签路径"""
+    full_path: str
+    segments: list[str] = Field(default_factory=list)
+    depth: int = 0
+
+    def __init__(self, **data: object) -> None:
+        super().__init__(**data)
+        if not self.segments and self.full_path:
+            self.segments = self.full_path.split("/")
+        if not self.depth:
+            self.depth = len(self.segments)
+
+    model_config = ConfigDict(validate_assignment=True)
+
+
 # ── 请求/响应 ─────────────────────────────────────────
 
 
@@ -211,6 +378,8 @@ class GenerationRequest(BaseModel):
     source_question: Question | None = None
     exclusion_ids: set[str] = Field(default_factory=set)
     count: int = 1
+    enable_evolution: bool = False
+    max_improvement_rounds: int = 2
 
 
 class ContextBundle(BaseModel):
@@ -248,6 +417,7 @@ class VerificationResult(BaseModel):
     passed: bool
     checks: dict[str, bool] = Field(default_factory=dict)
     suggestions: str = ""
+    numerical_verification: NumericalVerification | None = None
 
     @property
     def has_suggestions(self) -> bool:
@@ -397,3 +567,414 @@ class ValidationReport(BaseModel):
     @property
     def warning_count(self) -> int:
         return sum(1 for i in self.issues if i.level == "warning")
+
+
+# ── Pipeline Phase 1: 格式描述 + 拆分 ────────────────────
+
+
+class ImageAsset(BaseModel):
+    """文档中提取的图像资产"""
+    asset_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    file_path: str = ""
+    source_file: str = ""
+    source_page: int | None = None
+    context_text: str = ""
+    description: str = ""
+    linked_block_id: str | None = None
+    linked_item_id: str | None = None
+
+
+class ContentBlockSpec(BaseModel):
+    """文档中一种内容块类型的提取规则"""
+    block_type: str
+    open_pattern: str
+    close_pattern: str | None = None
+    number_group: int | None = None
+    title_group: int | None = None
+    is_paired_with: str | None = None
+    examples: list[str] = Field(default_factory=list)
+
+
+class AnswerFormatSpec(BaseModel):
+    """答案组织方式"""
+    location: Literal[
+        "inline", "after_problem", "end_of_document", "separate_file", "boxed"
+    ] = "inline"
+    answer_marker: str | None = None
+    solution_block_type: str | None = None
+
+
+class FormatSpec(BaseModel):
+    """LLM 对一个 MdBlock 的格式描述 — Meta Template"""
+    content_blocks: list[ContentBlockSpec] = Field(default_factory=list)
+    answer_format: AnswerFormatSpec = Field(default_factory=AnswerFormatSpec)
+    section_pattern: str | None = None
+    metadata_hints: dict[str, str] = Field(default_factory=dict)
+    skip_line_patterns: list[str] = Field(default_factory=list)
+    detected_structure: list[str] = Field(default_factory=list)
+    source_type: str = ""
+    chapter_title: str = ""
+    section_titles: list[str] = Field(default_factory=list)
+    document_description: str = ""
+
+
+class SplitCursor(BaseModel):
+    """拆分游标 — 循环间传递状态"""
+    current_line: int = 0
+    current_page: int | None = None
+    previous_block_tail: str = ""
+    blocks_so_far: int = 0
+    is_finished: bool = False
+
+
+class MdBlockV2(MdBlock):
+    """扩展 MdBlock，新增 Pipeline 所需字段（兼容旧 parser）"""
+    block_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    source_format: DocumentFormat = DocumentFormat.MARKDOWN
+    block_index: int = 0
+    total_blocks: int | None = None
+    format_spec: FormatSpec | None = None
+    chapter_title: str = ""
+    section_title: str = ""
+    preceding_context: str = ""
+    image_assets: list[ImageAsset] = Field(default_factory=list)
+    raw_metadata: dict = Field(default_factory=dict)
+
+
+# ── Pipeline Phase 2: 条目提取 ───────────────────────────
+
+
+class RawItem(BaseModel):
+    """环节 2 输出：从 MdBlock 中提取的原始条目"""
+    item_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    block_type: str = ""
+    number: str | None = None
+    title: str | None = None
+    content_raw: str = ""
+    content_latex: str = ""
+    line_start: int = 0
+    line_end: int = 0
+    paired_item_id: str | None = None
+    source_block_id: str = ""
+    source_file: str = ""
+    extraction_mode: Literal["explicit", "implicit"] = "implicit"
+    linked_image_ids: list[str] = Field(default_factory=list)
+    raw_metadata: dict = Field(default_factory=dict)
+
+
+# ── Pipeline Phase 3: 校准 + 统一 + 标注 + 关系 ──────────
+
+
+class CorrectionEntry(BaseModel):
+    """单处修正记录"""
+    original: str = ""
+    corrected: str = ""
+    reason: str = ""
+    category: Literal[
+        "ocr", "typo", "math_symbol", "semantic", "logic", "formatting"
+    ] = "ocr"
+
+
+class CorrectionResult(BaseModel):
+    """单条目校准结果"""
+    corrected_content: str = ""
+    corrected_latex: str = ""
+    corrections: list[CorrectionEntry] = Field(default_factory=list)
+    semantic_issues: list[str] = Field(default_factory=list)
+    logic_issues: list[str] = Field(default_factory=list)
+    is_answer_verified: bool | None = None
+    completeness_score: float = 1.0
+    overall_quality: Literal["A", "B", "C", "D", "F"] = "B"
+
+
+class TaxonomyPath(BaseModel):
+    """知识点层级分类路径 (dot 分隔)"""
+    domain: str = "math"
+    branch: str = ""
+    topic: str = ""
+    subtopic: str | None = None
+    specific: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def full_path(self) -> str:
+        parts = [self.domain, self.branch, self.topic]
+        if self.subtopic:
+            parts.append(self.subtopic)
+        if self.specific:
+            parts.append(self.specific)
+        return ".".join(p for p in parts if p)
+
+
+class TagSet(BaseModel):
+    """条目的完整标注集 — 5 层从粗到细"""
+    domain: SubjectDomain = SubjectDomain.MATH
+    subject: Subject = Subject.ANALYSIS
+    taxonomy: TaxonomyPath = Field(default_factory=TaxonomyPath)
+    education_level: EducationLevel = EducationLevel.UNDERGRADUATE
+    pedagogical_level: PedagogicalLevel = PedagogicalLevel.STANDARD
+    methods: list[str] = Field(default_factory=list)
+    tested_topics: list[str] = Field(default_factory=list)
+    custom_tags: list[str] = Field(default_factory=list)
+
+
+class ItemRelation(BaseModel):
+    """条目间的一条关系"""
+    relation_type: RelationType = RelationType.RELATED
+    target_id: str = ""
+    target_title: str = ""
+    confidence: float = 1.0
+    source: Literal["llm", "structural", "manual"] = "llm"
+    note: str = ""
+
+
+class QualityAssessment(BaseModel):
+    """内容质量评估"""
+    grade: Literal["A", "B", "C", "D", "F"] = "B"
+    completeness: float = 1.0
+    correctness: float = 1.0
+    clarity: float = 1.0
+    issues: list[str] = Field(default_factory=list)
+
+
+class ItemSource(BaseModel):
+    """统一来源追溯"""
+    file_path: str = ""
+    block_id: str = ""
+    line_range: tuple[int, int] | None = None
+    page_range: tuple[int, int] | None = None
+    source_type: str = ""
+    book_title: str | None = None
+    chapter: str | None = None
+    section: str | None = None
+    exam_type: ExamType | None = None
+    year: int | None = None
+    extraction_method: str = "meta_extractor"
+
+
+class ProofContent(BaseModel):
+    """证明内容（嵌套在定理类中）"""
+    proof_latex: str = ""
+    proof_plain: str = ""
+    methods_used: list[str] = Field(default_factory=list)
+    step_count: int = 0
+    is_complete: bool = True
+
+
+class SolutionContent(BaseModel):
+    """解答内容（嵌套在题目类中）"""
+    solution_latex: str = ""
+    solution_plain: str = ""
+    methods_used: list[str] = Field(default_factory=list)
+    step_count: int = 0
+    key_steps: list[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
+    is_verified: bool = False
+
+
+# ── UnifiedItem 继承体系 ─────────────────────────────────
+
+
+class UnifiedItemBase(BaseModel):
+    """所有统一条目的抽象基类"""
+    item_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    content_latex: str = ""
+    content_plain: str = ""
+    content_markdown: str = ""
+    title: str = ""
+    number: str | None = None
+    source: ItemSource = Field(default_factory=ItemSource)
+    tags: TagSet | None = None
+    relations: list[ItemRelation] = Field(default_factory=list)
+    quality: QualityAssessment | None = None
+    images: list[ImageAsset] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def item_category(self) -> str:
+        return "base"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def has_images(self) -> bool:
+        return len(self.images) > 0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def content_length(self) -> int:
+        return len(self.content_plain or self.content_latex)
+
+
+# ── 知识点类 ──
+
+
+class KnowledgeItem(UnifiedItemBase):
+    """知识点大类基类"""
+    kp_type: KPType = KPType.THEOREM
+    subject_domain: SubjectDomain = SubjectDomain.MATH
+    subject: Subject = Subject.ANALYSIS
+    education_level: EducationLevel = EducationLevel.UNDERGRADUATE
+    difficulty: int = Field(ge=1, le=10, default=5)
+    prerequisites: list[str] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def item_category(self) -> str:
+        return "knowledge"
+
+
+class DefinitionItem(KnowledgeItem):
+    kp_type: KPType = KPType.DEFINITION
+    defined_term: str = ""
+    formal_statement: str = ""
+
+
+class TheoremItem(KnowledgeItem):
+    kp_type: KPType = KPType.THEOREM
+    conditions: list[str] = Field(default_factory=list)
+    conclusion: str = ""
+    proof: ProofContent | None = None
+    is_named: bool = False
+    named_after: str = ""
+
+
+class LemmaItem(TheoremItem):
+    kp_type: KPType = KPType.LEMMA
+
+
+class CorollaryItem(TheoremItem):
+    kp_type: KPType = KPType.COROLLARY
+    parent_theorem_id: str | None = None
+
+
+class PropositionItem(TheoremItem):
+    kp_type: KPType = KPType.PROPOSITION
+
+
+class FormulaItem(KnowledgeItem):
+    kp_type: KPType = KPType.FORMULA
+    formula_latex: str = ""
+    variables: dict[str, str] = Field(default_factory=dict)
+    applicable_conditions: str = ""
+
+
+class MethodItem(KnowledgeItem):
+    kp_type: KPType = KPType.METHOD
+    applicable_to: list[str] = Field(default_factory=list)
+    steps: list[str] = Field(default_factory=list)
+    typical_examples: list[str] = Field(default_factory=list)
+
+
+class RemarkItem(KnowledgeItem):
+    kp_type: KPType = KPType.REMARK
+    remark_on: str | None = None
+
+
+# ── 题目类 ──
+
+
+class QuestionItem(UnifiedItemBase):
+    """题目大类基类"""
+    question_type: QuestionType = QuestionType.PROOF
+    subject_domain: SubjectDomain = SubjectDomain.MATH
+    subject: Subject = Subject.ANALYSIS
+    education_level: EducationLevel = EducationLevel.UNDERGRADUATE
+    difficulty: int = Field(ge=1, le=10, default=5)
+    difficulty_score: DifficultyScore | None = None
+    solution: SolutionContent | None = None
+    answer: str = ""
+    tested_knowledge_ids: list[str] = Field(default_factory=list)
+    methods_required: list[str] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def item_category(self) -> str:
+        return "question"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def has_solution(self) -> bool:
+        return self.solution is not None
+
+
+class ProofQuestion(QuestionItem):
+    question_type: QuestionType = QuestionType.PROOF
+    claim_to_prove: str = ""
+
+
+class CalculationQuestion(QuestionItem):
+    question_type: QuestionType = QuestionType.CALCULATION
+    expected_answer_type: str = ""
+
+
+class ChoiceQuestion(QuestionItem):
+    question_type: QuestionType = QuestionType.CHOICE
+    options: dict[str, str] = Field(default_factory=dict)
+    correct_option: str = ""
+    is_multiple: bool = False
+
+
+class FillBlankQuestion(QuestionItem):
+    question_type: QuestionType = QuestionType.FILL_BLANK
+    blanks: list[str] = Field(default_factory=list)
+    blank_count: int = 1
+
+
+class ConstructionQuestion(QuestionItem):
+    question_type: QuestionType = QuestionType.CONSTRUCTION
+    target_properties: list[str] = Field(default_factory=list)
+
+
+class TrueFalseQuestion(QuestionItem):
+    question_type: QuestionType = QuestionType.TRUE_FALSE
+    correct_answer: bool = True
+    counterexample: str = ""
+
+
+# ── 例题类 ──
+
+
+class ExampleItem(UnifiedItemBase):
+    """例题/示例 — 同时具有知识点和题目属性"""
+    kp_type: KPType = KPType.EXAMPLE
+    subject_domain: SubjectDomain = SubjectDomain.MATH
+    subject: Subject = Subject.ANALYSIS
+    education_level: EducationLevel = EducationLevel.UNDERGRADUATE
+    difficulty: int = Field(ge=1, le=10, default=5)
+    solution: SolutionContent | None = None
+    illustrates_ids: list[str] = Field(default_factory=list)
+    methods_demonstrated: list[str] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def item_category(self) -> str:
+        return "example"
+
+
+# ── Pipeline 处理结果 + 进度 ──────────────────────────────
+
+
+class ItemProcessingResult(BaseModel):
+    """单次 LLM 调用的合并结果：校准 + 分类"""
+    correction: CorrectionResult = Field(default_factory=CorrectionResult)
+    classification: TagSet = Field(default_factory=TagSet)
+    item_subtype: str = ""
+    difficulty: int = Field(ge=1, le=10, default=5)
+
+
+class PipelineRunProgress(BaseModel):
+    """Pipeline 运行进度（checkpoint/resume 用）"""
+    file_path: str = ""
+    file_hash: str = ""
+    phase: int = 1
+    blocks_completed: int = 0
+    blocks_total: int | None = None
+    items_extracted: int = 0
+    items_processed: int = 0
+    items_unified: int = 0
+    errors: list[str] = Field(default_factory=list)
+    started_at: datetime = Field(default_factory=datetime.now)
+    last_checkpoint_at: datetime | None = None

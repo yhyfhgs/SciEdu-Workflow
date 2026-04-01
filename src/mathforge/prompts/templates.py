@@ -238,3 +238,337 @@ TAG_CLASSIFICATION_PROMPT = """对以下数学内容进行分类标注。
   "question_type": "proof"
 }}
 """
+
+
+# ── Pipeline: 格式推断 Prompt（一次性，文档级）────────────
+
+FORMAT_SPEC_INFER_PROMPT = """你是数学文档结构分析专家。\
+给定一份数学文档的采样片段，归纳出该文档的**内容组织格式规则**。
+这些规则将用于 Python 程序自动提取文档中的所有条目。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 文档信息
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- **文件名**: {file_name}
+- **格式**: {source_format}
+- **总行数**: {total_lines}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 文档采样（头部 + 中段）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{text_sample}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 分析任务：格式规则归纳
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+请仔细观察采样内容，归纳出：
+
+### 1. 内容块类型和标记模式
+- 识别文档中出现的所有**内容块类型**
+  （定义、定理、引理、推论、命题、例题、练习、证明、注、性质、公式、方法等）
+- 为每种块类型写出 Python `re` 模块的正则表达式：
+  - `open_pattern`: 块的起始标记（必须能匹配行首或行内标记）
+  - `close_pattern`: 块的结束标记（如 `\\\\end{{...}}`）。
+    若无显式结束标记（隐式结束于下一个同级块的开始），设为 null
+  - `number_group`: `open_pattern` 中捕获块编号的正则组号（如 `定义 (\\d+\\.\\d+)` 中组 1）
+  - `title_group`: 捕获标题的组号（如有）
+  - `is_paired_with`: 若此块类型与另一块类型成对（如 solution↔problem, proof↔theorem），填对方类型名
+
+### 2. 章节组织模式
+- `section_pattern`: 匹配章/节标题行的正则
+  （如 `^##\\s+(.+)` 或 `^§\\d+`）。若无明显章节结构，设为 null
+- `detected_structure`: 文档目录骨架（从采样中推断）
+
+### 3. 答案/解答组织
+- 答案是内嵌在题目后、集中在文档末尾、还是在独立文件中？
+
+### 输出质量要求
+- 正则表达式必须是**合法的 Python `re` 模块语法**
+- 正则必须足够精确以区分不同块类型，同时足够宽松以覆盖格式变体
+- `examples` 字段必须从原文中**逐字摘取**，不要编造
+- 即使采样中某类型只出现一次，只要有明确标记模式也要归纳
+
+## 输出（严格 JSON，不要 markdown 代码块包裹）
+
+{{
+  "format_spec": {{
+    "content_blocks": [
+      {{
+        "block_type": "类型名（英文小写，如 definition/theorem/example/problem/proof）",
+        "open_pattern": "Python re 正则",
+        "close_pattern": "Python re 正则 或 null",
+        "number_group": 1,
+        "title_group": null,
+        "is_paired_with": null,
+        "examples": ["从原文逐字摘取的示例行"]
+      }}
+    ],
+    "answer_format": {{
+      "location": "inline|after_problem|end_of_document|separate_file|boxed",
+      "answer_marker": null,
+      "solution_block_type": null
+    }},
+    "section_pattern": "Python re 正则 或 null",
+    "source_type": "exam_paper|lecture_notes|textbook|slides",
+    "detected_structure": ["文档骨架条目"],
+    "document_description": "一句话文档总结"
+  }}
+}}
+"""
+
+
+# ── Pipeline: 文档拆分 Prompt（逐 chunk fallback）─────────
+
+BLOCK_SPLIT_PROMPT = """你是数学文档结构分析专家。\
+给定一段数学文档片段（Markdown 或 TeX 格式），完成两项任务：
+(1) 识别语义完整的内容块边界；(2) 归纳出文档的内容组织格式规则。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 文档片段（第 {start_line}~{end_line} 行）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{text_chunk}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 前文上下文（上一块末尾 3 行）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{previous_block_tail}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 分析任务
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+### 任务 1: 语义块拆分
+- 找出本片段中所有**语义完整**的内容块（定义、定理、例题、证明、练习等）
+- 每个块必须是自包含的——不要把一个定理拆成两半
+- 如果片段末尾处于某个内容块中间（如定理的证明未结束），
+  在 `ends_mid_block` 标记为 true，并给出需要向后延伸的建议行数
+
+### 任务 2: 格式规则归纳（FormatSpec）
+- 观察本片段中各类内容块的**起始标记**和**结束标记**的文本模式
+- 为每种出现的块类型写出 Python 正则表达式（`re` 语法）
+- 注意区分显式边界（如 `\\\\begin{{problem}}...\\\\end{{problem}}`）
+  和隐式边界（如 `定义 1.1.` 到下一个同级标记之间）
+
+### 输出质量要求
+- 正则表达式必须是合法的 Python `re` 模块语法
+- `examples` 字段必须从原文中**逐字摘取**，不要编造
+- `detected_structure` 用一行一条的方式描述文档骨架
+
+## 输出（严格 JSON，不要 markdown 代码块包裹）
+
+{{
+  "blocks": [
+    {{
+      "content": "该块的完整文本内容",
+      "line_start": 0,
+      "line_end": 0,
+      "chapter_title": "所在章标题",
+      "section_title": "所在节标题"
+    }}
+  ],
+  "format_spec": {{
+    "content_blocks": [
+      {{
+        "block_type": "类型名",
+        "open_pattern": "Python re 正则",
+        "close_pattern": "Python re 正则 或 null",
+        "number_group": null,
+        "title_group": null,
+        "is_paired_with": null,
+        "examples": ["从原文摘取的示例"]
+      }}
+    ],
+    "answer_format": {{
+      "location": "inline",
+      "answer_marker": null,
+      "solution_block_type": null
+    }},
+    "section_pattern": null,
+    "source_type": "exam_paper|lecture_notes|textbook|slides",
+    "detected_structure": ["文档骨架条目"],
+    "document_description": "一句话文档总结"
+  }},
+  "ends_mid_block": false,
+  "suggested_extend_lines": 0
+}}
+"""
+
+
+# ── Pipeline: 校准 + 标注合并 Prompt ─────────────────────
+
+ITEM_CORRECT_AND_TAG_PROMPT = """你是数学教育领域的资深编辑与分类专家。你将同时完成两项任务：
+(A) 对提取的数学条目进行质量校准修复；(B) 对其进行多维分类标注。
+
+两项任务共享同一份内容理解，请一次性完成。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 待处理条目
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**类型**: {block_type}
+**编号**: {number}
+**原始内容**:
+
+{content_raw}
+
+{paired_content_section}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 文档上下文
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- **文档类型**: {source_type}（exam_paper=考试卷 / lecture_notes=讲义 / textbook=教材）
+- **章节**: {chapter_title} > {section_title}
+- **文档骨架**: {detected_structure}
+- **前一条目**: [{prev_type}] {prev_title}
+- **后一条目**: [{next_type}] {next_title}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## OCR 预检结果（确定性阶段已处理，以下为残余可疑项）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{suspicious_terms}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 分类参考：知识点 Taxonomy 树（仅展示相关分支）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{taxonomy_excerpt}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 任务 A: 质量校准修复
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+请逐一检查以下维度，修正发现的问题：
+
+| 维度 | 检查重点 |
+|------|---------|
+| 1. 文字修正 | OCR 错字、数学符号错误（如"盐德金"→"戴德金"、"收玫"→"收敛"、"定罣"→"定理"） |
+| 2. LaTeX 修正 | 公式语法错误、未闭合的 $..$ 或 \\\\begin/\\\\end、错误的数学符号 |
+| 3. 语义完整性 | 定义是否完整？定理条件是否充分？是否有被截断的内容？ |
+| 4. 逻辑正确性 | 推导步骤是否正确？条件与结论是否匹配？ |
+| 5. 答案验证 | （仅题目类）答案/解答是否正确？ |
+
+**修正原则**:
+- 对于明确的 OCR/拼写错误，直接修正
+- 对于可能正确也可能错误的内容，保留原文并在 semantic_issues 中标注
+- 修正后的内容应保持原始的表述风格和详细程度
+- 所有数学公式必须使用标准 LaTeX 语法
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 任务 B: 多维分类标注
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+基于你对内容的理解（在任务 A 中已深入阅读），完成以下分类：
+
+**第 1-2 层**: 学科域 + 学科
+- domain: math / physics / cs
+- subject: 数学分析 / 高等代数 / 群论
+
+**第 3 层**: Taxonomy 路径（从上方 taxonomy 树中选择最精确的路径）
+- 格式: domain.branch.topic[.subtopic[.specific]]
+
+**第 4 层**: 教育阶段 + 教学难度
+- education_level: high_school / undergraduate / graduate
+- pedagogical_level: basic / standard / intermediate / advanced / competition
+
+**第 5 层**: 方法与技巧标签
+- methods: 具体使用/考查的数学方法
+
+**分类决策依据**: 结合内容主题、章节标题、相邻条目、文档来源类型综合判断。
+
+## 输出（严格 JSON，不要 markdown 代码块包裹）
+
+{{
+  "correction": {{
+    "corrected_content": "修正后的完整内容文本",
+    "corrected_latex": "修正后的 LaTeX 格式内容",
+    "corrections": [
+      {{
+        "original": "原始文本片段",
+        "corrected": "修正后文本",
+        "reason": "修正原因",
+        "category": "ocr|typo|math_symbol|semantic|logic|formatting"
+      }}
+    ],
+    "semantic_issues": [],
+    "logic_issues": [],
+    "is_answer_verified": null,
+    "completeness_score": 1.0,
+    "overall_quality": "B"
+  }},
+  "classification": {{
+    "domain": "math",
+    "subject": "数学分析",
+    "taxonomy": {{
+      "domain": "math",
+      "branch": "analysis",
+      "topic": "limits",
+      "subtopic": null,
+      "specific": null
+    }},
+    "education_level": "undergraduate",
+    "pedagogical_level": "standard",
+    "difficulty": 5,
+    "methods": [],
+    "tested_topics": [],
+    "custom_tags": [],
+    "item_subtype": "definition"
+  }}
+}}
+"""
+
+
+# ── Pipeline: 关系推断 Prompt ────────────────────────────
+
+RELATION_INFERENCE_PROMPT = """你是数学知识图谱专家。给定一批数学条目，识别它们之间的学术关系。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 条目列表
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{items_list}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 可用关系类型
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+| 关系 | 含义 | 示例 |
+|------|------|------|
+| prerequisite | A 是 B 的前置知识 | 极限定义 → 连续性定义 |
+| generalization | A 是 B 的推广形式 | 一元积分 → 多元积分 |
+| specialization | A 是 B 的特例 | Cauchy 列 → 收敛数列 |
+| tests | 题目 A 考查知识点 B | 求极限题 → 夹逼定理 |
+| illustrates | 例题 A 展示知识点 B | 例 1.3 → 定理 1.2 |
+| similar_to | 题目 A 与 B 类似 | 两道夹逼定理应用题 |
+| harder_than | A 比 B 难 | 复合函数极限 > 简单极限 |
+| applies_method | 题目 A 使用方法 B | 不等式证明 → 数学归纳法 |
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 推断规则
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. prerequisite: 仅当理解 A 是理解 B 的必要前提时才标注
+2. tests/illustrates: 仔细匹配题目考查的核心知识点
+3. similar_to: 方法和知识点都相似才标注
+4. confidence: 明显关系给 0.9+，推测性给 0.6-0.8，不确定不要输出
+
+## 输出（严格 JSON，不要 markdown 代码块包裹）
+
+{{
+  "relations": [
+    {{
+      "source_id": "源条目ID",
+      "target_id": "目标条目ID",
+      "relation_type": "prerequisite",
+      "confidence": 0.9,
+      "note": "关系说明"
+    }}
+  ]
+}}
+"""

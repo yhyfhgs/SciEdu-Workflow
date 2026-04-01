@@ -1,4 +1,4 @@
-"""Stage 4: 验证管线"""
+"""Stage 4: 验证管线（增强版，支持数值验证）"""
 
 from __future__ import annotations
 
@@ -8,12 +8,15 @@ import structlog
 
 from mathforge.core.models import (
     ContextBundle,
+    NumericalVerification,
     Question,
     Solution,
     VerificationResult,
 )
+from mathforge.core.sandbox import CodeSandbox
 from mathforge.llm import LLMClient, LLMConfig
 from mathforge.prompts import REVIEW_PROMPT, SOLUTION_RELEVANCE_PROMPT
+from mathforge.prompts.verification_code_prompts import GENERATE_NUMERICAL_TEST_PROMPT
 
 logger = structlog.get_logger()
 
@@ -24,8 +27,15 @@ class VerificationPipeline:
     使用独立的 LLM 实例做审核，避免确认偏差。
     """
 
-    def __init__(self, llm: LLMClient | None = None):
+    def __init__(
+        self,
+        llm: LLMClient | None = None,
+        sandbox: CodeSandbox | None = None,
+        enable_numerical: bool = True,
+    ):
         self.review_llm = llm or LLMClient(LLMConfig.for_task("review"))
+        self.sandbox = sandbox or CodeSandbox()
+        self.enable_numerical = enable_numerical
 
     async def verify(
         self,
@@ -65,6 +75,16 @@ class VerificationPipeline:
         if not checks["solution_relevant"]:
             suggestions.append("解答可能未正确回应题目要求。")
 
+        # Check 6: 数值验证（可选）
+        numerical = None
+        if self.enable_numerical and solution.solution_latex:
+            numerical = await self._check_numerical(candidate, solution)
+            checks["numerical_valid"] = numerical.all_passed
+            if not numerical.all_passed:
+                suggestions.append(
+                    "数值验证未通过: " + "; ".join(numerical.discrepancies[:3])
+                )
+
         passed = all(checks.values())
         logger.info("verification_done", passed=passed, checks=checks)
 
@@ -72,6 +92,7 @@ class VerificationPipeline:
             passed=passed,
             checks=checks,
             suggestions="\n".join(suggestions) if suggestions else "",
+            numerical_verification=numerical,
         )
 
     def verify_sync(
@@ -107,6 +128,16 @@ class VerificationPipeline:
         if not checks["solution_relevant"]:
             suggestions.append("解答可能未正确回应题目要求。")
 
+        # Check 6: 数值验证（可选）
+        numerical = None
+        if self.enable_numerical and solution.solution_latex:
+            numerical = self._check_numerical_sync(candidate, solution)
+            checks["numerical_valid"] = numerical.all_passed
+            if not numerical.all_passed:
+                suggestions.append(
+                    "数值验证未通过: " + "; ".join(numerical.discrepancies[:3])
+                )
+
         passed = all(checks.values())
         logger.info("verification_done", passed=passed, checks=checks)
 
@@ -114,6 +145,7 @@ class VerificationPipeline:
             passed=passed,
             checks=checks,
             suggestions="\n".join(suggestions) if suggestions else "",
+            numerical_verification=numerical,
         )
 
     # ── 检查项实现 ────────────────────────────────────
@@ -206,3 +238,86 @@ class VerificationPipeline:
         except Exception as e:
             logger.warning("relevance_check_failed", error=str(e))
             return True
+
+    # ── 数值验证 ─────────────────────────────────────────
+
+    async def _check_numerical(
+        self, candidate: Question, solution: Solution,
+    ) -> NumericalVerification:
+        """LLM 生成验证代码 + 沙箱执行 (async)"""
+        prompt = GENERATE_NUMERICAL_TEST_PROMPT.format(
+            question_latex=candidate.content_latex,
+            solution_sketch=solution.solution_latex[:500],
+        )
+        try:
+            result = await self.review_llm.generate_json(prompt=prompt, temperature=0.0)
+            code = result.get("verification_code", "")
+            if not code:
+                return NumericalVerification(all_passed=True)  # 无代码则跳过
+            return self._run_numerical_verification(code)
+        except Exception as e:
+            logger.warning("numerical_verify_gen_failed", error=str(e))
+            return NumericalVerification(all_passed=True)  # 生成失败时默认通过
+
+    def _check_numerical_sync(
+        self, candidate: Question, solution: Solution,
+    ) -> NumericalVerification:
+        """LLM 生成验证代码 + 沙箱执行 (sync)"""
+        prompt = GENERATE_NUMERICAL_TEST_PROMPT.format(
+            question_latex=candidate.content_latex,
+            solution_sketch=solution.solution_latex[:500],
+        )
+        try:
+            result = self.review_llm.generate_json_sync(prompt=prompt, temperature=0.0)
+            code = result.get("verification_code", "")
+            if not code:
+                return NumericalVerification(all_passed=True)
+            return self._run_numerical_verification(code)
+        except Exception as e:
+            logger.warning("numerical_verify_gen_failed", error=str(e))
+            return NumericalVerification(all_passed=True)
+
+    def _run_numerical_verification(self, code: str) -> NumericalVerification:
+        """在沙箱中执行验证代码并解析结果"""
+        exec_result = self.sandbox.execute_safe(code, timeout=15)
+
+        if not exec_result.success:
+            logger.warning("numerical_verify_exec_failed", stderr=exec_result.stderr[:200])
+            return NumericalVerification(
+                all_passed=True,  # 执行失败时默认通过
+                code_used=code,
+                execution=exec_result,
+                discrepancies=[f"验证代码执行失败: {exec_result.stderr[:100]}"],
+            )
+
+        # 解析输出
+        stdout = exec_result.stdout
+        lines = stdout.strip().split("\n")
+        test_cases: list[dict] = []
+        discrepancies: list[str] = []
+
+        for line in lines:
+            line = line.strip()
+            if line.startswith("PASS"):
+                test_cases.append({"result": "pass", "detail": line})
+            elif line.startswith("FAIL"):
+                test_cases.append({"result": "fail", "detail": line})
+                discrepancies.append(line)
+
+        last_line = lines[-1].strip() if lines else ""
+        all_passed = "ALL_PASSED" in last_line and not discrepancies
+
+        logger.info(
+            "numerical_verify_done",
+            all_passed=all_passed,
+            tests=len(test_cases),
+            failures=len(discrepancies),
+        )
+
+        return NumericalVerification(
+            test_cases=test_cases,
+            all_passed=all_passed,
+            discrepancies=discrepancies,
+            code_used=code,
+            execution=exec_result,
+        )

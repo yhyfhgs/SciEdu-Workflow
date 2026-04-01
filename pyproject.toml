@@ -21,13 +21,14 @@ pdf-ml = ["marker-pdf>=1.0"]
 docx = ["python-docx>=1.0"]
 gemini = ["google-genai>=1.0"]
 db = ["chromadb>=0.5", "aiosqlite>=0.20"]
+compute = ["sympy>=1.12", "numpy>=1.26"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
     "mypy>=1.13",
 ]
-all = ["mathforge[gemini,pdf,db,dev]"]
+all = ["mathforge[gemini,pdf,db,compute,dev]"]
 
 [project.scripts]
 mathforge = "mathforge.cli.main:app"

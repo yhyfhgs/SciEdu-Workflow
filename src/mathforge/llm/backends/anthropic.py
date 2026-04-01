@@ -65,3 +65,70 @@ class AnthropicBackend:
             if "timeout" in str(e).lower() or "timed out" in str(e).lower():
                 raise LLMTimeoutError(str(e)) from e
             raise LLMError(str(e)) from e
+
+    # ── Tool Calling ─────────────────────────────────────
+
+    async def generate_with_tools(
+        self,
+        messages: list[dict],
+        system: str,
+        tools: list[dict],
+        **kwargs,
+    ) -> dict:
+        try:
+            response = await self.async_client.messages.create(
+                model=self.config.model,
+                max_tokens=kwargs.get("max_tokens", self.config.max_tokens),
+                temperature=kwargs.get("temperature", self.config.temperature),
+                system=system,
+                messages=messages,
+                tools=tools,
+            )
+            return self._parse_tool_response(response)
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise LLMTimeoutError(str(e)) from e
+            raise LLMError(str(e)) from e
+
+    def generate_with_tools_sync(
+        self,
+        messages: list[dict],
+        system: str,
+        tools: list[dict],
+        **kwargs,
+    ) -> dict:
+        try:
+            response = self.client.messages.create(
+                model=self.config.model,
+                max_tokens=kwargs.get("max_tokens", self.config.max_tokens),
+                temperature=kwargs.get("temperature", self.config.temperature),
+                system=system,
+                messages=messages,
+                tools=tools,
+            )
+            return self._parse_tool_response(response)
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise LLMTimeoutError(str(e)) from e
+            raise LLMError(str(e)) from e
+
+    @staticmethod
+    def _parse_tool_response(response) -> dict:
+        """将 Anthropic 响应解析为统一格式"""
+        content = ""
+        tool_calls = []
+        for block in response.content:
+            if block.type == "text":
+                content += block.text
+            elif block.type == "tool_use":
+                tool_calls.append({
+                    "id": block.id,
+                    "name": block.name,
+                    "arguments": block.input,
+                })
+        return {
+            "content": content,
+            "tool_calls": tool_calls,
+            "stop_reason": response.stop_reason,
+            "raw_content": response.content,
+        }

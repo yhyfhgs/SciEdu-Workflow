@@ -1,0 +1,75 @@
+# MathForge LLM 配置示例
+# 使用方法:
+#   1. 复制本文件: cp config/mathforge.example.toml config/mathforge.toml
+#   2. 通过 CLI 指定: mathforge generate free --llm-config config/mathforge.toml ...
+#   3. 或通过环境变量: MATHFORGE_LLM_CONFIG_FILE=config/mathforge.toml
+
+[llm]
+# 全局默认配置（可被 per-task 配置覆盖）
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+
+# ── 生成引擎各阶段 ──
+
+[llm.tasks.generate]
+# 题目生成：需要创造力，推荐使用 Sonnet 级别模型
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+
+[llm.tasks.solve]
+# 基础求解：需要精确推理
+provider = "openai"
+model = "gpt-4o"
+
+[llm.tasks.solve_deep]
+# 深度求解（多轮 + tool calling）：需要强推理能力
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+max_tokens = 32768
+
+[llm.tasks.review]
+# 验证审阅：确定性任务，可用较轻量模型
+provider = "anthropic"
+model = "claude-haiku-4-20250514"
+
+[llm.tasks.tag]
+# 难度标注：分类任务，可用较轻量模型
+provider = "anthropic"
+model = "claude-haiku-4-20250514"
+
+[llm.tasks.improve]
+# 迭代改进：需要理解反馈并修正
+provider = "openai"
+model = "gpt-4o"
+
+# ── 数据处理 Pipeline 各阶段 ──
+
+[llm.tasks.split]
+# 文档拆分：可用本地模型节省成本
+# provider = "openai_compatible"
+# base_url = "http://localhost:8080/v1"
+# model = "local-model"
+provider = "anthropic"
+model = "claude-haiku-4-20250514"
+
+[llm.tasks.process_item]
+# 条目处理（校正 + 分类）
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+
+[llm.tasks.infer_relations]
+# 知识关系推理
+provider = "anthropic"
+model = "claude-haiku-4-20250514"
+
+# ── 其他任务 ──
+
+# [llm.tasks.repair]
+# 修复任务（按需启用）
+# provider = "anthropic"
+# model = "claude-sonnet-4-20250514"
+
+# [llm.tasks.numerical_verify]
+# 数值验证（按需启用）
+# provider = "anthropic"
+# model = "claude-haiku-4-20250514"

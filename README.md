@@ -33,11 +33,17 @@ cp .env.example .env
 ### 使用
 
 ```bash
-# 解析 TeX 文件
-mathforge parse tex path/to/file.tex
+# 解析任意格式文件（统一 Pipeline）
+mathforge parse run path/to/file_or_dir
+
+# 跳过 LLM（仅确定性处理）
+mathforge parse run path/to/file --skip-llm --dry-run
+
+# 指定 PDF 后端
+mathforge parse run path/to/file.pdf --backend pymupdf
 
 # 生成题目
-mathforge generate --topic "极限" --difficulty 3
+mathforge generate free -s 数学分析 -t 极限 -d 5
 
 # 查看帮助
 mathforge --help
@@ -49,7 +55,7 @@ mathforge --help
 src/mathforge/
 ├── core/        # 核心领域逻辑（模型、生成引擎、验证）
 ├── llm/         # LLM 客户端层（Anthropic / OpenAI / Gemini）
-├── pipeline/    # 数据处理流水线（TeX / MD / PDF / DOCX）
+├── pipeline/    # 统一数据处理流水线（LLM 推断 FormatSpec + 确定性提取）
 ├── prompts/     # 提示词模板与生成策略
 ├── storage/     # 存储后端（JSON 文件 / SQLite）
 ├── cli/         # Typer CLI 接口

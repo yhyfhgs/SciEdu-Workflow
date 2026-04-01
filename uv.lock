@@ -1397,10 +1397,16 @@ all = [
     { name = "chromadb" },
     { name = "google-genai" },
     { name = "mypy" },
+    { name = "numpy" },
     { name = "pymupdf4llm" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "sympy" },
+]
+compute = [
+    { name = "numpy" },
+    { name = "sympy" },
 ]
 db = [
     { name = "aiosqlite" },
@@ -1432,8 +1438,9 @@ requires-dist = [
     { name = "chromadb", marker = "extra == 'db'", specifier = ">=0.5" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
     { name = "marker-pdf", marker = "extra == 'pdf-ml'", specifier = ">=1.0" },
-    { name = "mathforge", extras = ["gemini", "pdf", "db", "dev"], marker = "extra == 'all'" },
+    { name = "mathforge", extras = ["gemini", "pdf", "db", "compute", "dev"], marker = "extra == 'all'" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
+    { name = "numpy", marker = "extra == 'compute'", specifier = ">=1.26" },
     { name = "openai", specifier = ">=1.50" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
@@ -1446,9 +1453,10 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "structlog", specifier = ">=24.0" },
+    { name = "sympy", marker = "extra == 'compute'", specifier = ">=1.12" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["pdf", "pdf-ml", "docx", "gemini", "db", "dev", "all"]
+provides-extras = ["pdf", "pdf-ml", "docx", "gemini", "db", "compute", "dev", "all"]
 
 [[package]]
 name = "mdurl"

@@ -22,18 +22,27 @@
 
 ### 2. Pipeline Agent (LLM-in-the-loop)
 
-**职责**: 数据处理流水线中的 LLM 调用环节
+**职责**: 统一数据处理流水线中的 LLM 调用环节
+
+**架构**: 通过 `PipelineOrchestrator` 编排的 asyncio.Queue 三阶段流水线。
+入口命令: `mathforge parse run`。
 
 **包含的 Agent 角色**:
-- `format_analyzer` — 分析输入文档的格式和结构
-- `content_extractor` — 从文档中提取题目、知识点等结构化内容
-- `ocr_corrector` — 修正 OCR 产生的数学公式错误
-- `content_tagger` — 为内容打标签（学科、难度、知识点）
+- `format_spec_inferrer` (BlockSplitter) — 一次性 LLM 调用推断文档的 FormatSpec（内容块类型、正则模式、章节结构），之后用确定性程序分块
+- `item_processor` (agents/item_processor.py) — 单次 LLM 调用同时完成 OCR 校准 + 多维分类标注
+- `relation_builder` (relation_builder.py) — 批量 LLM 推断条目间语义关系
+
+**流水线阶段**:
+1. Stage 0: 格式转换 — PDF/DOCX/CSV → 纯文本（Python，无 LLM）
+2. Stage 1: FormatSpec 推断 + 确定性分块 — 1 次 LLM 调用/文件
+3. Stage 2: MetaExtractor 提取 + ItemProcessor 校准分类 — 1 次 LLM 调用/条目
+4. Stage 3: ItemUnifier + RelationBuilder + EntityBuilder → Storage
 
 **约束**:
 - 所有 Agent 通过 `llm/client.py` 的统一接口调用 LLM
 - 输出必须符合 `core/models.py` 中定义的 Pydantic 模型
 - 失败时应抛出 `core/exceptions.py` 中定义的异常，由调用方处理重试
+- FormatSpec 是 LLM 与 Python 之间的通用契约：LLM 负责识别，Python 负责执行
 
 ### 3. Generation Agent (核心引擎)
 

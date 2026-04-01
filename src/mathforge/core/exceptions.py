@@ -60,3 +60,51 @@ class OcrRepairError(MathForgeError):
 
 class GenerationError(MathForgeError):
     """生成流水线异常"""
+
+
+class SandboxError(MathForgeError):
+    """代码沙箱执行异常"""
+
+
+class SandboxTimeoutError(SandboxError):
+    """代码沙箱执行超时"""
+
+    def __init__(self, timeout_seconds: int, code_snippet: str = ""):
+        self.timeout_seconds = timeout_seconds
+        snippet = code_snippet[:200] if code_snippet else ""
+        super().__init__(f"代码执行超时 ({timeout_seconds}s): {snippet}")
+
+
+class ToolCallError(LLMError):
+    """LLM tool calling 异常"""
+
+
+class EvolutionExhaustedError(GenerationError):
+    """进化引擎耗尽所有改进轮次"""
+
+    def __init__(self, rounds: int, candidates_tried: int):
+        self.rounds = rounds
+        self.candidates_tried = candidates_tried
+        super().__init__(
+            f"进化引擎耗尽: {rounds} 轮改进, {candidates_tried} 个候选均未通过验证"
+        )
+
+
+class PipelineError(MathForgeError):
+    """Pipeline 处理异常"""
+
+
+class FingerprintMatchError(PipelineError):
+    """指纹匹配失败"""
+
+
+class MetaExtractorError(PipelineError):
+    """MetaExtractor 提取失败"""
+
+
+class ItemCorrectionError(PipelineError):
+    """条目校准失败"""
+
+
+class UnificationError(PipelineError):
+    """条目统一转换失败"""

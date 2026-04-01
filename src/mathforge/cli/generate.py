@@ -39,6 +39,7 @@ def _build_engine(
     llm_model: str | None = None,
     llm_base_url: str | None = None,
     llm_temperature: float | None = None,
+    llm_config: Path | None = None,
 ):
     """构建完整的生成引擎"""
     from mathforge.config.settings import AppConfig
@@ -51,7 +52,7 @@ def _build_engine(
     from mathforge.llm import LLMClient, LLMConfig
     from mathforge.storage.file_backend import FileStorageBackend
 
-    app_config = AppConfig()
+    app_config = AppConfig(llm_config_file=llm_config) if llm_config else AppConfig()
     storage = FileStorageBackend(data_dir)
 
     # CLI 覆写参数
@@ -71,10 +72,26 @@ def _build_engine(
     review_llm = LLMClient(LLMConfig.from_app_config(app_config, "review", **overrides))
     tag_llm = LLMClient(LLMConfig.from_app_config(app_config, "tag", **overrides))
 
+    # 深度求解 LLM（多轮 + tool calling）
+    deep_solve_llm = LLMClient(LLMConfig.from_app_config(app_config, "solve_deep", **overrides))
+
+    from mathforge.core.sandbox import CodeSandbox
+
+    sandbox = CodeSandbox(timeout_seconds=app_config.sandbox_timeout)
+
     retriever = ContextRetriever(storage)
     generator = QuestionGenerator(gen_llm)
-    solver = SolveEngine(solve_llm)
-    verifier = VerificationPipeline(review_llm)
+    solver = SolveEngine(
+        llm=solve_llm,
+        deep_llm=deep_solve_llm,
+        sandbox=sandbox,
+        max_turns=app_config.solver_max_turns,
+    )
+    verifier = VerificationPipeline(
+        llm=review_llm,
+        sandbox=sandbox,
+        enable_numerical=app_config.enable_numerical_verification,
+    )
     annotator = DifficultyAnnotator(tag_llm)
 
     engine = GenerationEngine(
@@ -88,7 +105,7 @@ def _build_engine(
         candidates_per_round=app_config.generation_candidates_per_round,
     )
 
-    return engine, storage
+    return engine, storage, app_config
 
 
 def _output_result(result, fmt: str) -> None:
@@ -118,6 +135,7 @@ def generate_free(
     llm_model: str | None = typer.Option(None, "--llm-model", help="模型名称"),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url", help="自定义 API URL"),
     llm_temperature: float | None = typer.Option(None, "--llm-temperature", help="温度"),
+    llm_config: Path | None = typer.Option(None, "--llm-config", help="LLM TOML 配置文件路径"),
 ) -> None:
     """自由模式生成新数学题"""
     from mathforge.core.models import (
@@ -127,8 +145,8 @@ def generate_free(
         VariantStrategy,
     )
 
-    engine, storage = _build_engine(
-        data_dir, llm_provider, llm_model, llm_base_url, llm_temperature
+    engine, storage, app_config = _build_engine(
+        data_dir, llm_provider, llm_model, llm_base_url, llm_temperature, llm_config
     )
 
     topics = [t.strip() for t in topic.split(",")]
@@ -173,12 +191,13 @@ def generate_variant(
     llm_model: str | None = typer.Option(None, "--llm-model"),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     llm_temperature: float | None = typer.Option(None, "--llm-temperature"),
+    llm_config: Path | None = typer.Option(None, "--llm-config", help="LLM TOML 配置文件路径"),
 ) -> None:
     """基于已有题目生成变式"""
     from mathforge.core.models import GenerationRequest, VariantStrategy
 
-    engine, storage = _build_engine(
-        data_dir, llm_provider, llm_model, llm_base_url, llm_temperature
+    engine, storage, app_config = _build_engine(
+        data_dir, llm_provider, llm_model, llm_base_url, llm_temperature, llm_config
     )
 
     try:
@@ -225,6 +244,7 @@ def generate_batch(
     llm_model: str | None = typer.Option(None, "--llm-model"),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     llm_temperature: float | None = typer.Option(None, "--llm-temperature"),
+    llm_config: Path | None = typer.Option(None, "--llm-config", help="LLM TOML 配置文件路径"),
 ) -> None:
     """批量生成题目"""
     from mathforge.core.models import (
@@ -234,8 +254,8 @@ def generate_batch(
         VariantStrategy,
     )
 
-    engine, storage = _build_engine(
-        data_dir, llm_provider, llm_model, llm_base_url, llm_temperature
+    engine, storage, app_config = _build_engine(
+        data_dir, llm_provider, llm_model, llm_base_url, llm_temperature, llm_config
     )
 
     topics = [t.strip() for t in topic.split(",")]
@@ -269,6 +289,7 @@ def generate_solve(
     llm_model: str | None = typer.Option(None, "--llm-model"),
     llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
     llm_temperature: float | None = typer.Option(None, "--llm-temperature"),
+    llm_config: Path | None = typer.Option(None, "--llm-config", help="LLM TOML 配置文件路径"),
 ) -> None:
     """为指定题目生成详细解答"""
     from mathforge.config.settings import AppConfig
@@ -277,7 +298,7 @@ def generate_solve(
     from mathforge.llm import LLMClient, LLMConfig
     from mathforge.storage.file_backend import FileStorageBackend
 
-    app_config = AppConfig()
+    app_config = AppConfig(llm_config_file=llm_config) if llm_config else AppConfig()
     storage = FileStorageBackend(data_dir)
 
     overrides = {}
@@ -315,3 +336,131 @@ def generate_solve(
             success(f"解答已保存: {question_id}")
     else:
         error("求解失败")
+
+
+@generate_app.command("evolve")
+def generate_evolve(
+    subject: str = typer.Option(..., "-s", "--subject", help="科目"),
+    topic: str = typer.Option(..., "-t", "--topic", help="专题（逗号分隔）"),
+    difficulty: int = typer.Option(5, "-d", "--difficulty", help="目标难度 1-10"),
+    question_type: str = typer.Option("proof", "--type", help="题型"),
+    max_improve: int = typer.Option(2, "--max-improve", help="最大改进轮数"),
+    output_format: str = typer.Option("rich", "--format", "-f", help="输出格式"),
+    save: bool = typer.Option(True, "--save/--no-save"),
+    data_dir: Path = typer.Option(Path("data"), "--data-dir"),
+    llm_provider: str | None = typer.Option(None, "--llm-provider"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
+    llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
+    llm_temperature: float | None = typer.Option(None, "--llm-temperature"),
+    llm_config: Path | None = typer.Option(None, "--llm-config", help="LLM TOML 配置文件路径"),
+) -> None:
+    """进化模式生成: 迭代改进直到通过验证"""
+    from mathforge.core.evolution_engine import EvolutionEngine
+    from mathforge.core.models import (
+        GenerationRequest,
+        QuestionType,
+        Subject,
+        VariantStrategy,
+    )
+
+    engine, storage, app_config = _build_engine(
+        data_dir, llm_provider, llm_model, llm_base_url, llm_temperature, llm_config
+    )
+
+    topics = [t.strip() for t in topic.split(",")]
+    request = GenerationRequest(
+        subject=Subject(subject),
+        topics=topics,
+        difficulty_target=difficulty,
+        question_type=QuestionType(question_type),
+        strategy=VariantStrategy.TOPIC_GENERATION,
+        enable_evolution=True,
+        max_improvement_rounds=max_improve,
+    )
+
+    evo_engine = EvolutionEngine(
+        generation_engine=engine,
+        max_improvement_rounds=max_improve,
+        checkpoint_dir=app_config.checkpoint_dir / "evolution",
+    )
+
+    with console.status("[bold cyan]进化式生成中...[/]"):
+        result = evo_engine.evolve_sync(request)
+
+    if result:
+        _output_result(result, output_format)
+        gen = result.generation_meta.get("generation", 0)
+        if gen > 0:
+            console.print(f"[dim]经过 {gen} 代改进[/dim]")
+        if save:
+            storage.save_question(result.question, result.solution)
+            success(f"已保存: {result.question.id}")
+    else:
+        error("进化式生成失败: 所有候选均未通过验证")
+
+
+@generate_app.command("solve-deep")
+def generate_solve_deep(
+    question_id: str = typer.Argument(..., help="题目 ID"),
+    output_format: str = typer.Option("rich", "--format", "-f"),
+    save: bool = typer.Option(True, "--save/--no-save"),
+    data_dir: Path = typer.Option(Path("data"), "--data-dir"),
+    llm_provider: str | None = typer.Option(None, "--llm-provider"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
+    llm_base_url: str | None = typer.Option(None, "--llm-base-url"),
+    llm_temperature: float | None = typer.Option(None, "--llm-temperature"),
+    llm_config: Path | None = typer.Option(None, "--llm-config", help="LLM TOML 配置文件路径"),
+) -> None:
+    """深度求解: 多轮推理 + 代码计算辅助"""
+    from mathforge.config.settings import AppConfig
+    from mathforge.core.models import ContextBundle
+    from mathforge.core.sandbox import CodeSandbox
+    from mathforge.core.solver import SolveEngine
+    from mathforge.llm import LLMClient, LLMConfig
+    from mathforge.storage.file_backend import FileStorageBackend
+
+    app_config = AppConfig(llm_config_file=llm_config) if llm_config else AppConfig()
+    storage = FileStorageBackend(data_dir)
+
+    overrides = {}
+    if llm_provider:
+        overrides["provider"] = llm_provider
+    if llm_model:
+        overrides["model"] = llm_model
+    if llm_base_url:
+        overrides["base_url"] = llm_base_url
+    if llm_temperature is not None:
+        overrides["temperature"] = llm_temperature
+
+    try:
+        question = storage.load_question(question_id)
+    except FileNotFoundError:
+        error(f"未找到题目: {question_id}")
+        raise typer.Exit(1)
+
+    deep_llm = LLMClient(LLMConfig.from_app_config(app_config, "solve_deep", **overrides))
+    sandbox = CodeSandbox(timeout_seconds=app_config.sandbox_timeout)
+    solver = SolveEngine(
+        deep_llm=deep_llm,
+        sandbox=sandbox,
+        max_turns=app_config.solver_max_turns,
+    )
+    context = ContextBundle()
+
+    with console.status("[bold cyan]深度求解中（多轮 + 代码辅助）...[/]"):
+        solution = solver.solve_deep_sync(question, context)
+
+    if solution:
+        if output_format == "json":
+            console.print_json(solution.model_dump_json(indent=2))
+        elif output_format == "latex":
+            console.print(solution.solution_latex)
+        else:
+            display_solution(question, solution)
+        if solution.tool_calls_made > 0:
+            console.print(f"[dim]使用了 {solution.tool_calls_made} 次代码计算辅助[/dim]")
+        if save:
+            storage.save_solution(solution)
+            success(f"解答已保存: {question_id}")
+    else:
+        error("深度求解失败")

@@ -46,8 +46,10 @@ src/mathforge/
 ├── core/        # 核心领域：models.py(Pydantic模型), engine.py(生成编排),
 │                #   generator.py, solver.py, verifier.py, annotator.py, retriever.py
 ├── llm/         # LLM统一客户端：client.py, config.py, parser.py, backends/
-├── pipeline/    # 数据处理：tex_parser, md_parser, pdf/docx/csv_processor,
-│                #   question_builder, kp_builder, content_validator
+├── pipeline/    # 统一数据处理流水线：orchestrator(编排), block_splitter(LLM拆分),
+│                #   meta_extractor(条目提取), agents/item_processor(校准+分类),
+│                #   item_unifier, entity_builder, relation_builder,
+│                #   pdf/docx/csv_processor(格式转换), ocr_repair, content_validator
 ├── prompts/     # 提示词模板：templates.py, strategies.py
 ├── storage/     # 存储：file_backend.py(JSON), index.py
 ├── cli/         # CLI命令：main.py, parse.py, generate.py, display.py
@@ -69,4 +71,4 @@ src/mathforge/
 - `Raw Data/` 和 `data/` 不纳入版本控制，包含原始教材和运行时生成数据
 - `.env` 包含 API Key，绝不提交
 - LLM 后端通过 `llm/backends/` 下的适配器实现，新增后端只需实现统一接口
-- Pipeline 各处理器独立，通过 CLI 命令组合调用
+- Pipeline 统一入口为 `mathforge parse run`，所有格式通过 LLM 推断 FormatSpec 后确定性提取

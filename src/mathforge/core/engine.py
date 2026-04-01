@@ -226,3 +226,55 @@ class GenerationEngine:
 
         logger.info("batch_done", success=len(results), total=count)
         return results
+
+    # ── 流水线并行模式 ───────────────────────────────────
+
+    async def generate_pipelined(
+        self, request: GenerationRequest,
+    ) -> GeneratedQuestion | None:
+        """流水线并行模式: 生成/求解/验证/标注 阶段级并行
+
+        相比 generate()，各阶段不等待全部候选完成再推进，
+        而是一生成就求解、一求解就验证，提高吞吐量。
+        """
+        from mathforge.core.pipeline_orchestrator import PipelineOrchestrator
+
+        logger.info(
+            "pipeline_generation_start",
+            subject=request.subject.value,
+            topics=request.topics,
+            difficulty=request.difficulty_target,
+            strategy=request.strategy.value,
+        )
+
+        context = self.retriever.build_context(request)
+        total = self.max_rounds * self.candidates_per_round
+
+        orchestrator = PipelineOrchestrator(
+            generator=self.generator,
+            solver=self.solver,
+            verifier=self.verifier,
+            annotator=self.annotator,
+            queue_size=self.candidates_per_round * 2,
+        )
+
+        result = await orchestrator.run_first_success(
+            request=request,
+            context=context,
+            total_candidates=total,
+            base_temperature=self.generator.llm.config.temperature,
+        )
+
+        if result:
+            result.generation_meta = {
+                "mode": "pipelined",
+                "strategy": request.strategy.value,
+                "context_kps": len(context.knowledge_points),
+                "context_refs": len(context.reference_questions),
+            }
+            score = result.difficulty_score.overall
+            logger.info("pipeline_generation_success", difficulty_ai=score)
+        else:
+            logger.warning("pipeline_generation_exhausted", total_candidates=total)
+
+        return result

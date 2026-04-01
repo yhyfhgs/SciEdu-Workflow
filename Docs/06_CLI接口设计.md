@@ -1,6 +1,6 @@
 # CLI 接口设计
 
-> 版本: v2.0 | 日期: 2026-03-31
+> 版本: v3.0 | 日期: 2026-04-01
 
 ## 1. 框架
 
@@ -14,14 +14,8 @@ Typer (Click 兼容，基于类型注解) + Rich 终端输出。入口: `mathfor
 
 ```
 mathforge
-├── parse                    # 数据导入
-│   ├── tex                  # TeX 真题文件
-│   ├── md                   # MD 讲义/教材
-│   ├── pdf                  # PDF 文件
-│   ├── docx                 # Word 文件
-│   ├── pptx                 # PowerPoint 文件
-│   ├── csv                  # CSV 题目文件
-│   └── auto                 # 自动检测格式（通用 Pipeline，自动识别学科）
+├── parse                    # 数据导入（统一流水线）
+│   └── run <path>           # 统一 Pipeline 处理（自动检测格式）
 │
 ├── kb                       # 知识库管理
 │   ├── list                 # 列出知识点（--subject, --level 过滤）
@@ -63,13 +57,7 @@ mathforge
 
 | 命令 | 关键参数 | 说明 |
 |------|---------|------|
-| `parse tex <path>` | `-o`, `--auto-tag`, `--dry-run` | 解析 TeX 真题 |
-| `parse md <path>` | `-t` (lecture/textbook), `--repair/--no-repair`, `-o` | 解析 MD |
-| `parse pdf <path>` | `--batch-size`, `--use-multimodal`, `-o` | 解析 PDF |
-| `parse docx <path>` | `-o` | 解析 DOCX |
-| `parse pptx <path>` | `--use-multimodal`, `-o` | 解析 PPTX |
-| `parse csv <path>` | `--format` (flat/latex/structured), `-o` | 解析 CSV |
-| `parse auto <path>` | `--use-multimodal`, `-o` | 自动检测格式 |
+| `parse run <path>` | `-o`, `--dry-run`, `--skip-llm`, `--resume/--no-resume`, `--backend` (PDF), `--llm-provider`, `--llm-model`, `--llm-config` | 统一 Pipeline 处理任意格式 |
 
 ### 3.2 generate 命令组
 
@@ -100,11 +88,11 @@ mathforge
 ```bash
 # === MVP: 大学数学 ===
 
-# 解析全部 TeX（自动识别为大学数学）
-mathforge parse tex "Raw Data/新领军真题整理/"
+# 统一 Pipeline 解析（自动检测格式）
+mathforge parse run "Raw Data/新领军真题整理/"
 
-# 自动检测格式并解析
-mathforge parse auto "Raw Data/抽代教材PPT习题/" --use-multimodal
+# 解析 PDF（指定后端）
+mathforge parse run "Raw Data/抽代教材PPT习题/" --backend pymupdf
 
 # 自由生成（大学数学，默认学段）
 mathforge generate free -s 数学分析 -t 数列极限 -d 5 --type proof
@@ -122,7 +110,7 @@ mathforge generate free -s 数学分析 -t 极限 -d 5 \
 # === Post-MVP: 多学科 ===
 
 # 解析物理教材
-mathforge parse auto "教材/大学物理.pdf" --use-multimodal
+mathforge parse run "教材/大学物理.pdf"
 
 # 生成高中数学题目
 mathforge generate free -s 函数 --level high_school -d 4 --type choice -n 5

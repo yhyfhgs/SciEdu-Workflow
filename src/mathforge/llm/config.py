@@ -18,6 +18,20 @@ class LLMProvider(StrEnum):
     OPENAI_COMPATIBLE = "openai_compatible"
 
 
+class TaskLLMConfig(BaseModel):
+    """单个任务的 LLM 覆写配置，None 字段继承全局默认"""
+
+    provider: LLMProvider | None = None
+    model: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    reasoning_effort: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    timeout: int | None = None
+    max_retries: int | None = None
+
+
 class LLMConfig(BaseModel):
     """LLM 调用配置，支持任务预设和多级覆写"""
 
@@ -52,6 +66,30 @@ class LLMConfig(BaseModel):
             "temperature": 0.0,
             "max_tokens": 4096,
         },
+        "split": {
+            "temperature": 0.2,
+            "max_tokens": 4096,
+        },
+        "process_item": {
+            "temperature": 0.1,
+            "max_tokens": 4096,
+        },
+        "infer_relations": {
+            "temperature": 0.3,
+            "max_tokens": 2048,
+        },
+        "solve_deep": {
+            "temperature": 0.0,
+            "max_tokens": 16384,
+        },
+        "improve": {
+            "temperature": 0.3,
+            "max_tokens": 4096,
+        },
+        "numerical_verify": {
+            "temperature": 0.0,
+            "max_tokens": 2048,
+        },
     }
 
     @classmethod
@@ -65,12 +103,19 @@ class LLMConfig(BaseModel):
     def from_app_config(cls, app: AppConfig, task: str = "generate", **overrides) -> LLMConfig:
         """从 AppConfig 构建，桥接环境变量与任务预设
 
-        优先级: CLI overrides > 任务预设(temperature/max_tokens) > AppConfig/env
+        优先级: CLI overrides > per-task 覆写 > 任务预设(temperature/max_tokens) > AppConfig/env
         """
         preset = cls.PRESETS.get(task, cls.PRESETS["generate"])
 
-        # 解析 provider
-        provider = LLMProvider(overrides.get("provider") or app.llm_provider)
+        # 获取 per-task 覆写（来自 TOML 文件或 MATHFORGE_TASK_* 环境变量）
+        task_ovr = app.task_llm.get(task)
+
+        # 解析 provider（优先级：CLI > task_override > global）
+        provider = LLMProvider(
+            overrides.get("provider")
+            or (task_ovr.provider if task_ovr and task_ovr.provider else None)
+            or app.llm_provider
+        )
 
         # 按 provider 选择 API key
         api_key_map = {
@@ -80,15 +125,27 @@ class LLMConfig(BaseModel):
             LLMProvider.OPENAI_COMPATIBLE: app.openai_api_key,
         }
 
-        base = {
+        base: dict = {
             "provider": provider,
-            "model": app.llm_model,
+            "model": (task_ovr.model if task_ovr and task_ovr.model else None) or app.llm_model,
             "temperature": preset.get("temperature", app.llm_temperature),
             "max_tokens": preset.get("max_tokens", app.llm_max_tokens),
-            "api_key": api_key_map.get(provider),
-            "base_url": app.llm_base_url,
-            "reasoning_effort": app.llm_reasoning_effort,
+            "api_key": (task_ovr.api_key if task_ovr and task_ovr.api_key else None)
+            or api_key_map.get(provider),
+            "base_url": (task_ovr.base_url if task_ovr and task_ovr.base_url else None)
+            or app.llm_base_url,
+            "reasoning_effort": (
+                task_ovr.reasoning_effort if task_ovr and task_ovr.reasoning_effort else None
+            )
+            or app.llm_reasoning_effort,
         }
+
+        # task_override 中的 temperature/max_tokens/timeout/max_retries 覆盖 preset
+        if task_ovr:
+            for fld in ("temperature", "max_tokens", "timeout", "max_retries"):
+                val = getattr(task_ovr, fld, None)
+                if val is not None:
+                    base[fld] = val
 
         # CLI overrides 优先级最高
         base.update({k: v for k, v in overrides.items() if v is not None})

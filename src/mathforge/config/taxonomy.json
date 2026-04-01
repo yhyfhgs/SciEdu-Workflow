@@ -1,0 +1,151 @@
+{
+  "math": {
+    "analysis": {
+      "_label": "数学分析",
+      "limits": {
+        "_label": "极限理论",
+        "sequence_limits": ["squeeze_theorem", "monotone_convergence", "cauchy_criterion", "subsequence", "bolzano_weierstrass"],
+        "function_limits": ["epsilon_delta", "lhopital", "asymptotic", "one_sided_limits"],
+        "series_convergence": ["positive_series", "alternating_series", "power_series", "uniform_convergence", "absolute_convergence"]
+      },
+      "continuity": {
+        "_label": "连续性",
+        "pointwise": ["continuity_definition", "discontinuity_classification"],
+        "uniform_continuity": ["cantor_theorem", "heine_theorem"],
+        "intermediate_value": ["intermediate_value_theorem", "darboux_property"]
+      },
+      "differentiation": {
+        "_label": "微分学",
+        "derivatives": ["definition", "rules", "higher_order"],
+        "mean_value_theorems": ["rolle", "lagrange", "cauchy_mvt"],
+        "taylor_expansion": ["taylor_formula", "remainder_estimates"],
+        "extrema": ["local_extrema", "global_extrema", "convexity"]
+      },
+      "integration": {
+        "_label": "积分学",
+        "riemann_integral": ["definition", "integrability_conditions", "properties"],
+        "techniques": ["substitution", "integration_by_parts", "partial_fractions"],
+        "improper_integral": ["infinite_interval", "unbounded_integrand"],
+        "applications": ["area", "volume", "arc_length"]
+      },
+      "multivariable": {
+        "_label": "多元分析",
+        "partial_derivatives": ["directional_derivative", "differentiability", "chain_rule"],
+        "multiple_integrals": ["double_integral", "triple_integral", "change_of_variables"],
+        "line_surface_integrals": ["line_integral", "surface_integral", "green_theorem", "stokes_theorem", "gauss_theorem"],
+        "implicit_function": ["implicit_function_theorem", "inverse_function_theorem"]
+      },
+      "topology_basics": {
+        "_label": "拓扑基础",
+        "open_closed_sets": ["open_set", "closed_set", "boundary"],
+        "compactness": ["heine_borel", "sequential_compactness"],
+        "connectedness": ["connected_set", "path_connected"]
+      },
+      "measure_theory": {
+        "_label": "测度论基础",
+        "lebesgue_measure": [],
+        "measurable_functions": [],
+        "lebesgue_integral": []
+      }
+    },
+    "algebra": {
+      "_label": "高等代数",
+      "linear_spaces": {
+        "_label": "线性空间",
+        "basis_dimension": ["basis", "dimension", "coordinates"],
+        "subspaces": ["subspace_definition", "sum_intersection"],
+        "direct_sum": ["direct_sum_decomposition"]
+      },
+      "linear_equations": {
+        "_label": "线性方程组",
+        "gaussian_elimination": ["row_echelon", "reduced_row_echelon"],
+        "solution_structure": ["homogeneous", "non_homogeneous", "fundamental_system"]
+      },
+      "matrices": {
+        "_label": "矩阵",
+        "operations": ["multiplication", "transpose", "inverse"],
+        "rank": ["rank_definition", "rank_computation"],
+        "decomposition": ["lu", "qr", "svd"]
+      },
+      "determinants": {
+        "_label": "行列式",
+        "properties": ["multilinearity", "cofactor_expansion"],
+        "computation": ["laplace_expansion", "vandermonde"]
+      },
+      "eigenvalues": {
+        "_label": "特征值理论",
+        "characteristic_polynomial": ["eigenvalue", "eigenvector"],
+        "diagonalization": ["diagonalizability", "similar_matrices"],
+        "jordan_form": ["jordan_block", "minimal_polynomial"]
+      },
+      "inner_product": {
+        "_label": "内积空间",
+        "orthogonality": ["gram_schmidt", "orthogonal_complement"],
+        "quadratic_forms": ["positive_definite", "congruence", "inertia_index"]
+      },
+      "linear_maps": {
+        "_label": "线性映射",
+        "kernel_image": ["kernel", "image", "rank_nullity"],
+        "isomorphism": ["isomorphism_theorem"]
+      }
+    },
+    "abstract_algebra": {
+      "_label": "抽象代数",
+      "groups": {
+        "_label": "群论",
+        "basic_concepts": ["group_definition", "order", "cyclic_group"],
+        "subgroups": ["subgroup_criterion", "coset", "lagrange_theorem"],
+        "normal_subgroups": ["normal_subgroup", "quotient_group"],
+        "homomorphisms": ["homomorphism", "isomorphism_theorems", "kernel"],
+        "group_actions": ["orbit", "stabilizer", "burnside_lemma"],
+        "sylow_theorems": ["sylow_p_subgroup", "sylow_theorems"]
+      },
+      "rings": {
+        "_label": "环论",
+        "ideals": ["ideal_definition", "principal_ideal", "maximal_ideal", "prime_ideal"],
+        "polynomial_rings": ["polynomial_ring", "irreducibility"],
+        "factorization": ["ufd", "pid", "euclidean_domain"]
+      },
+      "fields": {
+        "_label": "域论",
+        "extensions": ["algebraic_extension", "degree"],
+        "galois_theory": ["galois_group", "galois_correspondence"]
+      }
+    },
+    "combinatorics": {
+      "_label": "组合数学",
+      "counting": {
+        "_label": "计数",
+        "basic": ["permutation", "combination", "binomial_coefficient"],
+        "advanced": ["inclusion_exclusion", "generating_function", "pigeonhole"]
+      },
+      "graph_theory": {
+        "_label": "图论",
+        "basic": ["graph", "tree", "euler_path"]
+      },
+      "number_theory": {
+        "_label": "数论",
+        "divisibility": ["gcd", "lcm", "prime_factorization"],
+        "congruences": ["modular_arithmetic", "chinese_remainder"],
+        "diophantine": ["linear_diophantine", "pell_equation"]
+      }
+    },
+    "complex_analysis": {
+      "_label": "复分析",
+      "holomorphic": {
+        "_label": "全纯函数",
+        "cauchy_riemann": ["cauchy_riemann_equations"],
+        "analytic_functions": ["power_series_representation"]
+      },
+      "residue_theory": {
+        "_label": "留数理论",
+        "residue_theorem": ["residue_computation"],
+        "applications": ["integral_computation", "rouche_theorem"]
+      },
+      "conformal_mapping": {
+        "_label": "保角映射",
+        "mobius": ["mobius_transformation"]
+      }
+    }
+  }
+}
