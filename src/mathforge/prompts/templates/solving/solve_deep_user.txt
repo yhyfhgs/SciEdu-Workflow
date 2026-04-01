@@ -1,0 +1,27 @@
+请对以下数学题给出完整、详细的解答。如果遇到复杂计算或需要验证中间结果，请调用计算工具辅助。
+
+---
+
+# 题目
+
+{question_latex}
+
+---
+
+# 可参考的知识点
+
+{knowledge_context}
+
+---
+
+# 输出要求
+
+完成解答后，请输出以下 JSON（**不要**使用 markdown 代码块包裹）：
+
+{{
+  "solution_latex": "完整的分步解答（LaTeX 格式），包含所有推导过程",
+  "methods_used": ["所用定理/方法1", "所用定理/方法2"],
+  "step_count": 5,
+  "self_check": "自检说明：是否用到所有条件、结论是否一致、数值是否验证",
+  "confidence": "high 或 medium 或 low"
+}}

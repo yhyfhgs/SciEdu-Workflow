@@ -1,68 +1,14 @@
-"""八种变式策略指令"""
+"""八种变式策略指令 — 从 .txt 文件加载"""
+
+from mathforge.prompts.loader import load_prompt
 
 STRATEGY_INSTRUCTIONS: dict[str, str] = {
-    "A1_parameter_shift": """
-## 策略: 参数替换 (Parameter Shift)
-保持源题的数学结构和解题方法不变，替换其中的具体数值、函数、空间实例等。
-替换后必须验证: 新参数下题目仍有意义，解法本质相同，答案可计算。
-新题难度应与源题相近 (±1)。
-""",
-    "A2_method_shift": """
-## 策略: 方法迁移 (Method Shift)
-围绕源题的同一核心知识点，设计一道需要不同解法入口的新题。
-例: 源题用 ε-δ 证明极限 → 新题用夹逼/单调有界; 源题用行列式 → 新题用秩.
-关键: 同一知识域，不同技术路径。
-""",
-    "A3_type_shift": """
-## 策略: 题型转换 (Type Shift)
-将源题做本质题型转换:
-- 计算 → 证明: "求极限值" → "证明极限存在"
-- 求解 → 判断: "求特征值" → "判断是否可对角化并证明"
-- 证明 → 构造: "证明存在..." → "构造一个满足...的例子"
-- 正向 → 反例: "条件A则结论B" → "构造满足A但不满足B'的反例"
-题型转换通常改变难度，请根据目标难度调整。
-""",
-    "A4_escalate": """
-## 策略: 升阶 (Escalate)
-在源题基础上增加数学深度:
-- 特殊→一般: ℝⁿ → 赋范空间, 有限群 → 一般群
-- 增加嵌套/条件层数
-- 削弱假设看能得到什么
-- 要求更强结论: 点态 → 一致
-新题难度应比源题高 2-3 级。确保升阶后仍可解。
-""",
-    "A5_simplify": """
-## 策略: 降阶 (Simplify)
-将源题降低抽象层次或减少步骤:
-- 一般→特殊: 一般空间 → ℝⁿ 具体情形
-- 添加辅助条件 (连续、有界、单调等)
-- 拆成引导式 (a)(b)(c) 小问
-新题难度应比源题低 2-3 级。简化后仍保留核心考查点。
-""",
-    "A6_reverse": """
-## 策略: 逆向 (Reverse)
-将源题的因果/已知-未知关系反转:
-- 正向计算 → 反向求参数
-- 存在性 → 唯一性
-- 充分条件 → 必要条件
-- 给结论求条件
-验证逆向后问题是否良好定义。
-""",
-    "B1_topic_generation": """
-## 策略: 专题自由生成 (Topic Generation)
-围绕指定专题自由设计一道原创题。
-设计原则:
-1. 锚定核心知识点 (从上下文中选取)
-2. 确定解题关键方法
-3. 不掌握知识点→无法下手，掌握→路径清晰
-4. 避免过于技巧性——考查理解深度，非套路记忆
-灵感来源: 两定理交汇处、定理边界情况、抽象定理实例化。
-""",
-    "B2_cross_topic": """
-## 策略: 交叉综合 (Cross-Topic)
-融合多个专题设计综合题。
-选取 2-3 个不同专题的知识点，设计需要串联它们的问题。
-解题路径应自然——数学上确实存在联系，非人为拼凑。
-综合题难度通常 ≥6。确保有挑战但路径可发现。
-""",
+    "A1_parameter_shift": load_prompt("strategies/A1_parameter_shift.txt"),
+    "A2_method_shift": load_prompt("strategies/A2_method_shift.txt"),
+    "A3_type_shift": load_prompt("strategies/A3_type_shift.txt"),
+    "A4_escalate": load_prompt("strategies/A4_escalate.txt"),
+    "A5_simplify": load_prompt("strategies/A5_simplify.txt"),
+    "A6_reverse": load_prompt("strategies/A6_reverse.txt"),
+    "B1_topic_generation": load_prompt("strategies/B1_topic_generation.txt"),
+    "B2_cross_topic": load_prompt("strategies/B2_cross_topic.txt"),
 }

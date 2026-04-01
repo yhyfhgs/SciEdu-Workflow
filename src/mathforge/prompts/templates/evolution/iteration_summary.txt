@@ -1,0 +1,13 @@
+## 迭代 {round_num} 总结
+
+### 已尝试的候选 ({total_candidates} 个)
+
+{candidate_summaries}
+
+### 模式分析
+- 通过率: {pass_rate}
+- 主要失败原因: {top_failure_reasons}
+- 改进效果: {improvement_notes}
+
+### 下一步建议
+{next_step_suggestions}

@@ -55,7 +55,7 @@ class AppConfig(BaseSettings):
     llm_provider: str = "anthropic"
     llm_model: str = "claude-sonnet-4-20250514"
     llm_temperature: float = 0.7
-    llm_max_tokens: int = 4096
+    llm_max_tokens: int = 16384
     llm_base_url: str | None = None
     llm_reasoning_effort: str | None = None
 

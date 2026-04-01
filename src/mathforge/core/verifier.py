@@ -213,7 +213,7 @@ class VerificationPipeline:
             return False
         prompt = SOLUTION_RELEVANCE_PROMPT.format(
             question_latex=candidate.content_latex,
-            solution_latex=solution.solution_latex[:1500],
+            solution_latex=solution.solution_latex,
         )
         try:
             result = await self.review_llm.generate_json(prompt=prompt, temperature=0.0)
@@ -230,7 +230,7 @@ class VerificationPipeline:
             return False
         prompt = SOLUTION_RELEVANCE_PROMPT.format(
             question_latex=candidate.content_latex,
-            solution_latex=solution.solution_latex[:1500],
+            solution_latex=solution.solution_latex,
         )
         try:
             result = self.review_llm.generate_json_sync(prompt=prompt, temperature=0.0)
@@ -247,7 +247,7 @@ class VerificationPipeline:
         """LLM 生成验证代码 + 沙箱执行 (async)"""
         prompt = GENERATE_NUMERICAL_TEST_PROMPT.format(
             question_latex=candidate.content_latex,
-            solution_sketch=solution.solution_latex[:500],
+            solution_sketch=solution.solution_latex,
         )
         try:
             result = await self.review_llm.generate_json(prompt=prompt, temperature=0.0)
@@ -265,7 +265,7 @@ class VerificationPipeline:
         """LLM 生成验证代码 + 沙箱执行 (sync)"""
         prompt = GENERATE_NUMERICAL_TEST_PROMPT.format(
             question_latex=candidate.content_latex,
-            solution_sketch=solution.solution_latex[:500],
+            solution_sketch=solution.solution_latex,
         )
         try:
             result = self.review_llm.generate_json_sync(prompt=prompt, temperature=0.0)

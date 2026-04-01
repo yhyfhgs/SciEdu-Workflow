@@ -214,7 +214,7 @@ class SolveEngine:
     @staticmethod
     def _build_prompt(question: Question, context: ContextBundle) -> str:
         kp_context = "\n".join(
-            f"- {kp.title}: {kp.content_latex[:200]}"
+            f"- {kp.title}: {kp.content_latex}"
             for kp in context.knowledge_points[:5]
         )
         if not kp_context:
@@ -228,7 +228,7 @@ class SolveEngine:
     @staticmethod
     def _format_kp_context(context: ContextBundle) -> str:
         kp_context = "\n".join(
-            f"- {kp.title}: {kp.content_latex[:200]}"
+            f"- {kp.title}: {kp.content_latex}"
             for kp in context.knowledge_points[:5]
         )
         return kp_context if kp_context else "（无可参考知识点）"

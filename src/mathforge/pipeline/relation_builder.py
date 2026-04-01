@@ -201,7 +201,7 @@ class RelationBuilder:
         lines: list[str] = []
         for item in items:
             cat = item.item_category
-            content_preview = (item.content_plain or item.content_latex)[:100]
+            content_preview = item.content_plain or item.content_latex
             lines.append(
                 f"[{item.item_id}] {cat}: {item.title}\n"
                 f"  内容: {content_preview}..."

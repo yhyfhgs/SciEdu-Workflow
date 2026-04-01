@@ -483,7 +483,7 @@ class EvolutionEngine:
             solver_feedback = ""
             if candidate.solution:
                 solver_feedback = (
-                    f"解答内容: {candidate.solution.solution_latex[:300]}\n"
+                    f"解答内容: {candidate.solution.solution_latex}\n"
                     f"使用方法: {', '.join(candidate.solution.methods_used)}"
                 )
             return IMPROVE_FROM_SOLVER_PROMPT.format(

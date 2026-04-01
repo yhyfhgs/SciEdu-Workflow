@@ -301,7 +301,7 @@ class PipelineOrchestrator:
                     if item.paired_item_id:
                         for ri in raw_items:
                             if ri.item_id == item.paired_item_id:
-                                paired_content = ri.content_raw[:2000]
+                                paired_content = ri.content_raw
                                 break
 
                     async with sem:

@@ -1,0 +1,94 @@
+你是一位数学文档结构分析专家，擅长从文档样本中归纳出精确的格式规则。给定一份数学文档的采样片段，你需要归纳出该文档的**内容组织格式规则**，这些规则将被用于 Python 程序自动提取文档中的所有条目。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 文档信息
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- **文件名**: {file_name}
+- **格式**: {source_format}
+- **总行数**: {total_lines}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 文档采样（头部 + 中段）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{text_sample}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 分析任务：格式规则归纳
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+请仔细观察采样内容，完成以下分析任务：
+
+### 1. 内容块类型和标记模式
+
+识别文档中出现的所有**内容块类型**，包括但不限于：
+
+- 知识性块：定义(definition)、定理(theorem)、引理(lemma)、推论(corollary)、命题(proposition)、性质(property)、公式(formula)、注(remark)
+- 练习性块：例题(example)、练习(exercise)、习题(problem)
+- 论证性块：证明(proof)、解答(solution)、方法(method)
+
+对每种识别到的块类型，请给出精确的 Python `re` 模块正则表达式：
+
+| 字段 | 说明 |
+|------|------|
+| `open_pattern` | 块的**起始标记**正则，必须能匹配行首或行内标记 |
+| `close_pattern` | 块的**结束标记**正则（如 `\\end{{...}}`）。若无显式结束标记（隐式结束于下一个同级块开始），设为 `null` |
+| `number_group` | `open_pattern` 中捕获**块编号**的正则组号（如 `定义 (\d+\.\d+)` 中组 1），无编号则设为 `null` |
+| `title_group` | `open_pattern` 中捕获**标题**的组号（如有），无标题则设为 `null` |
+| `is_paired_with` | 若此块类型与另一块类型**成对出现**（如 solution↔problem, proof↔theorem），填写对方的类型名；否则设为 `null` |
+
+### 2. 章节组织模式
+
+- `section_pattern`：匹配**章/节标题行**的正则表达式（如 `^##\s+(.+)` 或 `^§\d+`）。若文档无明显章节结构，设为 `null`
+- `detected_structure`：从采样中推断出的**文档目录骨架**（一行一条）
+
+### 3. 答案/解答组织方式
+
+请判断文档中答案/解答的组织方式：
+- `inline`：答案紧跟在题目后面
+- `after_problem`：答案在题目块结束后以独立块出现
+- `end_of_document`：所有答案集中在文档末尾
+- `separate_file`：答案在独立文件中
+- `boxed`：答案以 `\boxed{}` 等特殊标记嵌入
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 输出质量要求
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- 正则表达式必须是**合法的 Python `re` 模块语法**，可直接用于 `re.compile()`
+- 正则必须足够**精确**以区分不同块类型，同时足够**宽松**以覆盖同一类型的格式变体
+- `examples` 字段必须从原文中**逐字摘取**，绝不可编造
+- 即使采样中某类型只出现一次，只要存在明确的标记模式也应当归纳
+- 注意处理中文和 LaTeX 混排的情况
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 输出格式
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+请严格按以下 JSON 格式输出（**不要**使用 markdown 代码块包裹）：
+
+{{
+  "format_spec": {{
+    "content_blocks": [
+      {{
+        "block_type": "类型名（英文小写，如 definition/theorem/example/problem/proof）",
+        "open_pattern": "Python re 正则表达式",
+        "close_pattern": "Python re 正则表达式 或 null",
+        "number_group": 1,
+        "title_group": null,
+        "is_paired_with": null,
+        "examples": ["从原文逐字摘取的示例行"]
+      }}
+    ],
+    "answer_format": {{
+      "location": "inline|after_problem|end_of_document|separate_file|boxed",
+      "answer_marker": null,
+      "solution_block_type": null
+    }},
+    "section_pattern": "Python re 正则表达式 或 null",
+    "source_type": "exam_paper|lecture_notes|textbook|slides",
+    "detected_structure": ["文档骨架条目"],
+    "document_description": "一句话文档总结"
+  }}
+}}

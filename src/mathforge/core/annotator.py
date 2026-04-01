@@ -39,7 +39,7 @@ class DifficultyAnnotator:
 
     @staticmethod
     def _build_prompt(question: Question, solution: Solution) -> str:
-        sketch = solution.solution_latex[:300] if solution.solution_latex else "无解答"
+        sketch = solution.solution_latex if solution.solution_latex else "无解答"
         return DIFFICULTY_SCORING_PROMPT.format(
             question_latex=question.content_latex,
             solution_sketch=sketch,

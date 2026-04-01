@@ -116,7 +116,7 @@ class ItemProcessor:
         # ── 构建 paired content section ──
         paired_section = ""
         if paired_content:
-            paired_section = f"**配对内容（解答/证明）**:\n\n{paired_content[:2000]}"
+            paired_section = f"**配对内容（解答/证明）**:\n\n{paired_content}"
 
         # ── LLM 调用 ──
         prompt = ITEM_CORRECT_AND_TAG_PROMPT.format(
@@ -175,7 +175,7 @@ class ItemProcessor:
 
         paired_section = ""
         if paired_content:
-            paired_section = f"**配对内容（解答/证明）**:\n\n{paired_content[:2000]}"
+            paired_section = f"**配对内容（解答/证明）**:\n\n{paired_content}"
 
         prompt = ITEM_CORRECT_AND_TAG_PROMPT.format(
             block_type=item.block_type,

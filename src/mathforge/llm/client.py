@@ -410,8 +410,8 @@ class LLMClient:
                 "prompt_length": len(prompt),
                 "response_length": len(response),
                 "latency_ms": latency_ms,
-                "prompt": prompt[:5000],
-                "response": response[:5000],
+                "prompt": prompt,
+                "response": response,
             }
 
             log_file = log_path / "llm_calls.jsonl"

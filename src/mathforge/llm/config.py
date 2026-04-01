@@ -38,7 +38,7 @@ class LLMConfig(BaseModel):
     provider: LLMProvider = LLMProvider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
     temperature: float = Field(ge=0.0, le=2.0, default=0.7)
-    max_tokens: int = Field(ge=1, le=65536, default=4096)
+    max_tokens: int = Field(ge=1, le=65536, default=16384)
     api_key: str | None = None
     base_url: str | None = None
     reasoning_effort: str | None = None
@@ -48,47 +48,47 @@ class LLMConfig(BaseModel):
     PRESETS: ClassVar[dict[str, dict]] = {
         "generate": {
             "temperature": 0.7,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
         },
         "solve": {
             "temperature": 0.0,
-            "max_tokens": 8192,
+            "max_tokens": 16384,
         },
         "review": {
             "temperature": 0.0,
-            "max_tokens": 2048,
+            "max_tokens": 8192,
         },
         "tag": {
             "temperature": 0.0,
-            "max_tokens": 1024,
+            "max_tokens": 4096,
         },
         "repair": {
             "temperature": 0.0,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
         },
         "split": {
             "temperature": 0.2,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
         },
         "process_item": {
             "temperature": 0.1,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
         },
         "infer_relations": {
             "temperature": 0.3,
-            "max_tokens": 2048,
+            "max_tokens": 8192,
         },
         "solve_deep": {
             "temperature": 0.0,
-            "max_tokens": 16384,
+            "max_tokens": 32768,
         },
         "improve": {
             "temperature": 0.3,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
         },
         "numerical_verify": {
             "temperature": 0.0,
-            "max_tokens": 2048,
+            "max_tokens": 8192,
         },
     }
 
