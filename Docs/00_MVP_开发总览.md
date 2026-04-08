@@ -41,8 +41,8 @@ MVP 以 CLI 工具形式交付三项核心能力，聚焦**大学数学**场景�
 
 ### 存储方案
 
-- MVP: JSON 文件存储
-- 生产过渡: SQLite + sqlite-vec（轻量级，嵌入式，零运维）
+- MVP: JSON 文件存储 + SQLite（FTS5 全文检索，通过 `--db` 参数切换）
+- 生产扩展: sqlite-vec 向量索引（语义检索）
 
 ---
 
@@ -98,11 +98,14 @@ MVP 以 CLI 工具形式交付三项核心能力，聚焦**大学数学**场景�
 
 ### Phase 5: SQLite 迁移与 FastAPI 服务 (Week 5-7)
 
-- SQLite + sqlite-vec 数据库迁移（含多学科/多学段数据模型）
-- Embedding 生成 + 向量索引
-- FastAPI REST API（Questions / Knowledge / Generate / Subject）
-- asyncio 内置异步任务管理
-- Docker 开发环境（仅 api + frontend 两个服务）
+- ✅ SQLite 存储后端 + FTS5 全文检索（`sqlite_backend.py`, `schema.sql`）
+- ✅ StorageBackend Protocol 抽象（`protocol.py`）
+- ✅ JSON → SQLite 迁移工具（`migrate.py`, CLI `migrate-db` 命令）
+- ✅ CLI `--db` 参数切换存储后端、`db-stats` 统计命令
+- 🔲 sqlite-vec 向量索引 + Embedding 生成
+- 🔲 FastAPI REST API（Questions / Knowledge / Generate / Subject）
+- 🔲 asyncio 内置异步任务管理
+- 🔲 Docker 开发环境
 
 **交付物**: API 服务可运行，CLI 和 API 共存，多学科数据模型就绪
 

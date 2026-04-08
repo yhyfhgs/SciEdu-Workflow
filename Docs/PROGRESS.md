@@ -1,6 +1,6 @@
 # MathForge 开发进度总览
 
-> 更新日期: 2026-04-01 | 代码总量: ~10,400 LOC (Python) + ~1,455 行 prompt 模板
+> 更新日期: 2026-04-08 | 代码总量: ~13,350 LOC (Python+SQL) + ~1,455 行 prompt 模板
 
 ---
 
@@ -13,36 +13,44 @@
 | Phase 2: MD 解析与知识库 | ✅ 完成 | 已合并入统一 Pipeline |
 | Phase 3: LLM 客户端与生成引擎 | ✅ 完成 | 多 Provider 客户端 + 5 阶段闭环引擎 |
 | Phase 4: 通用 Pipeline 与集成 | ✅ 完成 | 统一 `parse run` 入口，支持 TeX/MD/PDF/DOCX/CSV |
-| Phase 5+: Post-MVP | 🔲 未开始 | SQLite 迁移、FastAPI、Web 前端等 |
+| Phase 5: SQLite + FastAPI | 🔶 部分完成 | SQLite 后端 + FTS5 + 迁移已实现；FastAPI / Embedding 未开始 |
+| Phase 6+: Post-MVP | 🔲 未开始 | Agent 编排、文档生成、Web 前端等 |
 
 ---
 
 ## 2. 模块实现明细
 
-### 2.1 数据处理 Pipeline (`src/mathforge/pipeline/` — 3,705 LOC)
+### 2.1 数据处理 Pipeline (`src/mathforge/pipeline/` — 5,600 LOC)
 
 | 文件 | 行数 | 职责 | 状态 | 是否调用 LLM |
 |------|------|------|------|-------------|
-| `orchestrator.py` | 457 | 总编排：3 个异步 Task + Queue 流式传递 | ✅ | 间接 |
-| `block_splitter.py` | 470 | Stage 1: FormatSpec 推断 + 文档拆分 | ✅ | ✅ 推断 FormatSpec |
-| `meta_extractor.py` | 265 | Stage 2A: 按 FormatSpec 确定性提取 RawItem | ✅ | ❌ 纯正则 |
-| `agents/item_processor.py` | 407 | Stage 2B: OCR 修复 + LLM 校准 + 分类标注 | ✅ | ✅ 校准+分类 |
-| `item_unifier.py` | 241 | Stage 2C: RawItem → UnifiedItem 类型映射 | ✅ | ❌ 纯逻辑 |
-| `entity_builder.py` | 198 | Stage 3: UnifiedItem → KnowledgePoint/Question | ✅ | ❌ 纯逻辑 |
-| `relation_builder.py` | 252 | Stage 4: 结构关系 + LLM 语义关系 | ✅ | ✅ 语义关系 |
-| `pdf_processor.py` | 298 | PDF → MD (pymupdf / pymupdf4llm) | ✅ | ❌ |
-| `docx_processor.py` | 101 | DOCX → MD (pandoc / python-docx) | ✅ | ❌ |
-| `csv_processor.py` | 164 | CSV → 结构化知识点 | ✅ | ❌ |
-| `md_parser.py` | 252 | MD 块级解析（定义/定理/引理等模式识别） | ✅ | ❌ |
-| `ocr_repair.py` | 185 | 确定性 OCR 错误修复（正则替换） | ✅ | ❌ |
-| `content_validator.py` | 243 | 内容验证（括号匹配、语义警告、悬挂引用） | ✅ | ❌ |
-| `cross_page_detector.py` | 166 | PDF 跨页内容检测与缓冲合并 | ✅ | ❌ |
+| `orchestrator.py` | 547 | 总编排：3 个异步 Task + Queue 流式传递 | ✅ | 间接 |
+| `block_splitter.py` | 608 | Stage 1: FormatSpec 推断 + 文档拆分 | ✅ | ✅ 推断 FormatSpec |
+| `meta_extractor.py` | 577 | Stage 2A: 三策略链提取 RawItem + ContentMarkers | ✅ | ❌ 纯正则 |
+| `agents/item_processor.py` | 467 | Stage 2B: OCR 修复 + LLM 校准 + 分类标注 | ✅ | ✅ 校准+分类 |
+| `item_unifier.py` | 259 | Stage 2C: RawItem → UnifiedItem 类型映射 | ✅ | ❌ 纯逻辑 |
+| `entity_builder.py` | 220 | Stage 3: UnifiedItem → KnowledgePoint/Question | ✅ | ❌ 纯逻辑 |
+| `relation_builder.py` | 359 | Stage 4: 结构关系 + LLM 语义关系 | ✅ | ✅ 语义关系 |
+| `dedup.py` | 166 | 精确 (SHA-256) + 近似 (MinHash Jaccard) 去重 | ✅ | ❌ |
+| `quality_gate.py` | 88 | 可配置质量门控 (coverage/grade/completeness) | ✅ | ❌ |
+| `metrics.py` | 127 | 全阶段指标收集与持久化 | ✅ | ❌ |
+| `sampling.py` | 208 | 自适应文档采样 (转换点检测) | ✅ | ❌ |
+| `format_spec_library.py` | 172 | FormatSpec 跨文档缓存 (精确+模糊匹配) | ✅ | ❌ |
+| `stage.py` | 74 | 泛型 Stage[In,Out] 协议 (重试+错误隔离) | ✅ | ❌ |
+| `mineru_processor.py` | 207 | MinerU PDF/DOCX 处理集成 | ✅ | ❌ |
+| `pdf_processor.py` | 294 | PDF → MD (pymupdf / pymupdf4llm) | ✅ | ❌ |
+| `docx_processor.py` | 103 | DOCX → MD (pandoc / python-docx) | ✅ | ❌ |
+| `csv_processor.py` | 162 | CSV → 结构化知识点 | ✅ | ❌ |
+| `md_parser.py` | 246 | MD 块级解析（定义/定理/引理等模式识别） | ✅ | ❌ |
+| `ocr_repair.py` | 268 | 确定性 OCR 错误修复（正则替换） | ✅ | ❌ |
+| `content_validator.py` | 278 | 内容验证（括号匹配、语义警告、悬挂引用） | ✅ | ❌ |
+| `cross_page_detector.py` | 164 | PDF 跨页内容检测与缓冲合并 | ✅ | ❌ |
 
-### 2.2 核心领域 (`src/mathforge/core/` — 3,519 LOC)
+### 2.2 核心领域 (`src/mathforge/core/` — 3,613 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
-| `models.py` | 980 | 全部 Pydantic 模型（枚举 + 数据类） | ✅ |
+| `models.py` | 1,100+ | 全部 Pydantic 模型（StrEnum + 数据类） | ✅ |
 | `engine.py` | 280 | 生成引擎编排（5 阶段闭环） | ✅ |
 | `generator.py` | 144 | 题目候选生成（free / variant） | ✅ |
 | `solver.py` | 243 | 解答求解（单轮 + 多轮 tool calling） | ✅ |
@@ -54,11 +62,11 @@
 | `sandbox.py` | 162 | Python 代码沙箱（10s 超时） | ✅ |
 | `exceptions.py` | 110 | 自定义异常体系 | ✅ |
 
-### 2.3 LLM 客户端 (`src/mathforge/llm/` — 1,188 LOC)
+### 2.3 LLM 客户端 (`src/mathforge/llm/` — 1,253 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
-| `client.py` | 422 | 统一 LLMClient 接口（async + sync） | ✅ |
+| `client.py` | 460+ | 统一 LLMClient 接口（async + sync） | ✅ |
 | `config.py` | 152 | 10 个任务预设（温度/max_tokens） | ✅ |
 | `parser.py` | 55 | LLM 响应 JSON 提取 | ✅ |
 | `tool_definitions.py` | 120 | Tool calling schema 定义 | ✅ |
@@ -79,29 +87,33 @@
 | 进化迭代 | 4 txt | ✅ | improve_from_solver/verification, evolution_system, iteration_summary |
 | 分类标注 | 1 txt | ✅ | tag_classification |
 
-### 2.5 CLI (`src/mathforge/cli/` — 839 LOC)
+### 2.5 CLI (`src/mathforge/cli/` — 898 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
 | `main.py` | 98 | Typer 入口 + 子命令注册 | ✅ |
-| `parse.py` | 137 | `parse run` — Pipeline 入口 | ✅ |
+| `parse.py` | 187 | `parse run` + `migrate-db` + `db-stats` | ✅ |
 | `generate.py` | 466 | `generate free/variant/batch/solve/evolve/solve-deep` | ✅ |
-| `display.py` | 138 | Rich 终端格式化输出 | ✅ |
+| `display.py` | 147 | Rich 终端格式化输出 | ✅ |
 
-### 2.6 存储 (`src/mathforge/storage/` — 762 LOC)
+### 2.6 存储 (`src/mathforge/storage/` — 1,598 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
-| `file_backend.py` | 192 | JSON 文件存储（questions/knowledge/solutions） | ✅ |
+| `protocol.py` | 29 | StorageBackend Protocol (runtime_checkable) | ✅ |
+| `sqlite_backend.py` | 527 | SQLite + FTS5 存储后端 (CRUD/搜索/去重/关系/统计) | ✅ |
+| `schema.sql` | 191 | 数据库 schema (表/索引/FTS5/触发器) | ✅ |
+| `migrate.py` | 82 | JSON → SQLite 迁移工具 | ✅ |
+| `file_backend.py` | 194 | JSON 文件存储 | ✅ |
+| `enhanced_index.py` | 280 | 增强索引（全文搜索、过滤、排序） | ✅ |
 | `index.py` | 75 | 基础 JSON 索引 | ✅ |
-| `enhanced_index.py` | 281 | 增强索引（全文搜索、过滤、排序） | ✅ |
-| `tag_trie.py` | 214 | 前缀树标签检索/自动补全 | ✅ |
+| `tag_trie.py` | 215 | 前缀树标签检索/自动补全 | ✅ |
 
-### 2.7 配置 (`src/mathforge/config/` — 232 LOC)
+### 2.7 配置 (`src/mathforge/config/` — 243 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
-| `settings.py` | 200 | AppConfig (pydantic-settings) | ✅ |
+| `settings.py` | 211 | AppConfig (pydantic-settings) | ✅ |
 | `logging.py` | 32 | structlog 配置 | ✅ |
 
 ### 2.8 测试 (`tests/` — 74 LOC)
@@ -120,12 +132,12 @@
 
 | 优先级 | 类别 | 说明 |
 |--------|------|------|
-| P0 | 测试 | 所有测试目录为空，需编写单元测试和集成测试 |
+| P0 | 测试 | 所有测试目录为空，需编写单元测试和集成测试 (~100 用例) |
 | P0 | 端到端验证 | 用真实数据（Raw Data/ 下的 tex/md/pdf）跑通完整 Pipeline |
 | P1 | LLM 后端 | `gemini.py` 和 `compatible.py` 仅基础实现 |
 | P1 | Prompt 调优 | Pipeline 各阶段 prompt 需基于真实数据效果持续迭代 |
-| P2 | ruff/mypy | 需确认全部代码通过 lint 和类型检查 |
-| P2 | 文档 | CLI `--help` 信息完善度检查 |
+| P2 | mypy | 需确认全部代码通过 strict 类型检查 |
+| P2 | Phase 5 剩余 | FastAPI 服务层、Embedding 向量索引 (sqlite-vec) |
 
 ---
 
@@ -133,12 +145,12 @@
 
 | 模块 | Python LOC | 其他 | 文件数 |
 |------|-----------|------|--------|
-| pipeline/ | 3,705 | — | 15 |
-| core/ | 3,519 | — | 11 |
-| llm/ | 1,188 | — | 8 |
+| pipeline/ | 5,600 | — | 23 |
+| core/ | 3,613 | — | 11 |
+| llm/ | 1,253 | — | 8 |
 | prompts/ | 140 | 1,455 行 txt | 7 py + 27 txt |
-| cli/ | 839 | — | 4 |
-| storage/ | 762 | — | 4 |
-| config/ | 232 | — | 2 |
+| cli/ | 898 | — | 4 |
+| storage/ | 1,407 | 191 行 sql | 9 |
+| config/ | 243 | — | 2 |
 | tests/ | 74 | — | 6 |
-| **合计** | **~10,459** | **1,455** | **~77** |
+| **合计** | **~13,228** | **~1,646** | **~97** |
