@@ -1,6 +1,6 @@
 # 数据处理 Pipeline
 
-> 版本: v4.0 | 日期: 2026-04-01
+> 版本: v5.0 | 日期: 2026-04-06
 
 > Pipeline 架构设计为**学科无关**——核心处理流程不假设特定学科，通过学科特定 prompt 和 taxonomy 实现多学科支持。MVP 阶段聚焦大学数学数据。
 
@@ -34,9 +34,10 @@
 > **"先统一再提取，LLM 理解格式、Python 执行提取"**
 >
 > 1. 所有非文本格式先转为 Markdown，MD/TeX 直接透传
-> 2. LLM 循环阅读全文，完成语义完整拆分的同时**学习出文档的内容组织格式（FormatSpec）**
-> 3. Python MetaExtractor 按 FormatSpec 中的规则机械提取条目——新格式接入只需 LLM 生成新 spec，Python 代码无需修改
-> 4. LLM 对每个条目进行校准修复后，统一转化为 Pydantic 继承体系中的标准化条目，完成标注和关系建立
+> 2. LLM 一次性推断文档的 FormatSpec（自适应采样 + 缓存库复用 + 验证重试），之后确定性分块
+> 3. Python MetaExtractor 按三策略链提取条目（FormatSpec regex → 启发式 → fallback），每条附加 ContentMarkers（公式/表格/图片计数）
+> 4. LLM 对每个条目校准修复（内置 1 次重试），统一转化为扁平化 UnifiedItem（KnowledgeItem/QuestionItem/ExampleItem，通过枚举判别类型，无子类继承），完成标注和关系建立
+> 5. 逐条错误隔离保证单条目失败不影响整批，质量门控拦截低质量条目，去重引擎检测跨文档重复
 
 ### 2.2 三环节流程图
 
@@ -72,20 +73,24 @@ Raw Data (PDF/DOCX/PPTX/EPUB/CSV/...)        MD/TeX 文件 (直接透传)
 │  3a. 逐条目 LLM 校准修复                           │
 │      纠正错别字、语义/逻辑错误、验证正确性            │
 │  3b. 格式转换: RawItem → UnifiedItem               │
-│      Pydantic 继承体系: KnowledgeItem / QuestionItem│
+│      扁平化 3 类: KnowledgeItem / QuestionItem / ExampleItem│
+│      通过 kp_type/question_type 枚举判别，无子类继承 │
 │  3c. 标注: Tag 系统 (从粗到细 5 层) + 分层分级       │
 │  3d. 关系建立: 条目间关联 (前置/后继/变式/关联题目)   │
 └──────────────┬────────────────────────────────────┘
                │
                ▼
 ┌───────────────────────────────────────────────────┐
-│  Entity Builder (Python)                           │
-│  UnifiedItem → KnowledgePoint | Question | ...     │
-│  分配持久化 ID，写入存储                             │
+│  Quality Gate + Dedup (Python)                     │
+│  质量门控拦截低质量条目，去重检测跨文档重复           │
 └──────────────┬────────────────────────────────────┘
                │
                ▼
-           [Storage]
+┌───────────────────────────────────────────────────┐
+│  Storage (JSON / SQLite+FTS5)                      │
+│  UnifiedItem 直接存储或 → KnowledgePoint | Question │
+│  SQLite: 全文检索、关系图、内容去重、索引查询         │
+└───────────────────────────────────────────────────┘
 ```
 
 ### 2.3 Pipeline Pydantic 模型总览
@@ -96,10 +101,11 @@ Raw Data (PDF/DOCX/PPTX/EPUB/CSV/...)        MD/TeX 文件 (直接透传)
 | 1b LLM 拆分 | `list[MdBlock]`（各含 `FormatSpec`） | content, format_spec, chapter_title |
 | 2 MetaExtractor | `list[RawItem]` | block_type, content_raw, paired_item_id |
 | 3a LLM 校准 | `list[CorrectionResult]` | corrected_content, corrections, quality |
-| 3b 统一格式化 | `list[UnifiedItemBase 子类]` | 继承体系: KnowledgeItem / QuestionItem / ExampleItem |
+| 3b 统一格式化 | `list[UnifiedItemBase]` | 扁平化 3 类: KnowledgeItem(kp_type) / QuestionItem(question_type) / ExampleItem |
 | 3c 标注 | `TagSet`（嵌入 UnifiedItem） | taxonomy, pedagogical_level, methods |
-| 3d 关系建立 | `list[ItemRelation]`（嵌入 UnifiedItem） | relation_type, target_id, confidence |
-| Builder | `list[KnowledgePoint \| Question \| Solution]` | 最终持久化核心实体 |
+| 3d 关系建立 | `list[ItemRelation]`（嵌入 UnifiedItem） | relation_type, target_id, confidence, 环路自动修复 |
+| Quality Gate | 质量门控 + 去重检测 | 可配置阈值拦截，精确hash+Jaccard近似去重 |
+| Storage | SQLite / JSON | FTS5 全文检索，content_hash 去重，relations 表，ContentMarkers |
 
 ---
 
@@ -154,10 +160,13 @@ class ImageAsset(BaseModel):
 文本内容（MD/TeX/转换后文本）
     │
     ▼
-Phase A: 一次性 FormatSpec 推断（1 次 LLM 调用）
-    1. 采样文档（头部 150 行 + 30% 位置处 60 行）
+Phase A: FormatSpec 推断（缓存优先 + 自适应采样 + 验证重试）
+    0. 查 FormatSpec 缓存库（精确指纹 → 模糊相似度匹配）
+    1. 缓存未命中 → 自适应采样（头100行 + ≤3个结构转折点±20行 + 尾40行，≤400行）
     2. LLM 分析采样，归纳出 FormatSpec（内容块类型、正则模式、章节结构）
-    3. 返回 FormatSpec
+    3. 验证 pattern 有效性（前500行测试，半数以上需匹配）
+    4. 验证失败 → 带失败信息重试一次
+    5. 成功则存入缓存库
     │
     ▼
 Phase B: 确定性分块（Python，无 LLM）

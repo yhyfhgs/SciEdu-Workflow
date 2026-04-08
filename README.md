@@ -4,7 +4,8 @@ AI 驱动的大学数学智能教育平台。从教材、讲义、试卷中自�
 
 ## 核心能力
 
-- **数据处理 Pipeline** — 支持 TeX / MD / PDF / DOCX 等格式，LLM + Python 混合架构自动提取结构化题库与知识库
+- **数据处理 Pipeline** — 支持 TeX / MD / PDF / DOCX / CSV 等格式，多策略提取（FormatSpec regex + 启发式 + fallback），自适应采样，FormatSpec 跨文档缓存，逐条错误隔离与重试
+- **SQLite 存储** — FTS5 全文检索、内容去重、关系图存储、完整溯源，支持 `--db` 参数一键切换
 - **生成引擎** — 5 阶段闭环：上下文检索 → 题目生成 → 解答求解 → 验证 → 难度标注
 - **CLI 接口** — 全部操作通过命令行完成，Rich 终端输出
 
@@ -33,14 +34,20 @@ cp .env.example .env
 ### 使用
 
 ```bash
-# 解析任意格式文件（统一 Pipeline）
-mathforge parse run path/to/file_or_dir
+# 解析文件并存入 SQLite
+mathforge parse run path/to/file_or_dir --db data/mathforge.db
 
 # 跳过 LLM（仅确定性处理）
 mathforge parse run path/to/file --skip-llm --dry-run
 
 # 指定 PDF 后端
 mathforge parse run path/to/file.pdf --backend pymupdf
+
+# 迁移已有 JSON 数据到 SQLite
+mathforge parse migrate-db data/ --target data/mathforge.db
+
+# 查看数据库统计
+mathforge parse db-stats data/mathforge.db
 
 # 生成题目
 mathforge generate free -s 数学分析 -t 极限 -d 5
@@ -53,18 +60,20 @@ mathforge --help
 
 ```
 src/mathforge/
-├── core/        # 核心领域逻辑（模型、生成引擎、验证）
+├── core/        # 核心领域逻辑（扁平化模型、生成引擎、验证）
 ├── llm/         # LLM 客户端层（Anthropic / OpenAI / Gemini）
-├── pipeline/    # 统一数据处理流水线（LLM 推断 FormatSpec + 确定性提取）
+├── pipeline/    # 统一数据处理流水线
+│                #   多策略提取、自适应采样、FormatSpec 缓存
+│                #   质量门控、去重、内容类型识别、泛型 Stage 协议
 ├── prompts/     # 提示词模板与生成策略
-├── storage/     # 存储后端（JSON 文件 / SQLite）
+├── storage/     # 存储后端（JSON 文件 / SQLite+FTS5）+ StorageBackend Protocol
 ├── cli/         # Typer CLI 接口
 └── config/      # 应用配置与日志
 ```
 
 ## 技术栈
 
-Python 3.11+ | Pydantic v2 | Typer + Rich | structlog | uv
+Python 3.11+ | Pydantic v2 | Typer + Rich | structlog | SQLite + FTS5 | uv
 
 ## 开发
 

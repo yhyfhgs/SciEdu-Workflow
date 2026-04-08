@@ -24,25 +24,32 @@
 
 **职责**: 统一数据处理流水线中的 LLM 调用环节
 
-**架构**: 通过 `PipelineOrchestrator` 编排的 asyncio.Queue 三阶段流水线。
-入口命令: `mathforge parse run`。
+**架构**: 通过 `PipelineOrchestrator` 编排的 asyncio.Queue 三并发 Task 流水线。
+入口命令: `mathforge parse run`。支持 `--db` 参数切换 SQLite 存储。
 
 **包含的 Agent 角色**:
-- `format_spec_inferrer` (BlockSplitter) — 一次性 LLM 调用推断文档的 FormatSpec（内容块类型、正则模式、章节结构），之后用确定性程序分块
-- `item_processor` (agents/item_processor.py) — 单次 LLM 调用同时完成 OCR 校准 + 多维分类标注
-- `relation_builder` (relation_builder.py) — 批量 LLM 推断条目间语义关系
+- `format_spec_inferrer` (BlockSplitter) — LLM 推断 FormatSpec（内容块类型、正则模式、章节结构），支持缓存库复用和验证重试
+- `item_processor` (agents/item_processor.py) — 单次 LLM 调用完成 OCR 校准 + 多维分类标注，内置 1 次重试
+- `relation_builder` (relation_builder.py) — 批量 LLM 推断条目间语义关系 + 先决关系环路自动修复
 
 **流水线阶段**:
 1. Stage 0: 格式转换 — PDF/DOCX/CSV → 纯文本（Python，无 LLM）
-2. Stage 1: FormatSpec 推断 + 确定性分块 — 1 次 LLM 调用/文件
-3. Stage 2: MetaExtractor 提取 + ItemProcessor 校准分类 — 1 次 LLM 调用/条目
-4. Stage 3: ItemUnifier + RelationBuilder + EntityBuilder → Storage
+2. Stage 1: FormatSpec 推断（缓存查找 → 自适应采样 → LLM → 验证重试）+ 确定性分块
+3. Stage 2: MetaExtractor 多策略提取（spec regex → 启发式 → fallback）+ ContentMarkers 检测 + ItemProcessor 校准分类
+4. Stage 3: ItemUnifier（枚举判别，扁平化 3 类）+ RelationBuilder → Storage
+
+**可靠性机制**:
+- 逐条错误隔离：单条目 LLM 失败不影响整批，fallback 为 quality="D" 结果
+- LLM 重试：item_processor 内置 1 次自动重试
+- 质量门控：QualityGate 可配置阈值拦截低质量条目
+- 跨文档去重：DeduplicationEngine 精确 hash + Jaccard 近似检测
+- FormatSpec 缓存：相同类型文档复用已推断的 FormatSpec
 
 **约束**:
 - 所有 Agent 通过 `llm/client.py` 的统一接口调用 LLM
-- 输出必须符合 `core/models.py` 中定义的 Pydantic 模型
-- 失败时应抛出 `core/exceptions.py` 中定义的异常，由调用方处理重试
+- 输出必须符合 `core/models.py` 中定义的 Pydantic 模型（扁平化 3 类 UnifiedItem）
 - FormatSpec 是 LLM 与 Python 之间的通用契约：LLM 负责识别，Python 负责执行
+- 优先使用枚举判别（kp_type/question_type）而非子类继承
 
 ### 3. Generation Agent (核心引擎)
 
