@@ -82,7 +82,9 @@ class SolveEngine:
     # ── 深度求解（多轮 + tool calling）──────────────────
 
     async def solve_deep(
-        self, question: Question, context: ContextBundle,
+        self,
+        question: Question,
+        context: ContextBundle,
     ) -> Solution | None:
         """异步深度求解：多轮对话 + 代码执行辅助"""
         if not self.deep_llm.supports_tools:
@@ -113,7 +115,9 @@ class SolveEngine:
         return self._parse_deep_result(question, history)
 
     def solve_deep_sync(
-        self, question: Question, context: ContextBundle,
+        self,
+        question: Question,
+        context: ContextBundle,
     ) -> Solution | None:
         """同步深度求解"""
         if not self.deep_llm.supports_tools:
@@ -179,7 +183,9 @@ class SolveEngine:
         )
 
     def _parse_deep_result(
-        self, question: Question, history: list[ConversationMessage],
+        self,
+        question: Question,
+        history: list[ConversationMessage],
     ) -> Solution | None:
         """从多轮对话历史中提取最终解答"""
         # 找最后一条 assistant 消息
@@ -214,8 +220,7 @@ class SolveEngine:
     @staticmethod
     def _build_prompt(question: Question, context: ContextBundle) -> str:
         kp_context = "\n".join(
-            f"- {kp.title}: {kp.content_latex}"
-            for kp in context.knowledge_points[:5]
+            f"- {kp.title}: {kp.content_latex}" for kp in context.knowledge_points[:5]
         )
         if not kp_context:
             kp_context = "（无可参考知识点）"
@@ -228,8 +233,7 @@ class SolveEngine:
     @staticmethod
     def _format_kp_context(context: ContextBundle) -> str:
         kp_context = "\n".join(
-            f"- {kp.title}: {kp.content_latex}"
-            for kp in context.knowledge_points[:5]
+            f"- {kp.title}: {kp.content_latex}" for kp in context.knowledge_points[:5]
         )
         return kp_context if kp_context else "（无可参考知识点）"
 
@@ -239,5 +243,5 @@ class SolveEngine:
         for i, point in enumerate(test_points):
             assigns = ", ".join(f"{k} = {v}" for k, v in point.items())
             lines.append(f"{assigns}")
-            lines.append(f"print(f'Test {i+1}: {{{expr}}}')")
+            lines.append(f"print(f'Test {i + 1}: {{{expr}}}')")
         return "\n".join(lines)

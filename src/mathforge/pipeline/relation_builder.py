@@ -140,9 +140,7 @@ class RelationBuilder:
 
     # ── Pass 2: LLM 批量推断 ──
 
-    async def _build_llm_relations(
-        self, items: list[UnifiedItemBase], batch_size: int
-    ) -> int:
+    async def _build_llm_relations(self, items: list[UnifiedItemBase], batch_size: int) -> int:
         """批量 LLM 关系推断"""
         assert self.llm is not None
 
@@ -196,16 +194,16 @@ class RelationBuilder:
         return count
 
     @staticmethod
-    def _format_items_for_prompt(items: list[UnifiedItemBase]) -> str:
-        """格式化 items 列表为 prompt 文本"""
+    def _format_items_for_prompt(
+        items: list[UnifiedItemBase],
+        max_content_chars: int = 200,
+    ) -> str:
+        """格式化 items 列表为 prompt 文本，截断内容避免 token 溢出"""
         lines: list[str] = []
         for item in items:
             cat = item.item_category
-            content_preview = item.content_plain or item.content_latex
-            lines.append(
-                f"[{item.item_id}] {cat}: {item.title}\n"
-                f"  内容: {content_preview}..."
-            )
+            content_preview = (item.content_plain or item.content_latex)[:max_content_chars]
+            lines.append(f"[{item.item_id}] {cat}: {item.title}\n  内容: {content_preview}...")
         return "\n\n".join(lines)
 
     # ── 验证 ──
@@ -215,10 +213,20 @@ class RelationBuilder:
         all_ids = {i.item_id for i in items}
 
         for item in items:
-            # 移除指向不存在条目的关系
-            item.relations = [
-                r for r in item.relations if r.target_id in all_ids
-            ]
+            # 移除无效关系：不存在的目标、自引用
+            seen: set[tuple[str, str]] = set()
+            valid: list[ItemRelation] = []
+            for r in item.relations:
+                if r.target_id not in all_ids:
+                    continue
+                if r.target_id == item.item_id:
+                    continue  # 过滤自引用
+                key = (r.relation_type.value, r.target_id)
+                if key in seen:
+                    continue  # 去重
+                seen.add(key)
+                valid.append(r)
+            item.relations = valid
 
         # DAG 检查（PREREQUISITE 无环）
         prereq_graph: dict[str, set[str]] = {}
@@ -229,6 +237,7 @@ class RelationBuilder:
 
         if prereq_graph and self._has_cycle(prereq_graph):
             logger.warning("relation_prerequisite_cycle_detected")
+            self._break_cycles(items, prereq_graph)
 
     @staticmethod
     def _has_cycle(graph: dict[str, set[str]]) -> bool:
@@ -250,3 +259,101 @@ class RelationBuilder:
             return False
 
         return any(dfs(node) for node in graph if node not in visited)
+
+    @staticmethod
+    def _break_cycles(
+        items: list[UnifiedItemBase],
+        prereq_graph: dict[str, set[str]],
+    ) -> None:
+        """移除环路中 confidence 最低的边来打破环"""
+        from mathforge.core.models import RelationType
+
+        id_to_item = {i.item_id: i for i in items}
+        removed = 0
+
+        # 构建 edge → confidence 查找表
+        def _edge_confidence(src: str, tgt: str) -> float:
+            item = id_to_item.get(src)
+            if not item:
+                return 0.0
+            for r in item.relations:
+                if r.relation_type == RelationType.PREREQUISITE and r.target_id == tgt:
+                    return r.confidence
+            return 0.0
+
+        # 反复检测并打破环，直到无环
+        while True:
+            cycle_edge = _find_cycle_edge(prereq_graph)
+            if not cycle_edge:
+                break
+
+            source_id, target_id = cycle_edge
+
+            # 找到 confidence 最低的边来移除
+            min_conf = _edge_confidence(source_id, target_id)
+            remove_src, remove_tgt = source_id, target_id
+
+            # 如果有 target→source 的反向边且其 confidence 更低，移除那条
+            reverse_conf = _edge_confidence(target_id, source_id)
+            if target_id in prereq_graph.get(target_id, set()):
+                pass  # target→source 不一定在图中
+            if (
+                target_id in prereq_graph
+                and source_id in prereq_graph.get(target_id, set())
+                and reverse_conf < min_conf
+            ):
+                remove_src, remove_tgt = target_id, source_id
+
+            item = id_to_item.get(remove_src)
+            if not item:
+                prereq_graph.get(remove_src, set()).discard(remove_tgt)
+                continue
+
+            # 移除该关系
+            item.relations = [
+                r
+                for r in item.relations
+                if not (r.relation_type == RelationType.PREREQUISITE and r.target_id == remove_tgt)
+            ]
+            prereq_graph.get(remove_src, set()).discard(remove_tgt)
+            removed += 1
+
+        if removed:
+            logger.info("relation_cycles_broken", edges_removed=removed)
+
+
+def _find_cycle_edge(
+    graph: dict[str, set[str]],
+) -> tuple[str, str] | None:
+    """找到图中环路上 confidence 最低的一条边（DFS）
+
+    返回 (source, target) 或 None。使用路径栈正确追踪 DFS 路径。
+    """
+    visited: set[str] = set()
+    in_stack: set[str] = set()
+    path: list[str] = []  # 当前 DFS 路径
+
+    def dfs(node: str) -> tuple[str, str] | None:
+        if node in in_stack:
+            # 找到环：path 中从 node 首次出现到末尾 + node 形成环
+            # 返回进入环的边 (path[-1], node)
+            return (path[-1], node) if path else (node, node)
+        if node in visited:
+            return None
+        visited.add(node)
+        in_stack.add(node)
+        path.append(node)
+        for neighbor in graph.get(node, set()):
+            result = dfs(neighbor)
+            if result:
+                return result
+        path.pop()
+        in_stack.discard(node)
+        return None
+
+    for node in graph:
+        if node not in visited:
+            result = dfs(node)
+            if result:
+                return result
+    return None

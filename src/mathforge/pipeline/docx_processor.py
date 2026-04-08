@@ -27,8 +27,10 @@ def process_docx_pandoc(filepath: Path) -> str:
     result = subprocess.run(
         [
             "pandoc",
-            "-f", "docx",
-            "-t", "markdown+tex_math_dollars",
+            "-f",
+            "docx",
+            "-t",
+            "markdown+tex_math_dollars",
             "--wrap=none",
             str(filepath),
         ],

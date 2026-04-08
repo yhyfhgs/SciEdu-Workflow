@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from datetime import UTC
 from typing import TYPE_CHECKING
 
 import structlog
@@ -38,15 +39,19 @@ class LLMClient:
         match config.provider:
             case LLMProvider.ANTHROPIC:
                 from mathforge.llm.backends.anthropic import AnthropicBackend
+
                 return AnthropicBackend(config)
             case LLMProvider.OPENAI:
                 from mathforge.llm.backends.openai_backend import OpenAIBackend
+
                 return OpenAIBackend(config)
             case LLMProvider.GEMINI:
                 from mathforge.llm.backends.gemini import GeminiBackend
+
                 return GeminiBackend(config)
             case LLMProvider.OPENAI_COMPATIBLE:
                 from mathforge.llm.backends.compatible import OpenAICompatibleBackend
+
                 return OpenAICompatibleBackend(config)
             case _:
                 raise ValueError(f"未知提供者: {config.provider}")
@@ -168,7 +173,10 @@ class LLMClient:
         system = system or DEFAULT_SYSTEM
         start = time.monotonic()
         result = await self._backend.generate_with_tools(
-            messages=messages, system=system, tools=tools or [], **kwargs,
+            messages=messages,
+            system=system,
+            tools=tools or [],
+            **kwargs,
         )
         elapsed = int((time.monotonic() - start) * 1000)
 
@@ -195,7 +203,10 @@ class LLMClient:
         system = system or DEFAULT_SYSTEM
         start = time.monotonic()
         result = self._backend.generate_with_tools_sync(
-            messages=messages, system=system, tools=tools or [], **kwargs,
+            messages=messages,
+            system=system,
+            tools=tools or [],
+            **kwargs,
         )
         elapsed = int((time.monotonic() - start) * 1000)
 
@@ -233,7 +244,10 @@ class LLMClient:
 
         for turn in range(max_turns):
             result = await self.generate_with_tools(
-                messages=current_messages, system=system, tools=tools, **kwargs,
+                messages=current_messages,
+                system=system,
+                tools=tools,
+                **kwargs,
             )
 
             # 记录 assistant 消息
@@ -282,12 +296,14 @@ class LLMClient:
             # Anthropic 格式: tool results 作为 user 消息
             tool_content = []
             for tr in tool_results:
-                tool_content.append({
-                    "type": "tool_result",
-                    "tool_use_id": tr.call_id,
-                    "content": tr.output,
-                    "is_error": tr.is_error,
-                })
+                tool_content.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tr.call_id,
+                        "content": tr.output,
+                        "is_error": tr.is_error,
+                    }
+                )
             current_messages.append({"role": "user", "content": tool_content})
 
             logger.info(
@@ -314,7 +330,10 @@ class LLMClient:
 
         for turn in range(max_turns):
             result = self.generate_with_tools_sync(
-                messages=current_messages, system=system, tools=tools, **kwargs,
+                messages=current_messages,
+                system=system,
+                tools=tools,
+                **kwargs,
             )
 
             assistant_msg = ConversationMessage(
@@ -357,12 +376,14 @@ class LLMClient:
             current_messages.append({"role": "assistant", "content": result.get("content", "")})
             tool_content = []
             for tr in tool_results:
-                tool_content.append({
-                    "type": "tool_result",
-                    "tool_use_id": tr.call_id,
-                    "content": tr.output,
-                    "is_error": tr.is_error,
-                })
+                tool_content.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tr.call_id,
+                        "content": tr.output,
+                        "is_error": tr.is_error,
+                    }
+                )
             current_messages.append({"role": "user", "content": tool_content})
 
             logger.info(
@@ -383,7 +404,7 @@ class LLMClient:
     def _log_exchange(self, prompt: str, response: str, latency_ms: int) -> None:
         """记录 LLM 交互到 JSONL 文件 + 定期 DEBUG 输出"""
         import json as _json
-        from datetime import datetime, timezone
+        from datetime import datetime
         from pathlib import Path
 
         self._call_count += 1
@@ -403,7 +424,7 @@ class LLMClient:
             log_path.mkdir(parents=True, exist_ok=True)
 
             entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "call_count": self._call_count,
                 "provider": self.config.provider.value,
                 "model": self.config.model,

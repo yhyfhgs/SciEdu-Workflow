@@ -57,7 +57,8 @@ class EvolutionEngine:
         self.checkpoint_dir = checkpoint_dir
 
     async def evolve(
-        self, request: GenerationRequest,
+        self,
+        request: GenerationRequest,
     ) -> GeneratedQuestion | None:
         """主入口: 进化式生成
 
@@ -84,7 +85,7 @@ class EvolutionEngine:
         # 检查是否有通过的
         passed = [c for c in all_candidates if c.passed]
         if passed:
-            best = self._select_best(passed)
+            best = self._select_best(passed, request.difficulty_target)
             session.best_result = best
             logger.info("evolution_success", phase="initial", generation=0)
             return best
@@ -109,7 +110,7 @@ class EvolutionEngine:
             # 检查改进后是否有通过的
             newly_passed = [c for c in improved if c.passed]
             if newly_passed:
-                best = self._select_best(newly_passed)
+                best = self._select_best(newly_passed, request.difficulty_target)
                 session.best_result = best
                 logger.info(
                     "evolution_success",
@@ -136,7 +137,8 @@ class EvolutionEngine:
         return self._select_best_effort(all_candidates)
 
     def evolve_sync(
-        self, request: GenerationRequest,
+        self,
+        request: GenerationRequest,
     ) -> GeneratedQuestion | None:
         """同步版本"""
         session = EvolutionSession(
@@ -150,7 +152,7 @@ class EvolutionEngine:
 
         passed = [c for c in all_candidates if c.passed]
         if passed:
-            best = self._select_best(passed)
+            best = self._select_best(passed, request.difficulty_target)
             session.best_result = best
             return best
 
@@ -166,7 +168,7 @@ class EvolutionEngine:
 
             newly_passed = [c for c in improved if c.passed]
             if newly_passed:
-                best = self._select_best(newly_passed)
+                best = self._select_best(newly_passed, request.difficulty_target)
                 session.best_result = best
                 return best
 
@@ -266,7 +268,10 @@ class EvolutionEngine:
 
             try:
                 new_question = await self._generate_improvement(
-                    candidate, directive, session,
+                    candidate,
+                    strategy,
+                    directive,
+                    session,
                 )
                 if new_question:
                     record = await self._evaluate_candidate(new_question, context)
@@ -294,7 +299,10 @@ class EvolutionEngine:
             strategy, directive = self._choose_improvement_strategy(candidate)
             try:
                 new_question = self._generate_improvement_sync(
-                    candidate, directive, session,
+                    candidate,
+                    strategy,
+                    directive,
+                    session,
                 )
                 if new_question:
                     record = self._evaluate_candidate_sync(new_question, context)
@@ -312,7 +320,9 @@ class EvolutionEngine:
     # ── 评估候选 ─────────────────────────────────────────
 
     async def _evaluate_candidate(
-        self, question: Question, context: ContextBundle,
+        self,
+        question: Question,
+        context: ContextBundle,
     ) -> CandidateRecord:
         """对一个候选题执行完整评估流程"""
         solution = await self.engine.solver.solve(question, context)
@@ -348,7 +358,9 @@ class EvolutionEngine:
         )
 
     def _evaluate_candidate_sync(
-        self, question: Question, context: ContextBundle,
+        self,
+        question: Question,
+        context: ContextBundle,
     ) -> CandidateRecord:
         """同步评估"""
         solution = self.engine.solver.solve_sync(question, context)
@@ -429,6 +441,7 @@ class EvolutionEngine:
     async def _generate_improvement(
         self,
         candidate: CandidateRecord,
+        strategy: str,
         directive: str,
         session: EvolutionSession,
     ) -> Question | None:
@@ -436,7 +449,7 @@ class EvolutionEngine:
         if not directive:
             return None
 
-        prompt = self._build_improvement_prompt(candidate, directive, session)
+        prompt = self._build_improvement_prompt(candidate, strategy, directive, session)
         try:
             result = await self.improve_llm.generate_json(
                 prompt=prompt,
@@ -451,6 +464,7 @@ class EvolutionEngine:
     def _generate_improvement_sync(
         self,
         candidate: CandidateRecord,
+        strategy: str,
         directive: str,
         session: EvolutionSession,
     ) -> Question | None:
@@ -458,7 +472,7 @@ class EvolutionEngine:
         if not directive:
             return None
 
-        prompt = self._build_improvement_prompt(candidate, directive, session)
+        prompt = self._build_improvement_prompt(candidate, strategy, directive, session)
         try:
             result = self.improve_llm.generate_json_sync(
                 prompt=prompt,
@@ -473,13 +487,12 @@ class EvolutionEngine:
     def _build_improvement_prompt(
         self,
         candidate: CandidateRecord,
+        strategy: str,
         directive: str,
         session: EvolutionSession,
     ) -> str:
         """构建改进 prompt"""
-        if "solve" in candidate.improvement_strategy or "adapt" in (
-            candidate.improvement_strategy or ""
-        ):
+        if "solve" in strategy or "adapt" in strategy:
             solver_feedback = ""
             if candidate.solution:
                 solver_feedback = (
@@ -508,7 +521,8 @@ class EvolutionEngine:
 
     @staticmethod
     def _parse_improved_question(
-        data: dict, parent: CandidateRecord,
+        data: dict,
+        parent: CandidateRecord,
     ) -> Question | None:
         """将 LLM 改进输出解析为 Question"""
         content = data.get("content_latex", "").strip()
@@ -516,6 +530,7 @@ class EvolutionEngine:
             return None
 
         import re
+
         content_plain = re.sub(r"\\[a-zA-Z]+\{([^}]*)\}", r"\1", content)
         content_plain = re.sub(r"[\\${}^_]", "", content_plain).strip()
 
@@ -525,9 +540,7 @@ class EvolutionEngine:
             difficulty=data.get("estimated_difficulty", parent.question.difficulty),
             question_type=parent.question.question_type,
             subject=parent.question.subject,
-            tags=list(dict.fromkeys(
-                data.get("knowledge_points_used", []) + parent.question.tags
-            )),
+            tags=list(dict.fromkeys(data.get("knowledge_points_used", []) + parent.question.tags)),
             is_generated=True,
             parent_id=parent.question.id,
             generation_meta={
@@ -541,16 +554,25 @@ class EvolutionEngine:
     # ── 选择与排序 ───────────────────────────────────────
 
     @staticmethod
-    def _select_best(passed: list[CandidateRecord]) -> GeneratedQuestion:
-        """从通过验证的候选中选出最佳"""
-        # 按 difficulty_score 的 overall 排序，选最接近目标的
-        best = passed[0]
-        for c in passed[1:]:
-            if c.difficulty_score and (
-                not best.difficulty_score
-                or c.difficulty_score.overall > best.difficulty_score.overall
-            ):
-                best = c
+    def _select_best(
+        passed: list[CandidateRecord],
+        target_difficulty: float | None = None,
+    ) -> GeneratedQuestion:
+        """从通过验证的候选中选出最佳
+
+        选择 difficulty_score 最接近目标难度的候选，
+        而非简单选最高分。
+        """
+
+        def distance_to_target(c: CandidateRecord) -> float:
+            if not c.difficulty_score:
+                return float("inf")
+            if target_difficulty is not None:
+                return abs(c.difficulty_score.overall - target_difficulty)
+            # 无目标时，偏好中等难度（5）
+            return abs(c.difficulty_score.overall - 5.0)
+
+        best = min(passed, key=distance_to_target)
 
         return GeneratedQuestion(
             question=best.question,
@@ -621,7 +643,8 @@ class EvolutionEngine:
 
     @staticmethod
     def _build_iteration_summary(
-        session: EvolutionSession, round_num: int,
+        session: EvolutionSession,
+        round_num: int,
     ) -> str:
         """构建结构化迭代摘要"""
         total = len(session.candidates)
@@ -645,7 +668,7 @@ class EvolutionEngine:
             round_num=round_num,
             total_candidates=total,
             candidate_summaries="\n".join(candidate_summaries),
-            pass_rate=f"{passed}/{total} ({100*passed//max(total,1)}%)",
+            pass_rate=f"{passed}/{total} ({100 * passed // max(total, 1)}%)",
             top_failure_reasons=", ".join(f"{r}({n})" for r, n in top_reasons),
             improvement_notes=f"第 {round_num} 轮改进",
             next_step_suggestions="基于失败模式调整生成策略",
@@ -659,6 +682,7 @@ class EvolutionEngine:
             return
 
         from datetime import datetime
+
         session.last_checkpoint_at = datetime.now()
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)

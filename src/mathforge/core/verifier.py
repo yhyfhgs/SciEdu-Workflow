@@ -69,9 +69,7 @@ class VerificationPipeline:
             suggestions.append("LaTeX 语法存在括号不匹配或环境未闭合。")
 
         # Check 5: 解答与题目相关性
-        checks["solution_relevant"] = await self._check_solution_relevance(
-            candidate, solution
-        )
+        checks["solution_relevant"] = await self._check_solution_relevance(candidate, solution)
         if not checks["solution_relevant"]:
             suggestions.append("解答可能未正确回应题目要求。")
 
@@ -81,9 +79,7 @@ class VerificationPipeline:
             numerical = await self._check_numerical(candidate, solution)
             checks["numerical_valid"] = numerical.all_passed
             if not numerical.all_passed:
-                suggestions.append(
-                    "数值验证未通过: " + "; ".join(numerical.discrepancies[:3])
-                )
+                suggestions.append("数值验证未通过: " + "; ".join(numerical.discrepancies[:3]))
 
         passed = all(checks.values())
         logger.info("verification_done", passed=passed, checks=checks)
@@ -122,9 +118,7 @@ class VerificationPipeline:
         if not checks["latex_valid"]:
             suggestions.append("LaTeX 语法存在括号不匹配或环境未闭合。")
 
-        checks["solution_relevant"] = self._check_solution_relevance_sync(
-            candidate, solution
-        )
+        checks["solution_relevant"] = self._check_solution_relevance_sync(candidate, solution)
         if not checks["solution_relevant"]:
             suggestions.append("解答可能未正确回应题目要求。")
 
@@ -134,9 +128,7 @@ class VerificationPipeline:
             numerical = self._check_numerical_sync(candidate, solution)
             checks["numerical_valid"] = numerical.all_passed
             if not numerical.all_passed:
-                suggestions.append(
-                    "数值验证未通过: " + "; ".join(numerical.discrepancies[:3])
-                )
+                suggestions.append("数值验证未通过: " + "; ".join(numerical.discrepancies[:3]))
 
         passed = all(checks.values())
         logger.info("verification_done", passed=passed, checks=checks)
@@ -186,28 +178,39 @@ class VerificationPipeline:
         content = candidate.content_latex
         if len(content) <= 30:
             return False
-        has_math = any(marker in content for marker in ("$", "\\", "\\begin"))
+        # 检查有实质性数学标记（排除单独的反斜杠）
+        has_math = (
+            "$" in content or "\\begin" in content or bool(re.search(r"\\[a-zA-Z]{2,}", content))
+        )
         return has_math
 
     @staticmethod
     def _check_latex_syntax(latex: str) -> bool:
-        """轻量 LaTeX 语法检查: 括号匹配 + 环境闭合"""
-        # 括号匹配
+        """轻量 LaTeX 语法检查: 括号匹配 + 环境闭合
+
+        排除转义括号 (\\{, \\}) 后再计数；
+        环境用栈匹配，正确处理嵌套。
+        """
+        # 移除转义括号后再计数
+        cleaned = re.sub(r"\\[{}()\[\]]", "", latex)
         for open_c, close_c in [("{", "}"), ("(", ")"), ("[", "]")]:
-            if latex.count(open_c) != latex.count(close_c):
+            if cleaned.count(open_c) != cleaned.count(close_c):
                 return False
 
-        # \begin{X} 和 \end{X} 匹配
-        begins = re.findall(r"\\begin\{(\w+)\}", latex)
-        ends = re.findall(r"\\end\{(\w+)\}", latex)
-        if begins != ends:
-            return False
+        # \begin{X} / \end{X} 用栈匹配（正确处理嵌套）
+        env_stack: list[str] = []
+        for m in re.finditer(r"\\(begin|end)\{(\w+)\}", latex):
+            action, env_name = m.group(1), m.group(2)
+            if action == "begin":
+                env_stack.append(env_name)
+            else:  # end
+                if not env_stack or env_stack[-1] != env_name:
+                    return False
+                env_stack.pop()
 
-        return True
+        return len(env_stack) == 0
 
-    async def _check_solution_relevance(
-        self, candidate: Question, solution: Solution
-    ) -> bool:
+    async def _check_solution_relevance(self, candidate: Question, solution: Solution) -> bool:
         """LLM 判断解答是否回应题目 (async)"""
         if not solution.solution_latex:
             return False
@@ -222,9 +225,7 @@ class VerificationPipeline:
             logger.warning("relevance_check_failed", error=str(e))
             return True  # 检查失败时默认通过，避免误拦
 
-    def _check_solution_relevance_sync(
-        self, candidate: Question, solution: Solution
-    ) -> bool:
+    def _check_solution_relevance_sync(self, candidate: Question, solution: Solution) -> bool:
         """LLM 判断解答是否回应题目 (sync)"""
         if not solution.solution_latex:
             return False
@@ -242,7 +243,9 @@ class VerificationPipeline:
     # ── 数值验证 ─────────────────────────────────────────
 
     async def _check_numerical(
-        self, candidate: Question, solution: Solution,
+        self,
+        candidate: Question,
+        solution: Solution,
     ) -> NumericalVerification:
         """LLM 生成验证代码 + 沙箱执行 (async)"""
         prompt = GENERATE_NUMERICAL_TEST_PROMPT.format(
@@ -260,7 +263,9 @@ class VerificationPipeline:
             return NumericalVerification(all_passed=True)  # 生成失败时默认通过
 
     def _check_numerical_sync(
-        self, candidate: Question, solution: Solution,
+        self,
+        candidate: Question,
+        solution: Solution,
     ) -> NumericalVerification:
         """LLM 生成验证代码 + 沙箱执行 (sync)"""
         prompt = GENERATE_NUMERICAL_TEST_PROMPT.format(

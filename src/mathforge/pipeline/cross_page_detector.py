@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from enum import Enum
+from enum import StrEnum
 
 from mathforge.core.models import MdBlock, MdBlockType, SpanningBlock
 
 
-class BlockState(str, Enum):
+class BlockState(StrEnum):
     IDLE = "idle"
     IN_DEFINITION = "definition"
     IN_THEOREM = "theorem"
@@ -35,9 +35,7 @@ BLOCK_CLOSERS: dict[BlockState, re.Pattern[str]] = {
 }
 
 # 隐式关闭: 任何新块开启会关闭当前块
-IMPLICIT_CLOSER = re.compile(
-    r"(?:定义|定理|命题|引理|推论|例|习题|§\d|第.{1,3}章)"
-)
+IMPLICIT_CLOSER = re.compile(r"(?:定义|定理|命题|引理|推论|例|习题|§\d|第.{1,3}章)")
 
 STATE_TO_BLOCK_TYPE: dict[BlockState, MdBlockType] = {
     BlockState.IN_DEFINITION: MdBlockType.DEFINITION,

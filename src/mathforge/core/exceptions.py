@@ -85,9 +85,7 @@ class EvolutionExhaustedError(GenerationError):
     def __init__(self, rounds: int, candidates_tried: int):
         self.rounds = rounds
         self.candidates_tried = candidates_tried
-        super().__init__(
-            f"进化引擎耗尽: {rounds} 轮改进, {candidates_tried} 个候选均未通过验证"
-        )
+        super().__init__(f"进化引擎耗尽: {rounds} 轮改进, {candidates_tried} 个候选均未通过验证")
 
 
 class PipelineError(MathForgeError):

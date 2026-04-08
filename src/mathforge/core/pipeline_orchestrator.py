@@ -85,19 +85,39 @@ class PipelineOrchestrator:
 
         # 启动 worker tasks
         tasks = [
-            asyncio.create_task(self._generator_worker(
-                request, context, total_candidates, base_temperature,
-                gen_to_solve, success_event,
-            )),
-            asyncio.create_task(self._solver_worker(
-                context, gen_to_solve, solve_to_verify, success_event,
-            )),
-            asyncio.create_task(self._verifier_worker(
-                context, solve_to_verify, verify_to_annotate, success_event,
-            )),
-            asyncio.create_task(self._annotator_worker(
-                verify_to_annotate, results_queue, success_event,
-            )),
+            asyncio.create_task(
+                self._generator_worker(
+                    request,
+                    context,
+                    total_candidates,
+                    base_temperature,
+                    gen_to_solve,
+                    success_event,
+                )
+            ),
+            asyncio.create_task(
+                self._solver_worker(
+                    context,
+                    gen_to_solve,
+                    solve_to_verify,
+                    success_event,
+                )
+            ),
+            asyncio.create_task(
+                self._verifier_worker(
+                    context,
+                    solve_to_verify,
+                    verify_to_annotate,
+                    success_event,
+                )
+            ),
+            asyncio.create_task(
+                self._annotator_worker(
+                    verify_to_annotate,
+                    results_queue,
+                    success_event,
+                )
+            ),
         ]
 
         # 收集结果
@@ -165,7 +185,10 @@ class PipelineOrchestrator:
             temp = min(base_temp + i * 0.05, 1.0)
             try:
                 candidates = await self.generator.generate_candidates(
-                    request=request, context=context, n=1, extra_temperature=temp - base_temp,
+                    request=request,
+                    context=context,
+                    n=1,
+                    extra_temperature=temp - base_temp,
                 )
                 if candidates:
                     item = PipelineStageResult(candidate=candidates[0], stage="generated")
@@ -228,7 +251,9 @@ class PipelineOrchestrator:
 
             try:
                 verification = await self.verifier.verify(
-                    item.candidate, item.solution, context,
+                    item.candidate,
+                    item.solution,
+                    context,
                 )
                 item.verification = verification
                 item.stage = "verified"

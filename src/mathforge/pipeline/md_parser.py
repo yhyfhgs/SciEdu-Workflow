@@ -7,7 +7,7 @@ from pathlib import Path
 
 import structlog
 
-from mathforge.core.models import MdBlock, MdBlockType, MdSection, MdSourceType
+from mathforge.core.models import MdBlock, MdBlockType, MdSourceType
 
 logger = structlog.get_logger()
 
@@ -29,18 +29,10 @@ BLOCK_PATTERNS: dict[MdBlockType, re.Pattern[str]] = {
     MdBlockType.COROLLARY: re.compile(
         rf"^推论\s*{NUM}\s*{P}?\s*(?:[\[（(](.+?)[\]）)])?\.?\s*(.*)", re.MULTILINE
     ),
-    MdBlockType.PROPOSITION: re.compile(
-        rf"^(?:性质|命题)\s*{NUM}\s*{P}?\s*(.*)", re.MULTILINE
-    ),
-    MdBlockType.EXAMPLE: re.compile(
-        rf"^例\s*{NUM}\s*{P}?\s*(.*)", re.MULTILINE
-    ),
-    MdBlockType.PROOF: re.compile(
-        r"^(?:证明|Proof)\s*[：:.．]?\s*(.*)", re.MULTILINE
-    ),
-    MdBlockType.REMARK: re.compile(
-        r"^(?:Remark|注)\s*[：:.]\s*(.*)", re.MULTILINE
-    ),
+    MdBlockType.PROPOSITION: re.compile(rf"^(?:性质|命题)\s*{NUM}\s*{P}?\s*(.*)", re.MULTILINE),
+    MdBlockType.EXAMPLE: re.compile(rf"^例\s*{NUM}\s*{P}?\s*(.*)", re.MULTILINE),
+    MdBlockType.PROOF: re.compile(r"^(?:证明|Proof)\s*[：:.．]?\s*(.*)", re.MULTILINE),
+    MdBlockType.REMARK: re.compile(r"^(?:Remark|注)\s*[：:.]\s*(.*)", re.MULTILINE),
 }
 
 # 节标题模式
@@ -123,17 +115,19 @@ def parse_file(
             text = "\n".join(current_lines).strip()
             if text:
                 images = IMAGE_PATTERN.findall(text)
-                blocks.append(MdBlock(
-                    block_type=current_type,
-                    number=current_number,
-                    name=current_name,
-                    content=text,
-                    source_file=str(filepath),
-                    line_start=current_start,
-                    line_end=current_start + len(current_lines),
-                    images=images,
-                    has_garbled_content=_is_garbled(text),
-                ))
+                blocks.append(
+                    MdBlock(
+                        block_type=current_type,
+                        number=current_number,
+                        name=current_name,
+                        content=text,
+                        source_file=str(filepath),
+                        line_start=current_start,
+                        line_end=current_start + len(current_lines),
+                        images=images,
+                        has_garbled_content=_is_garbled(text),
+                    )
+                )
         current_type = None
         current_number = None
         current_name = None
@@ -223,8 +217,10 @@ def parse_file(
 def _attach_proofs(blocks: list[MdBlock]) -> None:
     """将证明块附加到前一个定理/引理/推论"""
     theorem_types = {
-        MdBlockType.THEOREM, MdBlockType.LEMMA,
-        MdBlockType.COROLLARY, MdBlockType.PROPOSITION,
+        MdBlockType.THEOREM,
+        MdBlockType.LEMMA,
+        MdBlockType.COROLLARY,
+        MdBlockType.PROPOSITION,
     }
     i = 0
     while i < len(blocks):
@@ -241,9 +237,7 @@ def _attach_proofs(blocks: list[MdBlock]) -> None:
             i += 1
 
 
-def parse_directory(
-    dirpath: Path, source_type: str = "auto"
-) -> list[MdBlock]:
+def parse_directory(dirpath: Path, source_type: str = "auto") -> list[MdBlock]:
     """解析目录下所有 MD 文件"""
     all_blocks: list[MdBlock] = []
     for filepath in sorted(dirpath.rglob("*.md")):

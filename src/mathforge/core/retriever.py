@@ -34,10 +34,10 @@ class ContextRetriever:
     def _detect_enhanced(self) -> bool:
         """检测 storage 是否使用 EnhancedIndexManager"""
         from mathforge.storage.enhanced_index import EnhancedIndexManager
-        return (
-            isinstance(getattr(self.storage, '_kp_index', None), EnhancedIndexManager)
-            or isinstance(getattr(self.storage, '_q_index', None), EnhancedIndexManager)
-        )
+
+        return isinstance(
+            getattr(self.storage, "_kp_index", None), EnhancedIndexManager
+        ) or isinstance(getattr(self.storage, "_q_index", None), EnhancedIndexManager)
 
     def build_context(
         self,
@@ -158,13 +158,18 @@ class ContextRetriever:
         return ids
 
     def _match_knowledge_basic(
-        self, req: GenerationRequest, d_min: int, d_max: int,
+        self,
+        req: GenerationRequest,
+        d_min: int,
+        d_max: int,
     ) -> list[str]:
         """基础模式: 原有 IndexManager 逻辑"""
-        ids = self.storage.search_knowledge({
-            "tags": req.topics,
-            "difficulty_range": (d_min, d_max),
-        })
+        ids = self.storage.search_knowledge(
+            {
+                "tags": req.topics,
+                "difficulty_range": (d_min, d_max),
+            }
+        )
         if not ids:
             ids = self.storage.search_knowledge({"difficulty_range": (d_min, d_max)})
             if ids:
@@ -180,23 +185,29 @@ class ContextRetriever:
         d_min = max(1, req.difficulty_target - 2)
         d_max = min(10, req.difficulty_target + 2)
 
-        ids = self.storage.search_questions({
-            "tags": req.topics,
-            "difficulty_range": (d_min, d_max),
-        })
+        ids = self.storage.search_questions(
+            {
+                "tags": req.topics,
+                "difficulty_range": (d_min, d_max),
+            }
+        )
 
         if not ids:
-            ids = self.storage.search_questions({
-                "subject": req.subject.value,
-                "difficulty_range": (d_min, d_max),
-            })
+            ids = self.storage.search_questions(
+                {
+                    "subject": req.subject.value,
+                    "difficulty_range": (d_min, d_max),
+                }
+            )
             if ids:
                 logger.debug("questions_fallback", reason="empty_tags", count=len(ids))
 
         if not ids:
-            ids = self.storage.search_questions({
-                "subject": req.subject.value,
-            })
+            ids = self.storage.search_questions(
+                {
+                    "subject": req.subject.value,
+                }
+            )
 
         ids = [i for i in ids if i not in req.exclusion_ids]
         questions = self.storage.load_questions_by_ids(ids[:20])
@@ -223,10 +234,12 @@ class ContextRetriever:
         if not req.source_question:
             return []
 
-        ids = self.storage.search_questions({
-            "subject": req.subject.value,
-            "type": req.question_type.value,
-        })
+        ids = self.storage.search_questions(
+            {
+                "subject": req.subject.value,
+                "type": req.question_type.value,
+            }
+        )
         ids = [i for i in ids if i != req.source_question.id]
         questions = self.storage.load_questions_by_ids(ids[:10])
 

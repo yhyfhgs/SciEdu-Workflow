@@ -39,9 +39,15 @@ class ProcessingContext:
     """ItemProcessor 的上下文信息"""
 
     __slots__ = (
-        "source_type", "chapter_title", "section_title",
-        "detected_structure", "prev_type", "prev_title",
-        "next_type", "next_title", "format_spec",
+        "source_type",
+        "chapter_title",
+        "section_title",
+        "detected_structure",
+        "prev_type",
+        "prev_title",
+        "next_type",
+        "next_title",
+        "format_spec",
     )
 
     def __init__(
@@ -85,9 +91,7 @@ class ItemProcessor:
             return self._taxonomy
 
         if self._taxonomy_path and self._taxonomy_path.exists():
-            self._taxonomy = json.loads(
-                self._taxonomy_path.read_text(encoding="utf-8")
-            )
+            self._taxonomy = json.loads(self._taxonomy_path.read_text(encoding="utf-8"))
         else:
             # 尝试默认路径
             default = Path(__file__).parent.parent.parent / "config" / "taxonomy.json"
@@ -136,26 +140,34 @@ class ItemProcessor:
             taxonomy_excerpt=taxonomy_excerpt,
         )
 
-        try:
-            from mathforge.llm.config import LLMConfig
+        from mathforge.llm.config import LLMConfig
 
-            llm_config = LLMConfig.for_task("process_item")
-            result_dict = await self.llm.generate_json(prompt, config=llm_config)
-            latency = time.monotonic() - t0
+        llm_config = LLMConfig.for_task("process_item")
+        result_dict = None
+        for attempt in range(2):  # 1 次尝试 + 1 次重试
+            try:
+                result_dict = await self.llm.generate_json(prompt, config=llm_config)
+                latency = time.monotonic() - t0
+                logger.info(
+                    "item_processed",
+                    item_id=item.item_id,
+                    block_type=item.block_type,
+                    latency_sec=round(latency, 2),
+                )
+                break
+            except Exception:
+                if attempt == 0:
+                    logger.warning("item_process_retry", item_id=item.item_id)
+                    continue
+                logger.error(
+                    "item_process_failed",
+                    item_id=item.item_id,
+                    block_type=item.block_type,
+                    exc_info=True,
+                )
+                return self._fallback_result(item, pre_content)
 
-            logger.info(
-                "item_processed",
-                item_id=item.item_id,
-                block_type=item.block_type,
-                latency_sec=round(latency, 2),
-            )
-        except Exception:
-            logger.error(
-                "item_process_failed",
-                item_id=item.item_id,
-                block_type=item.block_type,
-                exc_info=True,
-            )
+        if result_dict is None:
             return self._fallback_result(item, pre_content)
 
         # ── 解析 LLM 响应 ──
@@ -230,9 +242,7 @@ class ItemProcessor:
 
             _, flagged = engine.validate_math_terms(repaired)
             if flagged:
-                suspicious_parts.append(
-                    f"可疑术语: {', '.join(flagged[:10])}"
-                )
+                suspicious_parts.append(f"可疑术语: {', '.join(flagged[:10])}")
 
             return repaired, "\n".join(suspicious_parts)
         except ImportError:
@@ -348,7 +358,7 @@ class ItemProcessor:
         try:
             subject = Subject(subject_str)
         except ValueError:
-            subject = Subject.ANALYSIS
+            subject = _fuzzy_match_subject(subject_str)
 
         ped_str = class_data.get("pedagogical_level", "standard")
         try:
@@ -380,21 +390,18 @@ class ItemProcessor:
     def _post_validate(self, correction: CorrectionResult) -> None:
         """Post-LLM 确定性验证"""
         try:
-            from mathforge.pipeline.content_validator import ContentValidator
+            from mathforge.pipeline.content_validator import validate_latex_brackets
 
-            validator = ContentValidator()
             content = correction.corrected_latex or correction.corrected_content
-            issues = validator.validate_latex_brackets(content)
+            issues = validate_latex_brackets(content)
             if issues:
                 correction.semantic_issues.extend(
-                    f"LaTeX 括号问题: {issue}" for issue in issues[:3]
+                    f"LaTeX 括号问题: {issue.message}" for issue in issues[:3]
                 )
-        except (ImportError, Exception):
-            pass
+        except Exception:
+            logger.debug("post_validate_latex_failed", exc_info=True)
 
-    def _fallback_result(
-        self, item: RawItem, pre_content: str
-    ) -> ItemProcessingResult:
+    def _fallback_result(self, item: RawItem, pre_content: str) -> ItemProcessingResult:
         """LLM 调用失败时的 fallback"""
         return ItemProcessingResult(
             correction=CorrectionResult(
@@ -405,3 +412,56 @@ class ItemProcessor:
             item_subtype=item.block_type,
             difficulty=5,
         )
+
+
+# Subject 关键词 → 枚举值的映射表
+_SUBJECT_KEYWORDS: dict[str, Subject] = {
+    "分析": Subject.ANALYSIS,
+    "微积分": Subject.ANALYSIS,
+    "极限": Subject.ANALYSIS,
+    "代数": Subject.LINEAR_ALGEBRA,
+    "矩阵": Subject.LINEAR_ALGEBRA,
+    "线性": Subject.LINEAR_ALGEBRA,
+    "群": Subject.GROUP_THEORY,
+    "环": Subject.GROUP_THEORY,
+    "域": Subject.GROUP_THEORY,
+    "抽象代数": Subject.GROUP_THEORY,
+    "组合": Subject.COMBINATORICS,
+    "图论": Subject.COMBINATORICS,
+    "计数": Subject.COMBINATORICS,
+    "数论": Subject.NUMBER_THEORY,
+    "素数": Subject.NUMBER_THEORY,
+    "整除": Subject.NUMBER_THEORY,
+    "拓扑": Subject.TOPOLOGY,
+    "开集": Subject.TOPOLOGY,
+    "连通": Subject.TOPOLOGY,
+    "复分析": Subject.COMPLEX_ANALYSIS,
+    "全纯": Subject.COMPLEX_ANALYSIS,
+    "留数": Subject.COMPLEX_ANALYSIS,
+    "解析函数": Subject.COMPLEX_ANALYSIS,
+    "概率": Subject.PROBABILITY,
+    "随机": Subject.PROBABILITY,
+    "期望": Subject.PROBABILITY,
+    "实分析": Subject.REAL_ANALYSIS,
+    "测度": Subject.REAL_ANALYSIS,
+    "Lebesgue": Subject.REAL_ANALYSIS,
+    "泛函": Subject.FUNCTIONAL_ANALYSIS,
+    "算子": Subject.FUNCTIONAL_ANALYSIS,
+    "Banach": Subject.FUNCTIONAL_ANALYSIS,
+    "微分方程": Subject.DIFFERENTIAL_EQUATIONS,
+    "ODE": Subject.DIFFERENTIAL_EQUATIONS,
+}
+
+
+def _fuzzy_match_subject(subject_str: str) -> Subject:
+    """模糊匹配 Subject 枚举值"""
+    # 先尝试枚举值的子串匹配
+    for member in Subject:
+        if member.value in subject_str or subject_str in member.value:
+            return member
+    # 再尝试关键词匹配
+    for keyword, subject in _SUBJECT_KEYWORDS.items():
+        if keyword in subject_str:
+            return subject
+    logger.warning("subject_fuzzy_match_failed", subject_str=subject_str)
+    return Subject.OTHER

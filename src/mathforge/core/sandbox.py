@@ -94,7 +94,10 @@ class CodeSandbox:
         start_time = time.monotonic()
 
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, encoding="utf-8",
+            mode="w",
+            suffix=".py",
+            delete=False,
+            encoding="utf-8",
         ) as f:
             f.write(wrapper)
             script_path = Path(f.name)

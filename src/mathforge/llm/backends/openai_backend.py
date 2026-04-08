@@ -138,11 +138,13 @@ class OpenAIBackend:
                     args = json.loads(tc.function.arguments)
                 except (json.JSONDecodeError, AttributeError):
                     args = {}
-                tool_calls.append({
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "arguments": args,
-                })
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "arguments": args,
+                    }
+                )
 
         finish_reason = response.choices[0].finish_reason
         stop_reason = "tool_use" if finish_reason == "tool_calls" else "end_turn"

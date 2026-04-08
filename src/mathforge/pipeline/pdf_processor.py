@@ -143,13 +143,9 @@ class PdfProcessor:
                     batch_blocks = [MdBlock.model_validate(b) for b in cached]
                 elif is_scanned:
                     # 扫描 PDF: 使用 pymupdf4llm 的 markdown 模式
-                    batch_blocks = self._extract_batch_markdown(
-                        pdf_path, page_start, page_end
-                    )
+                    batch_blocks = self._extract_batch_markdown(pdf_path, page_start, page_end)
                 else:
-                    batch_blocks = self._extract_batch(
-                        doc, page_start, page_end, detector, backend
-                    )
+                    batch_blocks = self._extract_batch(doc, page_start, page_end, detector, backend)
                     # 保存 checkpoint
                     checkpoint_path.mkdir(parents=True, exist_ok=True)
                     batch_file.write_text(
@@ -170,9 +166,7 @@ class PdfProcessor:
 
                 # 保存进度
                 progress_file.parent.mkdir(parents=True, exist_ok=True)
-                progress_file.write_text(
-                    progress.model_dump_json(indent=2), encoding="utf-8"
-                )
+                progress_file.write_text(progress.model_dump_json(indent=2), encoding="utf-8")
 
                 logger.info(
                     "pdf_batch_complete",
@@ -212,11 +206,13 @@ class PdfProcessor:
             toc_entries: list[TocEntry] = []
             toc = doc.get_toc()
             for level, title, page in toc:
-                toc_entries.append(TocEntry(
-                    title=title,
-                    level=level,
-                    page=page,
-                ))
+                toc_entries.append(
+                    TocEntry(
+                        title=title,
+                        level=level,
+                        page=page,
+                    )
+                )
 
             # 检测是否有文本层（采样几页）
             has_text = False

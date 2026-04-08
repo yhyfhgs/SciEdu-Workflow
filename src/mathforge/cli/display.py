@@ -49,12 +49,14 @@ def display_question(q: Question, solution: Solution | None = None) -> None:
     if q.difficulty_ai is not None:
         subtitle_parts.append(f"AI评分: {q.difficulty_ai}")
 
-    console.print(Panel(
-        q.content_latex,
-        title=f"[bold]{q.id[:36]}[/bold]",
-        subtitle=" | ".join(subtitle_parts),
-        border_style="blue",
-    ))
+    console.print(
+        Panel(
+            q.content_latex,
+            title=f"[bold]{q.id[:36]}[/bold]",
+            subtitle=" | ".join(subtitle_parts),
+            border_style="blue",
+        )
+    )
 
     if q.tags:
         console.print(f"[dim]标签:[/dim] {', '.join(q.tags)}")
@@ -80,15 +82,17 @@ def display_solution(q: Question, solution: Solution) -> None:
     if len(sol_text) > 800:
         sol_text = sol_text[:800] + "..."
 
-    console.print(Panel(
-        sol_text,
-        title="[bold]解答[/bold]",
-        subtitle=(
-            f"置信度: {solution.confidence}"
-            + (f" | 方法: {', '.join(solution.methods_used)}" if solution.methods_used else "")
-        ),
-        border_style="green",
-    ))
+    console.print(
+        Panel(
+            sol_text,
+            title="[bold]解答[/bold]",
+            subtitle=(
+                f"置信度: {solution.confidence}"
+                + (f" | 方法: {', '.join(solution.methods_used)}" if solution.methods_used else "")
+            ),
+            border_style="green",
+        )
+    )
 
 
 def display_generation_result(result: GeneratedQuestion) -> None:

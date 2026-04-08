@@ -19,9 +19,7 @@ class GeminiBackend:
         try:
             from google import genai
         except ImportError:
-            raise ImportError(
-                "需要安装 google-genai SDK: pip install 'mathforge[gemini]'"
-            )
+            raise ImportError("需要安装 google-genai SDK: pip install 'mathforge[gemini]'")
 
         api_key = config.api_key or os.environ.get("GOOGLE_API_KEY")
         self.client = genai.Client(api_key=api_key)

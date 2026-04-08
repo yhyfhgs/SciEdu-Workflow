@@ -13,7 +13,6 @@ from mathforge.core.models import (
     QuestionSource,
     QuestionType,
     Solution,
-    Subject,
 )
 
 logger = structlog.get_logger()
@@ -97,7 +96,6 @@ def process_csv(
         solution_col = col_map.get("solution", col_map.get("answer", ""))
         difficulty_col = col_map.get("difficulty", "")
         tags_col = col_map.get("tags", "")
-        subject_col = col_map.get("subject", "")
         type_col = col_map.get("type", "")
 
         for row_num, row in enumerate(reader, start=2):

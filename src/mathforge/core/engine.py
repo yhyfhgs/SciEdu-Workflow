@@ -15,7 +15,7 @@ from mathforge.core.solver import SolveEngine
 from mathforge.core.verifier import VerificationPipeline
 
 if TYPE_CHECKING:
-    from mathforge.storage.file_backend import FileStorageBackend
+    from mathforge.storage.protocol import StorageBackend
 
 logger = structlog.get_logger()
 
@@ -33,7 +33,7 @@ class GenerationEngine:
         solver: SolveEngine | None = None,
         verifier: VerificationPipeline | None = None,
         annotator: DifficultyAnnotator | None = None,
-        storage: FileStorageBackend | None = None,
+        storage: StorageBackend | None = None,
         max_rounds: int = 3,
         candidates_per_round: int = 3,
     ):
@@ -210,27 +210,33 @@ class GenerationEngine:
         count: int,
         max_concurrent: int = 3,
     ) -> list[GeneratedQuestion]:
-        """异步批量生成（顺序排除，控制并发）"""
+        """异步批量生成（真并发，信号量控制并发度）"""
         semaphore = asyncio.Semaphore(max_concurrent)
-        results = []
-        exclusion_ids = set(request.exclusion_ids)
+        results: list[GeneratedQuestion] = []
+        lock = asyncio.Lock()
 
-        for i in range(count):
-            logger.info("batch_item", index=i + 1, total=count)
-            req_copy = request.model_copy(update={"exclusion_ids": set(exclusion_ids)})
+        async def _gen_one(idx: int) -> None:
             async with semaphore:
+                async with lock:
+                    exclusion_snapshot = set(request.exclusion_ids) | {
+                        r.question.id for r in results
+                    }
+                req_copy = request.model_copy(update={"exclusion_ids": exclusion_snapshot})
+                logger.info("batch_item", index=idx + 1, total=count)
                 result = await self.generate(req_copy)
-            if result:
-                results.append(result)
-                exclusion_ids.add(result.question.id)
+                if result:
+                    async with lock:
+                        results.append(result)
 
+        await asyncio.gather(*[_gen_one(i) for i in range(count)])
         logger.info("batch_done", success=len(results), total=count)
         return results
 
     # ── 流水线并行模式 ───────────────────────────────────
 
     async def generate_pipelined(
-        self, request: GenerationRequest,
+        self,
+        request: GenerationRequest,
     ) -> GeneratedQuestion | None:
         """流水线并行模式: 生成/求解/验证/标注 阶段级并行
 

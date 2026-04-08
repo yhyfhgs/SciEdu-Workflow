@@ -1,7 +1,6 @@
 """MathForge CLI 入口"""
 
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -27,8 +26,12 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
-    version: Optional[bool] = typer.Option(
-        None, "--version", "-v", callback=version_callback, is_eager=True,
+    version: bool | None = typer.Option(
+        None,
+        "--version",
+        "-v",
+        callback=version_callback,
+        is_eager=True,
         help="显示版本号",
     ),
     log_level: str = typer.Option("INFO", "--log-level", help="日志级别"),

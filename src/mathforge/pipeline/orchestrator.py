@@ -13,7 +13,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from mathforge.config.settings import AppConfig
     from mathforge.llm.client import LLMClient
     from mathforge.pipeline.agents.item_processor import ItemProcessingResult
-    from mathforge.storage.file_backend import FileStorageBackend
+    from mathforge.storage.protocol import StorageBackend
 
 logger = structlog.get_logger()
 
@@ -61,10 +61,18 @@ class PipelineResult:
     relation_sec: float = 0.0
 
 
-# Queue 消息类型
-_SENTINEL = None
-_QueueA_Item = MdBlockV2 | None
-_QueueB_Item = tuple[RawItem, "ItemProcessingResult", MdBlockV2] | None
+# Queue 消息类型 — 使用专用 sentinel 避免与 None 冲突
+
+
+class _Sentinel:
+    """唯一哨兵对象，标识流结束"""
+
+    __slots__ = ()
+
+
+_SENTINEL = _Sentinel()
+_QueueA_Item = MdBlockV2 | _Sentinel
+_QueueB_Item = tuple[RawItem, "ItemProcessingResult", MdBlockV2] | _Sentinel
 
 
 class PipelineOrchestrator:
@@ -74,7 +82,7 @@ class PipelineOrchestrator:
         self,
         config: AppConfig,
         llm_client: LLMClient | None = None,
-        storage: FileStorageBackend | None = None,
+        storage: StorageBackend | None = None,
         llm_clients: dict[str, LLMClient] | None = None,
         pdf_backend: str = "auto",
     ) -> None:
@@ -83,6 +91,12 @@ class PipelineOrchestrator:
         self.storage = storage
         self._llm_clients = llm_clients or {}
         self._pdf_backend = pdf_backend
+
+        # FormatSpec 缓存库
+        from mathforge.pipeline.format_spec_library import FormatSpecLibrary
+
+        lib_path = config.checkpoint_dir / "format_spec_library.json"
+        self._spec_library = FormatSpecLibrary(persist_path=lib_path)
 
     def _get_llm(self, task: str) -> LLMClient | None:
         """按任务获取 LLM client，fallback 到默认 client"""
@@ -131,12 +145,17 @@ class PipelineOrchestrator:
             asyncio.create_task(self._task_unify(queue_b, result, timing, collected)),
         ]
 
-        # 等待全部完成
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # 等待全部完成，检查 task 异常
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, tr in enumerate(task_results):
+            if isinstance(tr, BaseException):
+                task_names = ["split", "extract_process", "unify"]
+                logger.error("pipeline_task_failed", task=task_names[i], error=str(tr))
+                result.errors.append(f"task_{task_names[i]}: {tr}")
 
         # 关系建立（批量，非流水线）
         t_rel = time.monotonic()
-        if collected and result.errors.__len__() == 0:
+        if collected:
             try:
                 unifier = ItemUnifier()
                 unified_items = unifier.unify_batch(collected)
@@ -219,7 +238,11 @@ class PipelineOrchestrator:
         """Task 1: BlockSplitter → Queue_A"""
         t0 = time.monotonic()
         try:
-            splitter = BlockSplitter(self._get_llm("split"), self.config)
+            splitter = BlockSplitter(
+                self._get_llm("split"),
+                self.config,
+                spec_library=self._spec_library,
+            )
             block_count = 0
             async for block in splitter.split_file(file_path, content, source_format):
                 await queue_a.put(block)
@@ -257,84 +280,130 @@ class PipelineOrchestrator:
 
             processor = ItemProcessor(process_llm)
 
-        while True:
-            block = await queue_a.get()
-            if block is _SENTINEL:
-                await queue_b.put(_SENTINEL)
-                break
+        # Semaphore 在 task 级别创建，跨 block 限制并发 LLM 调用
+        sem = asyncio.Semaphore(self.config.max_concurrent_llm_calls)
 
-            # 提取
-            te0 = time.monotonic()
-            raw_items = extractor.extract(block)
-            t_extract += time.monotonic() - te0
-            result.items_extracted += len(raw_items)
+        try:
+            while True:
+                block = await queue_a.get()
+                if isinstance(block, _Sentinel):
+                    break
 
-            # 处理每个 item
-            sem = asyncio.Semaphore(self.config.max_concurrent_llm_calls)
+                # 提取
+                te0 = time.monotonic()
+                raw_items, extraction_report = extractor.extract(block)
+                t_extract += time.monotonic() - te0
+                result.items_extracted += len(raw_items)
 
-            async def process_one(item: RawItem, idx: int) -> None:
-                nonlocal t_process
-                tp0 = time.monotonic()
+                if extraction_report.issues:
+                    for issue in extraction_report.issues:
+                        result.errors.append(f"extraction[{block.block_id[:8]}]: {issue}")
 
-                if processor:
-                    from mathforge.pipeline.agents.item_processor import ProcessingContext
+                # 处理每个 item — 结果按原始索引排序保证确定性
+                block_results: list[tuple[int, RawItem, Any]] = []
+                process_times: list[float] = []
 
-                    # 构建上下文
-                    ctx = ProcessingContext(
-                        source_type=block.format_spec.source_type if block.format_spec else "",
-                        chapter_title=block.chapter_title,
-                        section_title=block.section_title,
-                        detected_structure="\n".join(block.format_spec.detected_structure)
-                        if block.format_spec
-                        else "",
-                        prev_type=raw_items[idx - 1].block_type if idx > 0 else "",
-                        prev_title=raw_items[idx - 1].number or "" if idx > 0 else "",
-                        next_type=raw_items[idx + 1].block_type if idx + 1 < len(raw_items) else "",
-                        next_title=(
-                            raw_items[idx + 1].number or "" if idx + 1 < len(raw_items) else ""
-                        ),
-                        format_spec=block.format_spec,
-                    )
+                async def process_one(item: RawItem, idx: int) -> None:
+                    tp0 = time.monotonic()
 
-                    # 获取配对内容
-                    paired_content = ""
-                    if item.paired_item_id:
-                        for ri in raw_items:
-                            if ri.item_id == item.paired_item_id:
-                                paired_content = ri.content_raw
-                                break
+                    try:
+                        if processor:
+                            from mathforge.pipeline.agents.item_processor import ProcessingContext
 
-                    async with sem:
-                        proc_result = await processor.process(item, ctx, paired_content)
-                else:
-                    # 无 LLM 时的默认结果
-                    from mathforge.core.models import (
-                        CorrectionResult,
-                        ItemProcessingResult,
-                        TagSet,
-                    )
+                            ctx = ProcessingContext(
+                                source_type=(
+                                    block.format_spec.source_type if block.format_spec else ""
+                                ),
+                                chapter_title=block.chapter_title,
+                                section_title=block.section_title,
+                                detected_structure="\n".join(block.format_spec.detected_structure)
+                                if block.format_spec
+                                else "",
+                                prev_type=raw_items[idx - 1].block_type if idx > 0 else "",
+                                prev_title=raw_items[idx - 1].number or "" if idx > 0 else "",
+                                next_type=(
+                                    raw_items[idx + 1].block_type
+                                    if idx + 1 < len(raw_items)
+                                    else ""
+                                ),
+                                next_title=(
+                                    raw_items[idx + 1].number or ""
+                                    if idx + 1 < len(raw_items)
+                                    else ""
+                                ),
+                                format_spec=block.format_spec,
+                            )
 
-                    proc_result = ItemProcessingResult(
-                        correction=CorrectionResult(
-                            corrected_content=item.content_raw,
-                            overall_quality="C",
-                        ),
-                        classification=TagSet(),
-                        item_subtype=item.block_type,
-                    )
+                            paired_content = ""
+                            if item.paired_item_id:
+                                for ri in raw_items:
+                                    if ri.item_id == item.paired_item_id:
+                                        paired_content = ri.content_raw
+                                        break
 
-                t_process += time.monotonic() - tp0
-                result.items_processed += 1
-                collected.append((item, proc_result, block))
-                await queue_b.put((item, proc_result, block))
+                            async with sem:
+                                proc_result = await processor.process(item, ctx, paired_content)
+                        else:
+                            from mathforge.core.models import (
+                                CorrectionResult,
+                                ItemProcessingResult,
+                                TagSet,
+                            )
 
-            # 并发处理同一 block 内的 items
-            tasks = [process_one(item, idx) for idx, item in enumerate(raw_items)]
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+                            proc_result = ItemProcessingResult(
+                                correction=CorrectionResult(
+                                    corrected_content=item.content_raw,
+                                    overall_quality="C",
+                                ),
+                                classification=TagSet(),
+                                item_subtype=item.block_type,
+                            )
+                    except Exception as exc:
+                        # 条目级错误隔离：失败条目用 fallback 替代，不丢弃
+                        logger.error(
+                            "item_process_exception",
+                            item_id=item.item_id,
+                            error=str(exc),
+                        )
+                        from mathforge.core.models import (
+                            CorrectionResult,
+                            ItemProcessingResult,
+                            TagSet,
+                        )
 
-        timing["extract"] = t_extract
-        timing["process"] = t_process
+                        proc_result = ItemProcessingResult(
+                            correction=CorrectionResult(
+                                corrected_content=item.content_raw,
+                                overall_quality="D",
+                            ),
+                            classification=TagSet(),
+                            item_subtype=item.block_type,
+                        )
+
+                    process_times.append(time.monotonic() - tp0)
+                    block_results.append((idx, item, proc_result))
+
+                # 并发处理同一 block 内的 items
+                item_tasks = [process_one(item, idx) for idx, item in enumerate(raw_items)]
+                if item_tasks:
+                    await asyncio.gather(*item_tasks)
+
+                # 按原始索引排序，保证确定性
+                block_results.sort(key=lambda x: x[0])
+                for _, item, proc_result in block_results:
+                    collected.append((item, proc_result, block))
+                    await queue_b.put((item, proc_result, block))
+
+                t_process += sum(process_times)
+                result.items_processed += len(block_results)
+
+        except Exception as e:
+            logger.error("task_extract_process_failed", exc_info=True)
+            result.errors.append(f"extract_process: {e}")
+        finally:
+            await queue_b.put(_SENTINEL)
+            timing["extract"] = t_extract
+            timing["process"] = t_process
 
     # ── Task 3: Unify (收集，实际 unify 在 gather 后) ──
 
@@ -345,14 +414,12 @@ class PipelineOrchestrator:
         timing: dict[str, float],
         collected: list,
     ) -> None:
-        """Task 3: 消费 Queue_B（仅记录计数，真正 unify 在 gather 后）"""
+        """Task 3: 消费 Queue_B 提供背压（真正 unify 在 gather 后）"""
         t0 = time.monotonic()
-        count = 0
         while True:
             msg = await queue_b.get()
-            if msg is _SENTINEL:
+            if isinstance(msg, _Sentinel):
                 break
-            count += 1
         timing["unify"] = time.monotonic() - t0
 
     # ── 辅助方法 ──
@@ -361,6 +428,27 @@ class PipelineOrchestrator:
         """Stage 0: 将任意支持格式转换为纯文本/Markdown"""
         if fmt in (DocumentFormat.TEX, DocumentFormat.MARKDOWN):
             return file_path.read_text(encoding="utf-8")
+
+        # MinerU 后端（同时处理 PDF 和 DOCX）
+        if self._pdf_backend == "mineru" and fmt in (DocumentFormat.PDF, DocumentFormat.DOCX):
+            from mathforge.pipeline.mineru_processor import (
+                _is_mineru_available,
+                process_with_mineru,
+            )
+
+            if _is_mineru_available():
+                blocks = process_with_mineru(
+                    file_path,
+                    backend=self.config.mineru_backend,
+                    parse_method=self.config.mineru_parse_method,
+                    language=self.config.mineru_language,
+                    formula_enable=self.config.mineru_formula_enable,
+                    table_enable=self.config.mineru_table_enable,
+                    checkpoint_dir=self.config.checkpoint_dir,
+                )
+                return "\n\n".join(b.content for b in blocks if b.content.strip())
+            else:
+                logger.warning("mineru_not_installed_fallback", file=file_path.name)
 
         if fmt == DocumentFormat.PDF:
             from mathforge.pipeline.pdf_processor import PdfProcessor
@@ -418,12 +506,14 @@ class PipelineOrchestrator:
                 self.storage.save_knowledge_point(kp)
             except Exception:
                 logger.error("save_kp_failed", kp_id=kp.id, exc_info=True)
+                result.errors.append(f"save_kp_failed: {kp.id}")
 
         for q, sol in result.questions:
             try:
                 self.storage.save_question(q, sol)
             except Exception:
                 logger.error("save_question_failed", q_id=q.id, exc_info=True)
+                result.errors.append(f"save_question_failed: {q.id}")
 
     def _load_checkpoint(self, file_hash: str) -> PipelineRunProgress | None:
         """加载 checkpoint"""

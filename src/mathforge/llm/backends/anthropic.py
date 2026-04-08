@@ -121,11 +121,13 @@ class AnthropicBackend:
             if block.type == "text":
                 content += block.text
             elif block.type == "tool_use":
-                tool_calls.append({
-                    "id": block.id,
-                    "name": block.name,
-                    "arguments": block.input,
-                })
+                tool_calls.append(
+                    {
+                        "id": block.id,
+                        "name": block.name,
+                        "arguments": block.input,
+                    }
+                )
         return {
             "content": content,
             "tool_calls": tool_calls,

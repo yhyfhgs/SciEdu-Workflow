@@ -26,6 +26,8 @@ from mathforge.core.models import (
     MdBlockV2,
     SplitCursor,
 )
+from mathforge.pipeline.format_spec_library import FormatSpecLibrary
+from mathforge.pipeline.sampling import AdaptiveSampler
 from mathforge.prompts.templates import BLOCK_SPLIT_PROMPT, FORMAT_SPEC_INFER_PROMPT
 
 if TYPE_CHECKING:
@@ -44,9 +46,16 @@ _TEX_PREAMBLE_RE = re.compile(
 class BlockSplitter:
     """文档块拆分器"""
 
-    def __init__(self, llm_client: LLMClient | None, config: AppConfig) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient | None,
+        config: AppConfig,
+        spec_library: FormatSpecLibrary | None = None,
+    ) -> None:
         self.llm = llm_client
         self.config = config
+        self._sampler = AdaptiveSampler()
+        self._spec_library = spec_library
 
     async def split_file(
         self,
@@ -122,25 +131,76 @@ class BlockSplitter:
         content: str,
         source_format: DocumentFormat,
     ) -> FormatSpec | None:
-        """从文档采样中一次性推断 FormatSpec（1 次 LLM 调用）"""
+        """从文档采样中推断 FormatSpec
+
+        优先查缓存库 → LLM 推断 → 验证 pattern → 失败则重试一次
+        """
         assert self.llm is not None
 
         lines = content.splitlines(keepends=True)
         total_lines = len(lines)
 
-        # 采样：头部 150 行 + 30% 位置处 60 行
-        head_end = min(150, total_lines)
-        head_sample = "".join(lines[:head_end])
+        # 1. 查缓存库
+        if self._spec_library:
+            cached = self._spec_library.get(lines, source_format)
+            if cached:
+                is_valid, _ = self._validate_spec(cached, lines)
+                if is_valid:
+                    return cached
+            # 尝试模糊匹配
+            similar = self._spec_library.find_similar(lines, source_format)
+            if similar:
+                is_valid, _ = self._validate_spec(similar, lines)
+                if is_valid:
+                    return similar
 
-        mid_start = int(total_lines * 0.3)
-        mid_end = min(mid_start + 60, total_lines)
-        mid_sample = ""
-        if mid_start > head_end:
-            mid_sample = f"\n... (省略第 {head_end + 1}~{mid_start} 行) ...\n\n" + "".join(
-                lines[mid_start:mid_end]
-            )
+        # 2. LLM 推断
+        text_sample = self._sampler.sample(lines, source_format)
+        spec = await self._llm_infer_spec(file_path, text_sample, source_format, total_lines)
 
-        text_sample = head_sample + mid_sample
+        if spec:
+            # 3. 验证 pattern 匹配有效性
+            is_valid, failures = self._validate_spec(spec, lines)
+            if not is_valid and failures:
+                # 4. 用失败信息重试一次
+                logger.warning(
+                    "format_spec_validation_failed",
+                    file=file_path.name,
+                    failures=failures[:3],
+                )
+                retry_spec = await self._llm_infer_spec_retry(
+                    file_path, text_sample, source_format, total_lines, failures
+                )
+                if retry_spec:
+                    is_valid, _ = self._validate_spec(retry_spec, lines)
+                    if is_valid:
+                        spec = retry_spec
+                    else:
+                        # 重试后仍无效，放弃此 spec，降级到 LLM fallback
+                        logger.warning(
+                            "format_spec_retry_still_invalid",
+                            file=file_path.name,
+                        )
+                        spec = None
+                else:
+                    # 重试失败，放弃此 spec
+                    spec = None
+
+            # 存入缓存库（仅存有效的）
+            if spec and self._spec_library:
+                self._spec_library.put(lines, source_format, spec, 1.0)
+
+        return spec
+
+    async def _llm_infer_spec(
+        self,
+        file_path: Path,
+        text_sample: str,
+        source_format: DocumentFormat,
+        total_lines: int,
+    ) -> FormatSpec | None:
+        """单次 LLM FormatSpec 推断"""
+        assert self.llm is not None
 
         prompt = FORMAT_SPEC_INFER_PROMPT.format(
             file_name=file_path.name,
@@ -166,7 +226,6 @@ class BlockSplitter:
             format_spec_data = result.get("format_spec", result)
             spec = self._parse_format_spec(format_spec_data)
 
-            # 验证 spec 有效性：至少要有 content_blocks
             if not spec.content_blocks:
                 logger.warning(
                     "format_spec_empty_blocks",
@@ -183,6 +242,78 @@ class BlockSplitter:
                 exc_info=True,
             )
             return None
+
+    async def _llm_infer_spec_retry(
+        self,
+        file_path: Path,
+        text_sample: str,
+        source_format: DocumentFormat,
+        total_lines: int,
+        failures: list[str],
+    ) -> FormatSpec | None:
+        """用失败信息重试一次 FormatSpec 推断"""
+        assert self.llm is not None
+
+        failure_text = "\n".join(f"- {f}" for f in failures[:5])
+        retry_prompt = FORMAT_SPEC_INFER_PROMPT.format(
+            file_name=file_path.name,
+            source_format=source_format.value,
+            total_lines=total_lines,
+            text_sample=text_sample,
+        ) + (
+            f"\n\n--- 重要补充 ---\n"
+            f"上一次推断的 FormatSpec 存在以下问题：\n{failure_text}\n"
+            f"请修正这些 pattern，确保它们能匹配文档中的实际内容。"
+        )
+
+        try:
+            from mathforge.llm.config import LLMConfig
+
+            llm_config = LLMConfig.for_task("split")
+            result = await self.llm.generate_json(retry_prompt, config=llm_config)
+            format_spec_data = result.get("format_spec", result)
+            spec = self._parse_format_spec(format_spec_data)
+            if spec.content_blocks:
+                logger.info("format_spec_retry_success", file=file_path.name)
+                return spec
+        except Exception:
+            logger.error("format_spec_retry_failed", file=file_path.name, exc_info=True)
+        return None
+
+    @staticmethod
+    def _validate_spec(spec: FormatSpec, lines: list[str]) -> tuple[bool, list[str]]:
+        """验证 FormatSpec 的 pattern 是否能匹配实际文档内容
+
+        返回 (is_valid, failure_descriptions)
+        """
+        if not spec.content_blocks:
+            return False, ["content_blocks 为空"]
+
+        # 用前 500 行测试
+        test_text = "".join(lines[: min(500, len(lines))])
+        failures: list[str] = []
+        match_count = 0
+
+        for bs in spec.content_blocks:
+            try:
+                pattern = re.compile(bs.open_pattern, re.MULTILINE)
+                matches = list(pattern.finditer(test_text))
+                if matches:
+                    match_count += 1
+                else:
+                    failures.append(
+                        f"pattern '{bs.open_pattern}' (type={bs.block_type}) 在前500行中无匹配"
+                    )
+            except re.error as e:
+                failures.append(
+                    f"pattern '{bs.open_pattern}' (type={bs.block_type}) 正则编译错误: {e}"
+                )
+
+        # 至少一半 pattern 要有匹配
+        total = len(spec.content_blocks)
+        is_valid = match_count >= max(total / 2, 1)
+
+        return is_valid, failures
 
     # ── 确定性分块（用 FormatSpec）──
 
@@ -231,7 +362,7 @@ class BlockSplitter:
             start = 0
             while start < total_lines:
                 end = min(start + batch_size, total_lines)
-                end = self._find_semantic_boundary(lines, end, spec)
+                end = self._find_semantic_boundary(lines, end, spec, block_start=start)
                 block_content = "".join(lines[start:end])
                 if block_content.strip():
                     yield MdBlockV2(
@@ -271,16 +402,25 @@ class BlockSplitter:
 
         return sections
 
-    def _find_semantic_boundary(self, lines: list[str], target_end: int, spec: FormatSpec) -> int:
+    def _find_semantic_boundary(
+        self,
+        lines: list[str],
+        target_end: int,
+        spec: FormatSpec,
+        block_start: int = 0,
+    ) -> int:
         """在 target_end 附近找到最佳语义切分点
 
         往前扫描最多 30 行，找到空行或 block open 标记作为切分点。
+        保证返回值 > block_start，避免零进度循环。
         """
         max_lookback = 30
+        # 不能退到 block_start 或更前，至少保留 1 行进度
+        floor = block_start + 1
 
         for offset in range(min(max_lookback, target_end)):
             idx = target_end - offset
-            if idx <= 0:
+            if idx <= floor:
                 break
             line = lines[idx - 1] if idx <= len(lines) else ""
             # 空行是好的切分点
@@ -290,11 +430,11 @@ class BlockSplitter:
             for bs in spec.content_blocks:
                 try:
                     if re.match(bs.open_pattern, line.strip()):
-                        return idx - 1 if idx > 1 else idx
+                        return max(idx - 1, floor)
                 except re.error:
                     pass
 
-        return max(target_end, 1)
+        return max(target_end, floor)
 
     # ── Fallback: 逐 chunk LLM 拆分 ──
 
@@ -442,9 +582,7 @@ class BlockSplitter:
         )
 
     @staticmethod
-    def _extract_file_metadata(
-        file_path: Path, source_format: DocumentFormat
-    ) -> dict[str, Any]:
+    def _extract_file_metadata(file_path: Path, source_format: DocumentFormat) -> dict[str, Any]:
         """从文件路径提取通用元数据"""
         metadata: dict[str, Any] = {
             "source_file": str(file_path),

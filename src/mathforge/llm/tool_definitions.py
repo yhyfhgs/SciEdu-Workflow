@@ -29,8 +29,7 @@ EXECUTE_PYTHON_TOOL = {
 SIMPLIFY_EXPRESSION_TOOL = {
     "name": "simplify_expression",
     "description": (
-        "使用 sympy 化简数学表达式。输入 LaTeX 或 sympy 格式的表达式，"
-        "返回化简后的结果。"
+        "使用 sympy 化简数学表达式。输入 LaTeX 或 sympy 格式的表达式，返回化简后的结果。"
     ),
     "input_schema": {
         "type": "object",
@@ -51,8 +50,7 @@ SIMPLIFY_EXPRESSION_TOOL = {
 VERIFY_NUMERICAL_TOOL = {
     "name": "verify_numerical",
     "description": (
-        "对给定表达式在指定测试点进行数值求值，验证等式或不等式是否成立。"
-        "返回每个测试点的计算结果。"
+        "对给定表达式在指定测试点进行数值求值，验证等式或不等式是否成立。返回每个测试点的计算结果。"
     ),
     "input_schema": {
         "type": "object",
@@ -109,12 +107,14 @@ def to_openai_format(tools: list[dict]) -> list[dict]:
     """转换工具定义为 OpenAI API 格式"""
     result = []
     for tool in tools:
-        result.append({
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": tool["description"],
-                "parameters": tool.get("input_schema", {}),
-            },
-        })
+        result.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool.get("input_schema", {}),
+                },
+            }
+        )
     return result
