@@ -101,8 +101,7 @@ class EnhancedIndexManager(IndexManager):
 
         # 其他精确过滤
         other_filters = {
-            k: v for k, v in filters.items()
-            if k not in ("tags", "difficulty_range", "exclude_ids")
+            k: v for k, v in filters.items() if k not in ("tags", "difficulty_range", "exclude_ids")
         }
 
         if candidate_sets:
@@ -120,7 +119,8 @@ class EnhancedIndexManager(IndexManager):
         if other_filters:
             data = self._load()
             result_ids = {
-                id for id in result_ids
+                id
+                for id in result_ids
                 if id in data and self._matches_exact(data[id], other_filters)
             }
 
@@ -181,8 +181,7 @@ class EnhancedIndexManager(IndexManager):
     def _build_difficulty_index(self, data: dict) -> None:
         """构建 difficulty 排序索引"""
         self._difficulty_sorted = sorted(
-            (meta.get("difficulty", 5), id)
-            for id, meta in data.items()
+            (meta.get("difficulty", 5), id) for id, meta in data.items()
         )
 
     def _build_tag_trie(self, data: dict) -> None:

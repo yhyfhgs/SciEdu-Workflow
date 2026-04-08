@@ -23,8 +23,9 @@ def parse_run(
     llm_model: str | None = typer.Option(None, "--llm-model", help="LLM 模型"),
     llm_config_file: Path | None = typer.Option(None, "--llm-config", help="LLM TOML 配置文件路径"),
     backend: str = typer.Option(
-        "auto", "--backend", "-b", help="PDF 提取后端 (auto/pymupdf/marker)"
+        "auto", "--backend", "-b", help="文档提取后端 (auto/pymupdf/marker/mineru)"
     ),
+    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径（启用 SQLite 存储）"),
 ) -> None:
     """运行统一流水线 Pipeline 处理文件"""
     import asyncio
@@ -69,9 +70,14 @@ def parse_run(
     # 构建 Storage
     storage = None
     if not dry_run:
-        from mathforge.storage.file_backend import FileStorageBackend
+        if db:
+            from mathforge.storage.sqlite_backend import SQLiteStorageBackend
 
-        storage = FileStorageBackend(output)
+            storage = SQLiteStorageBackend(db)
+        else:
+            from mathforge.storage.file_backend import FileStorageBackend
+
+            storage = FileStorageBackend(output)
 
     from mathforge.pipeline.orchestrator import PipelineOrchestrator
 
@@ -135,3 +141,49 @@ def _display_result(result: PipelineResult) -> None:  # type: ignore[name-define
         table.add_row("关系建立耗时", f"{result.relation_sec:.2f}s")
         table.add_row("总耗时", f"{result.elapsed_sec:.2f}s")
         console.print(table)
+
+
+@parse_app.command("migrate-db")
+def migrate_db(
+    source: Path = typer.Argument(..., help="JSON 数据目录", exists=True),
+    target: Path = typer.Option(
+        Path("data/mathforge.db"), "--target", "-t", help="SQLite 数据库路径"
+    ),
+) -> None:
+    """将 JSON 文件存储迁移到 SQLite"""
+    from mathforge.storage.migrate import JsonToSqliteMigrator
+
+    console.print("[bold]迁移 JSON → SQLite[/bold]")
+    console.print(f"  源目录: {source}")
+    console.print(f"  目标库: {target}")
+
+    migrator = JsonToSqliteMigrator(source, target)
+    try:
+        stats = migrator.migrate()
+        success(
+            f"迁移完成: {stats['kp']} 知识点, {stats['questions']} 题目, "
+            f"{stats['skipped']} 重复跳过, {stats['errors']} 错误"
+        )
+    finally:
+        migrator.close()
+
+
+@parse_app.command("db-stats")
+def db_stats(
+    db: Path = typer.Argument(..., help="SQLite 数据库路径", exists=True),
+) -> None:
+    """显示 SQLite 数据库统计信息"""
+    from rich.table import Table
+
+    from mathforge.storage.sqlite_backend import SQLiteStorageBackend
+
+    backend = SQLiteStorageBackend(db)
+    stats = backend.stats()
+    backend.close()
+
+    table = Table(title=f"数据库统计: {db.name}")
+    table.add_column("类型", style="cyan")
+    table.add_column("数量", style="green")
+    for key, value in stats.items():
+        table.add_row(key, str(value))
+    console.print(table)

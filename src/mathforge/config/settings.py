@@ -78,6 +78,17 @@ class AppConfig(BaseSettings):
     pdf_overlap_pages: int = 3
     pdf_max_span_pages: int = 5
 
+    # MinerU 配置
+    mineru_backend: str = "pipeline"  # pipeline | vlm-auto-engine | hybrid-auto-engine
+    mineru_parse_method: str = "auto"  # auto | txt | ocr
+    mineru_language: str = "ch"  # OCR 语言
+    mineru_formula_enable: bool = True  # 公式提取
+    mineru_table_enable: bool = True  # 表格提取
+
+    # 存储
+    storage_backend: str = "json"  # "json" | "sqlite"
+    sqlite_db_path: Path = Path("data/mathforge.db")
+
     # 流水线 Pipeline
     pipeline_queue_size: int = 10
     pipeline_split_batch_lines: int = 150

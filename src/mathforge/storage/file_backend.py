@@ -37,9 +37,7 @@ class FileStorageBackend:
         data = json.loads(question.model_dump_json(exclude={"embedding"}))
         if solution:
             data["solution"] = json.loads(solution.model_dump_json())
-        json_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # 写 LaTeX
         tex_path = path / f"{question.id}.tex"
@@ -50,14 +48,17 @@ class FileStorageBackend:
             sol_path.write_text(solution.solution_latex, encoding="utf-8")
 
         # 更新索引
-        self._question_index.add(question.id, {
-            "subject": question.subject.value,
-            "difficulty": question.difficulty,
-            "tags": question.tags,
-            "type": question.question_type.value,
-            "is_generated": question.is_generated,
-            "path": str(json_path.relative_to(self.base_path)),
-        })
+        self._question_index.add(
+            question.id,
+            {
+                "subject": question.subject.value,
+                "difficulty": question.difficulty,
+                "tags": question.tags,
+                "type": question.question_type.value,
+                "is_generated": question.is_generated,
+                "path": str(json_path.relative_to(self.base_path)),
+            },
+        )
         return question.id
 
     def load_question(self, id: str) -> Question:
@@ -85,13 +86,16 @@ class FileStorageBackend:
             encoding="utf-8",
         )
 
-        self._knowledge_index.add(kp.id, {
-            "title": kp.title,
-            "kp_type": kp.kp_type.value,
-            "difficulty": kp.difficulty,
-            "tags": kp.tags,
-            "path": str(json_path.relative_to(self.base_path)),
-        })
+        self._knowledge_index.add(
+            kp.id,
+            {
+                "title": kp.title,
+                "kp_type": kp.kp_type.value,
+                "difficulty": kp.difficulty,
+                "tags": kp.tags,
+                "path": str(json_path.relative_to(self.base_path)),
+            },
+        )
         return kp.id
 
     def load_knowledge_point(self, id: str) -> KnowledgePoint:
@@ -186,7 +190,5 @@ class FileStorageBackend:
         json_path = self.base_path / entry["path"]
         data = json.loads(json_path.read_text(encoding="utf-8"))
         data["solution"] = json.loads(sol.model_dump_json())
-        json_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return sol.id

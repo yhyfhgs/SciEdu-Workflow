@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 @dataclass
 class TagNode:
     """Trie 节点"""
+
     segment: str = ""
     children: dict[str, TagNode] = field(default_factory=dict)
     item_ids: set[str] = field(default_factory=set)
