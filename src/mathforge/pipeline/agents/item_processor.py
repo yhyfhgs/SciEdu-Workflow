@@ -30,7 +30,7 @@ from mathforge.core.models import (
 from mathforge.prompts.templates import ITEM_CORRECT_AND_TAG_PROMPT
 
 if TYPE_CHECKING:
-    from mathforge.core.models import FormatSpec
+    from mathforge.core.models import StructuralContext
     from mathforge.llm.client import LLMClient
 
 logger = structlog.get_logger()
@@ -48,7 +48,7 @@ class ProcessingContext:
         "prev_title",
         "next_type",
         "next_title",
-        "format_spec",
+        "structural_context",
     )
 
     def __init__(
@@ -61,7 +61,7 @@ class ProcessingContext:
         prev_title: str = "",
         next_type: str = "",
         next_title: str = "",
-        format_spec: FormatSpec | None = None,
+        structural_context: StructuralContext | None = None,
     ) -> None:
         self.source_type = source_type
         self.chapter_title = chapter_title
@@ -71,7 +71,7 @@ class ProcessingContext:
         self.prev_title = prev_title
         self.next_type = next_type
         self.next_title = next_title
-        self.format_spec = format_spec
+        self.structural_context = structural_context
 
 
 class ItemProcessor:

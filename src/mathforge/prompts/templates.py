@@ -34,25 +34,17 @@ SOLUTION_RELEVANCE_PROMPT = load_prompt("verification/solution_relevance.txt")
 
 TAG_CLASSIFICATION_PROMPT = load_prompt("classification/tag_classification.txt")
 
-# ── Pipeline: 格式推断 Prompt（一次性，文档级）────────────
-
-FORMAT_SPEC_INFER_PROMPT = load_prompt("pipeline/format_spec_infer.txt")
-
-# ── Pipeline: 文档拆分 Prompt（逐 chunk fallback）─────────
-
-BLOCK_SPLIT_PROMPT = load_prompt("pipeline/block_split.txt")
-
 # ── Pipeline: 校准 + 标注合并 Prompt ─────────────────────
 
 ITEM_CORRECT_AND_TAG_PROMPT = load_prompt("pipeline/item_correct_and_tag.txt")
 
-# ── Pipeline: 语义分块 + FormatSpec 推断 Prompt ────────────
+# ── Pipeline: 语义分块 + 条目直接提取 Prompt ────────────
 
-BLOCK_BOUNDARY_INFER_PROMPT = load_prompt("pipeline/block_boundary_infer.txt")
+CHUNK_EXTRACT_PROMPT = load_prompt("pipeline/chunk_extract.txt")
 
-# ── Pipeline: 关系推断 Prompt ────────────────────────────
+# ── Pipeline: 跨分支关系推断 Prompt ─────────────────────
 
-RELATION_INFERENCE_PROMPT = load_prompt("pipeline/relation_inference.txt")
+CROSS_BRANCH_RELATIONS_PROMPT = load_prompt("pipeline/cross_branch_relations.txt")
 
 # ── Pipeline: VLM 页面转写 Prompt ────────────────────────
 

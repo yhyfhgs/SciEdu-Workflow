@@ -610,51 +610,101 @@ class ImageAsset(BaseModel):
     linked_item_id: str | None = None
 
 
-class ContentBlockSpec(BaseModel):
-    """文档中一种内容块类型的提取规则"""
-
-    block_type: str
-    open_pattern: str
-    close_pattern: str | None = None
-    number_group: int | None = None
-    title_group: int | None = None
-    is_paired_with: str | None = None
-    examples: list[str] = Field(default_factory=list)
+# ── Pipeline Phase 1: 文档结构与条目提取 ──────────────────
 
 
-class AnswerFormatSpec(BaseModel):
-    """答案组织方式"""
+class StructuralContext(BaseModel):
+    """Task1 输出：当前 chunk 的文档层级上下文"""
 
-    location: Literal["inline", "after_problem", "end_of_document", "separate_file", "boxed"] = (
-        "inline"
-    )
-    answer_marker: str | None = None
-    solution_block_type: str | None = None
-
-
-class FormatSpec(BaseModel):
-    """LLM 对一个 MdBlock 的格式描述 — Meta Template"""
-
-    content_blocks: list[ContentBlockSpec] = Field(default_factory=list)
-    answer_format: AnswerFormatSpec = Field(default_factory=AnswerFormatSpec)
-    section_pattern: str | None = None
-    metadata_hints: dict[str, str] = Field(default_factory=dict)
-    skip_line_patterns: list[str] = Field(default_factory=list)
-    detected_structure: list[str] = Field(default_factory=list)
-    source_type: str = ""
     chapter_title: str = ""
-    section_titles: list[str] = Field(default_factory=list)
-    document_description: str = ""
+    chapter_number: str = ""
+    section_title: str = ""
+    section_number: str = ""
+    subsection_title: str = ""
+    subsection_number: str = ""
+    document_type: str = ""  # textbook / lecture_notes / exam_paper
 
 
-class SplitCursor(BaseModel):
-    """拆分游标 — 循环间传递状态"""
+class PairedContent(BaseModel):
+    """提取时发现的配对内容（证明或解答）"""
 
-    current_line: int = 0
-    current_page: int | None = None
-    previous_block_tail: str = ""
-    blocks_so_far: int = 0
-    is_finished: bool = False
+    paired_type: str = ""  # "proof" | "solution"
+    content: str = ""
+
+
+class ExtractedItem(BaseModel):
+    """Task1 LLM 直接提取的条目"""
+
+    item_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    item_type: str = ""  # definition, theorem, lemma, exercise, etc.
+    number: str | None = None
+    title: str | None = None
+    content: str = ""
+    paired_content: PairedContent | None = None
+    line_start: int = 0
+    line_end: int = 0
+    source_chunk_id: str = ""
+    source_file: str = ""
+    structural_context: StructuralContext = Field(default_factory=StructuralContext)
+    raw_metadata: dict = Field(default_factory=dict)
+
+    def to_raw_item(self) -> RawItem:
+        """适配器：转换为 RawItem 供 ItemProcessor 复用"""
+        paired_id = None
+        return RawItem(
+            item_id=self.item_id,
+            block_type=self.item_type,
+            number=self.number,
+            title=self.title,
+            content_raw=self.content,
+            content_latex=self.content,
+            line_start=self.line_start,
+            line_end=self.line_end,
+            paired_item_id=paired_id,
+            source_block_id=self.source_chunk_id,
+            source_file=self.source_file,
+            extraction_mode="explicit",
+            raw_metadata=self.raw_metadata,
+        )
+
+
+class ChunkExtractionResult(BaseModel):
+    """QueueA 消息类型：一个 chunk 的提取结果"""
+
+    chunk_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    structural_context: StructuralContext = Field(default_factory=StructuralContext)
+    items: list[ExtractedItem] = Field(default_factory=list)
+    source_file: str = ""
+    source_format: DocumentFormat = DocumentFormat.MARKDOWN
+    line_start: int = 0
+    line_end: int = 0
+    chunk_index: int = 0
+    raw_metadata: dict = Field(default_factory=dict)
+
+
+# ── Pipeline Phase 1.5: 文档结构树 ──────────────────────
+
+
+class TaxonomyNode(BaseModel):
+    """文档结构树的节点"""
+
+    node_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    level: Literal["book", "chapter", "section", "subsection"] = "book"
+    title: str = ""
+    number: str = ""
+    parent_id: str | None = None
+    children_ids: list[str] = Field(default_factory=list)
+    item_ids: list[str] = Field(default_factory=list)
+    source_file: str = ""
+    position: int = 0  # 在父节点下的排序位置
+
+
+class DocumentTree(BaseModel):
+    """完整的文档结构树"""
+
+    root_id: str = ""
+    nodes: dict[str, TaxonomyNode] = Field(default_factory=dict)
+    item_to_node: dict[str, str] = Field(default_factory=dict)  # item_id → node_id
 
 
 class MdBlockV2(MdBlock):
@@ -664,7 +714,6 @@ class MdBlockV2(MdBlock):
     source_format: DocumentFormat = DocumentFormat.MARKDOWN
     block_index: int = 0
     total_blocks: int | None = None
-    format_spec: FormatSpec | None = None
     chapter_title: str = ""
     section_title: str = ""
     preceding_context: str = ""
