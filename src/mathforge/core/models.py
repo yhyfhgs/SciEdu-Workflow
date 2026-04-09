@@ -625,22 +625,19 @@ class StructuralContext(BaseModel):
     document_type: str = ""  # textbook / lecture_notes / exam_paper
 
 
-class PairedContent(BaseModel):
-    """提取时发现的配对内容（证明或解答）"""
-
-    paired_type: str = ""  # "proof" | "solution"
-    content: str = ""
-
-
 class ExtractedItem(BaseModel):
-    """Task1 LLM 直接提取的条目"""
+    """Task1 LLM 直接提取的条目
+
+    定理与证明、题目与解答分别作为独立条目提取，
+    通过 parent_ref 建立关联（如 "theorem:3.1"）。
+    """
 
     item_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    item_type: str = ""  # definition, theorem, lemma, exercise, etc.
+    item_type: str = ""  # definition, theorem, lemma, proof, exercise, solution, etc.
     number: str | None = None
     title: str | None = None
     content: str = ""
-    paired_content: PairedContent | None = None
+    parent_ref: str | None = None  # "theorem:3.1" / "example:2.5" / null
     line_start: int = 0
     line_end: int = 0
     source_chunk_id: str = ""
@@ -648,9 +645,13 @@ class ExtractedItem(BaseModel):
     structural_context: StructuralContext = Field(default_factory=StructuralContext)
     raw_metadata: dict = Field(default_factory=dict)
 
+    @property
+    def is_child(self) -> bool:
+        """是否为配套条目（证明/解答）"""
+        return self.item_type in ("proof", "solution", "answer")
+
     def to_raw_item(self) -> RawItem:
         """适配器：转换为 RawItem 供 ItemProcessor 复用"""
-        paired_id = None
         return RawItem(
             item_id=self.item_id,
             block_type=self.item_type,
@@ -660,7 +661,7 @@ class ExtractedItem(BaseModel):
             content_latex=self.content,
             line_start=self.line_start,
             line_end=self.line_end,
-            paired_item_id=paired_id,
+            paired_item_id=None,
             source_block_id=self.source_chunk_id,
             source_file=self.source_file,
             extraction_mode="explicit",

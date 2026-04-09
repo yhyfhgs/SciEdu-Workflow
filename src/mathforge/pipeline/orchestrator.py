@@ -411,6 +411,16 @@ class PipelineOrchestrator:
                 if processor:
                     from mathforge.pipeline.agents.item_processor import ProcessingContext
 
+                    # 构建 parent_ref → item 的索引，用于配对评审
+                    ref_index: dict[str, ExtractedItem] = {}
+                    for ei in items:
+                        if ei.number:
+                            ref_key = f"{ei.item_type}:{ei.number}"
+                            ref_index[ref_key] = ei
+                        if ei.title:
+                            ref_key_t = f"{ei.item_type}:{ei.title}"
+                            ref_index[ref_key_t] = ei
+
                     async def process_one(ei: ExtractedItem, idx: int) -> None:
                         try:
                             raw = ei.to_raw_item()
@@ -420,7 +430,20 @@ class PipelineOrchestrator:
                                 section_title=chunk.structural_context.section_title,
                                 structural_context=chunk.structural_context,
                             )
-                            paired = ei.paired_content.content if ei.paired_content else ""
+                            # 配对评审：子条目(proof/solution)带上父条目内容，
+                            #           父条目(theorem/example)带上子条目内容
+                            paired = ""
+                            if ei.is_child and ei.parent_ref:
+                                parent = ref_index.get(ei.parent_ref)
+                                if parent:
+                                    paired = parent.content
+                            elif not ei.is_child:
+                                # 查找引用自己的子条目
+                                for other in items:
+                                    if other.is_child and other.parent_ref:
+                                        if ref_index.get(other.parent_ref) is ei:
+                                            paired = other.content
+                                            break
                             async with sem:
                                 proc_result = await processor.process(raw, ctx, paired)
                         except Exception as exc:

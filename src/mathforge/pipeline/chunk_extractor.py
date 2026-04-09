@@ -26,7 +26,6 @@ from mathforge.core.models import (
     ChunkExtractionResult,
     DocumentFormat,
     ExtractedItem,
-    PairedContent,
     StructuralContext,
 )
 from mathforge.prompts.templates import CHUNK_EXTRACT_PROMPT
@@ -484,20 +483,12 @@ class ChunkExtractor:
         items: list[ExtractedItem] = []
         for item_data in llm_result.get("extracted_items", []):
             try:
-                paired = None
-                paired_data = item_data.get("paired_with")
-                if paired_data and isinstance(paired_data, dict):
-                    paired = PairedContent(
-                        paired_type=paired_data.get("type", ""),
-                        content=paired_data.get("content", ""),
-                    )
-
                 items.append(ExtractedItem(
                     item_type=item_data.get("item_type", ""),
                     number=item_data.get("number"),
                     title=item_data.get("title"),
                     content=item_data.get("content", ""),
-                    paired_content=paired,
+                    parent_ref=item_data.get("parent_ref"),
                     line_start=line_start + item_data.get("line_start", 0),
                     line_end=line_start + item_data.get("line_end", 0),
                     source_chunk_id=chunk_id,
