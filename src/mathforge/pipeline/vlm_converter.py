@@ -390,21 +390,25 @@ class VlmConverter:
             figure_hint="",
         )
 
-        # 逐页调用 generate_with_image，通过 LLMClient 标准接口
-        # 避免绕过 LLMClient 直接访问 backend（兼容性问题）
-        results: list[str] = []
-        for i, img in enumerate(images):
-            page_prompt = prompt if i == 0 else f"继续转写第 {page_nums[i] + 1} 页内容。"
-            md = await self.llm.generate_with_image(
-                prompt=page_prompt,
-                image_data=img,
+        if len(images) == 1:
+            return await self.llm.generate_with_image(
+                prompt=prompt,
+                image_data=images[0],
                 image_media_type="image/png",
                 system=_SYSTEM_PROMPT,
                 temperature=0.0,
                 max_tokens=16384,
             )
-            results.append(md)
-        return "\n\n".join(results)
+
+        # 多图批量调用，通过 LLMClient 标准接口
+        return await self.llm.generate_with_images(
+            prompt=prompt,
+            images=images,
+            image_media_type="image/png",
+            system=_SYSTEM_PROMPT,
+            temperature=0.0,
+            max_tokens=16384,
+        )
 
     # ── 插图裁剪 ─────────────────────────────────────────
 

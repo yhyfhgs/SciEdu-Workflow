@@ -114,6 +114,49 @@ class OpenAIBackend:
                 raise LLMTimeoutError(str(e)) from e
             raise LLMError(str(e)) from e
 
+    async def generate_vision_multi(
+        self,
+        prompt: str,
+        images: list[bytes],
+        image_media_type: str,
+        system: str,
+        **kwargs,
+    ) -> str:
+        """多图 vision 调用"""
+        import base64
+
+        content: list[dict] = []
+        for img in images:
+            b64 = base64.b64encode(img).decode()
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{image_media_type};base64,{b64}",
+                    },
+                }
+            )
+        content.append({"type": "text", "text": prompt})
+
+        params: dict = {
+            "model": self.config.model,
+            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            "temperature": kwargs.get("temperature", self.config.temperature),
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
+        }
+        if self.config.extra_body:
+            params["extra_body"] = self.config.extra_body
+        try:
+            response = await self.async_client.chat.completions.create(**params)
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise LLMTimeoutError(str(e)) from e
+            raise LLMError(str(e)) from e
+
     def generate_vision_sync(
         self,
         prompt: str,

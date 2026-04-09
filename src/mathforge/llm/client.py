@@ -232,6 +232,68 @@ class LLMClient:
         self._log_exchange(f"[image:{len(image_data)}B] {prompt}", result, elapsed)
         return result
 
+    async def generate_with_images(
+        self,
+        prompt: str,
+        images: list[bytes],
+        image_media_type: str = "image/png",
+        system: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        """异步多图 vision 生成"""
+        if not self.supports_vision:
+            raise LLMVisionError(f"后端 {self.config.provider} 不支持多模态图像输入")
+
+        system = system or DEFAULT_SYSTEM
+        kwargs = {}
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+
+        logger.debug(
+            "llm_multi_vision_request",
+            provider=self.config.provider.value,
+            model=self.config.model,
+            image_count=len(images),
+            total_bytes=sum(len(i) for i in images),
+        )
+
+        start = time.monotonic()
+        if hasattr(self._backend, "generate_vision_multi"):
+            result = await self._backend.generate_vision_multi(
+                prompt=prompt,
+                images=images,
+                image_media_type=image_media_type,
+                system=system,
+                **kwargs,
+            )
+        else:
+            # fallback: 只发第一张图
+            result = await self._backend.generate_vision(
+                prompt=prompt,
+                image_data=images[0],
+                image_media_type=image_media_type,
+                system=system,
+                **kwargs,
+            )
+        elapsed = int((time.monotonic() - start) * 1000)
+
+        if result is None:
+            result = ""
+
+        logger.info(
+            "llm_multi_vision_response",
+            model=self.config.model,
+            image_count=len(images),
+            total_image_bytes=sum(len(i) for i in images),
+            response_length=len(result),
+            latency_ms=elapsed,
+        )
+        self._log_exchange(f"[images:{len(images)}] {prompt[:200]}", result, elapsed)
+        return result
+
     def generate_with_image_sync(
         self,
         prompt: str,
