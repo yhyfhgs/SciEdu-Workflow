@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import structlog
@@ -40,10 +42,14 @@ class SQLiteStorageBackend:
     def __init__(self, db_path: Path | str) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.execute("PRAGMA synchronous = NORMAL")
+        self._conn.execute("PRAGMA cache_size = -64000")  # 64MB
+        self._conn.execute("PRAGMA temp_store = MEMORY")
+        self._in_transaction = False
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -61,6 +67,47 @@ class SQLiteStorageBackend:
 
     def __exit__(self, *args: object) -> None:
         self.close()
+
+    # ── 事务管理 ──────────────────────────────────────
+
+    @contextmanager
+    def transaction(self) -> Generator[None, None, None]:
+        """将多次写操作包装在单一事务中，一次 commit"""
+        self._in_transaction = True
+        try:
+            yield
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        finally:
+            self._in_transaction = False
+
+    def save_batch(
+        self,
+        kps: list[KnowledgePoint],
+        questions: list[tuple[Question, Solution | None]],
+    ) -> int:
+        """一次事务保存多个 KP + Question，返回保存总数"""
+        saved = 0
+        with self.transaction():
+            for kp in kps:
+                self.save_knowledge_point(kp)
+                saved += 1
+            for q, sol in questions:
+                self.save_question(q, sol)
+                saved += 1
+        logger.info("storage_batch_saved", kps=len(kps), questions=len(questions))
+        return saved
+
+    def update_relations_batch(
+        self,
+        items: list[tuple[str, str, list[ItemRelation]]],
+    ) -> None:
+        """批量更新关系：[(item_id, item_type, relations), ...]"""
+        with self.transaction():
+            for item_id, item_type, relations in items:
+                self._save_relations(item_id, item_type, relations)
 
     # ── KnowledgePoint ────────────────────────────────
 
@@ -119,7 +166,8 @@ class SQLiteStorageBackend:
         # 保存标签
         self._save_tags(kp.id, "kp", kp.tags)
 
-        self._conn.commit()
+        if not self._in_transaction:
+            self._conn.commit()
         return kp.id
 
     def load_knowledge_point(self, id: str) -> KnowledgePoint:
@@ -203,7 +251,8 @@ class SQLiteStorageBackend:
         self._save_relations(question.id, "question", question.relations)
         self._save_tags(question.id, "question", question.tags)
 
-        self._conn.commit()
+        if not self._in_transaction:
+            self._conn.commit()
         return question.id
 
     def load_question(self, id: str) -> Question:

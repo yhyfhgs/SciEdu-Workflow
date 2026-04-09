@@ -979,15 +979,27 @@ class PipelineRunProgress(BaseModel):
 
     file_path: str = ""
     file_hash: str = ""
-    phase: int = 1
+    stage: str = "not_started"  # not_started|vlm_convert|split|extract_process|relations|completed
+    phase: int = 1  # 向后兼容
     blocks_completed: int = 0
     blocks_total: int | None = None
+    completed_block_ids: list[str] = Field(default_factory=list)
     items_extracted: int = 0
     items_processed: int = 0
+    items_stored: int = 0
     items_unified: int = 0
     errors: list[str] = Field(default_factory=list)
     started_at: datetime = Field(default_factory=datetime.now)
     last_checkpoint_at: datetime | None = None
+
+
+class DirectoryProgress(BaseModel):
+    """目录级 pipeline 进度追踪"""
+
+    dir_path: str = ""
+    completed_files: dict[str, str] = Field(default_factory=dict)  # file_path → file_hash
+    failed_files: dict[str, str] = Field(default_factory=dict)  # file_path → error
+    started_at: datetime = Field(default_factory=datetime.now)
 
 
 # ── 前向引用解析 ──────────────────────────────────────

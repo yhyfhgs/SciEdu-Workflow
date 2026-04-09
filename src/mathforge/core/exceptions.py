@@ -41,6 +41,10 @@ class MdParseError(ParseError):
 class PdfParseError(ParseError):
     """PDF 解析错误"""
 
+    def __init__(self, filepath: str = "", detail: str = ""):
+        self.filepath = filepath
+        super().__init__(f"{filepath} - {detail}" if detail else filepath)
+
 
 class DocxParseError(ParseError):
     """Word 文档解析错误"""
@@ -75,6 +79,10 @@ class SandboxTimeoutError(SandboxError):
         super().__init__(f"代码执行超时 ({timeout_seconds}s): {snippet}")
 
 
+class LLMVisionError(LLMError):
+    """LLM 多模态视觉调用异常"""
+
+
 class ToolCallError(LLMError):
     """LLM tool calling 异常"""
 
@@ -90,6 +98,10 @@ class EvolutionExhaustedError(GenerationError):
 
 class PipelineError(MathForgeError):
     """Pipeline 处理异常"""
+
+
+class VlmConversionError(PipelineError):
+    """VLM 文档转换异常"""
 
 
 class FingerprintMatchError(PipelineError):

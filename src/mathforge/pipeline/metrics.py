@@ -1,6 +1,7 @@
 """PipelineMetrics — 管线执行指标收集
 
 各阶段记录指标，支持 structlog 输出和 JSON 持久化。
+LiveProgress — 轻量级实时计数器，供进度守护进程读取。
 """
 
 from __future__ import annotations
@@ -125,3 +126,47 @@ class PipelineMetrics:
         """持久化到文件"""
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.to_json(), encoding="utf-8")
+
+
+@dataclass
+class LiveProgress:
+    """轻量级实时计数器，供进度守护进程读取。
+
+    所有 task 在同一 event loop 上运行，无需锁。
+    """
+
+    # 文件级
+    files_total: int = 0
+    files_completed: int = 0
+
+    # Block 级
+    blocks_split: int = 0
+
+    # Item 级
+    items_extracted: int = 0
+    items_processed: int = 0
+    items_stored: int = 0
+
+    # 条目类型分布 (block_type → count)
+    type_counts: dict[str, int] = field(default_factory=dict)
+
+    # 质量分布 (grade → count)
+    quality_counts: dict[str, int] = field(default_factory=dict)
+
+    # 错误计数
+    errors: int = 0
+
+    # VLM 页面进度（流式模式）
+    vlm_pages_total: int = 0
+    vlm_pages_done: int = 0
+
+    # 起始时间
+    start_time: float = field(default_factory=time.monotonic)
+
+    def record_type(self, block_type: str) -> None:
+        """记录一个条目类型"""
+        self.type_counts[block_type] = self.type_counts.get(block_type, 0) + 1
+
+    def record_quality(self, grade: str) -> None:
+        """记录一个质量等级"""
+        self.quality_counts[grade] = self.quality_counts.get(grade, 0) + 1

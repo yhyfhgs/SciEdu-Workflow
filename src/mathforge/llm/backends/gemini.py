@@ -42,7 +42,7 @@ class GeminiBackend:
                 contents=prompt,
                 config=config,
             )
-            return response.text
+            return response.text or ""
         except Exception as e:
             if "timeout" in str(e).lower() or "timed out" in str(e).lower():
                 raise LLMTimeoutError(str(e)) from e
@@ -56,7 +56,63 @@ class GeminiBackend:
                 contents=prompt,
                 config=config,
             )
-            return response.text
+            return response.text or ""
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise LLMTimeoutError(str(e)) from e
+            raise LLMError(str(e)) from e
+
+    # ── Vision (多模态) ───────────────────────────────────
+
+    async def generate_vision(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str,
+        system: str,
+        **kwargs,
+    ) -> str:
+        from google.genai import types
+
+        config = self._build_gen_config(system=system, **kwargs)
+        contents = [
+            types.Part.from_bytes(data=image_data, mime_type=image_media_type),
+            prompt,
+        ]
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.config.model,
+                contents=contents,
+                config=config,
+            )
+            return response.text or ""
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise LLMTimeoutError(str(e)) from e
+            raise LLMError(str(e)) from e
+
+    def generate_vision_sync(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str,
+        system: str,
+        **kwargs,
+    ) -> str:
+        from google.genai import types
+
+        config = self._build_gen_config(system=system, **kwargs)
+        contents = [
+            types.Part.from_bytes(data=image_data, mime_type=image_media_type),
+            prompt,
+        ]
+        try:
+            response = self.client.models.generate_content(
+                model=self.config.model,
+                contents=contents,
+                config=config,
+            )
+            return response.text or ""
         except Exception as e:
             if "timeout" in str(e).lower() or "timed out" in str(e).lower():
                 raise LLMTimeoutError(str(e)) from e

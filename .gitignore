@@ -38,5 +38,8 @@ Thumbs.db
 htmlcov/
 .coverage
 
+# User config (keep .example.toml, ignore actual config)
+config/mathforge.toml
+
 # Binary / large files
 *.pdf

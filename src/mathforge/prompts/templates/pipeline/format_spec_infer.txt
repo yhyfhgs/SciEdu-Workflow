@@ -50,7 +50,7 @@
 - `after_problem`：答案在题目块结束后以独立块出现
 - `end_of_document`：所有答案集中在文档末尾
 - `separate_file`：答案在独立文件中
-- `boxed`：答案以 `\boxed{}` 等特殊标记嵌入
+- `boxed`：答案以 `\boxed{{}}` 等特殊标记嵌入
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## 输出质量要求
@@ -86,6 +86,7 @@
       "answer_marker": null,
       "solution_block_type": null
     }},
+    "skip_line_patterns": ["匹配应跳过的噪声行的正则表达式（如页码行 ^\\d+$、页眉页脚、分隔线 ^[-=_]{{3,}}$ 等）"],
     "section_pattern": "Python re 正则表达式 或 null",
     "source_type": "exam_paper|lecture_notes|textbook|slides",
     "detected_structure": ["文档骨架条目"],

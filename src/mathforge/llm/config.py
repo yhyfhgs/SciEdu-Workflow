@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,7 @@ class TaskLLMConfig(BaseModel):
     max_tokens: int | None = None
     timeout: int | None = None
     max_retries: int | None = None
+    extra_body: dict[str, Any] | None = None
 
 
 class LLMConfig(BaseModel):
@@ -44,6 +45,7 @@ class LLMConfig(BaseModel):
     reasoning_effort: str | None = None
     timeout: int = 120
     max_retries: int = 3
+    extra_body: dict[str, Any] | None = None
 
     PRESETS: ClassVar[dict[str, dict]] = {
         "generate": {
@@ -87,6 +89,10 @@ class LLMConfig(BaseModel):
             "max_tokens": 16384,
         },
         "numerical_verify": {
+            "temperature": 0.0,
+            "max_tokens": 8192,
+        },
+        "vlm_convert": {
             "temperature": 0.0,
             "max_tokens": 8192,
         },
@@ -140,12 +146,14 @@ class LLMConfig(BaseModel):
             or app.llm_reasoning_effort,
         }
 
-        # task_override 中的 temperature/max_tokens/timeout/max_retries 覆盖 preset
+        # task_override 中的 temperature/max_tokens/timeout/max_retries/extra_body 覆盖 preset
         if task_ovr:
             for fld in ("temperature", "max_tokens", "timeout", "max_retries"):
                 val = getattr(task_ovr, fld, None)
                 if val is not None:
                     base[fld] = val
+            if task_ovr.extra_body:
+                base["extra_body"] = task_ovr.extra_body
 
         # CLI overrides 优先级最高
         base.update({k: v for k, v in overrides.items() if v is not None})

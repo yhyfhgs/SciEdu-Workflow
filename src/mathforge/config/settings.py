@@ -28,6 +28,7 @@ KNOWN_TASKS: list[str] = [
     "infer_relations",
     "improve",
     "numerical_verify",
+    "vlm_convert",
 ]
 
 # TaskLLMConfig 中需要类型转换的字段
@@ -78,6 +79,15 @@ class AppConfig(BaseSettings):
     pdf_overlap_pages: int = 3
     pdf_max_span_pages: int = 5
 
+    # VLM 转换配置
+    vlm_dpi: int = 200
+    vlm_max_concurrent: int = 2
+    vlm_pages_per_batch: int = 5
+    vlm_streaming: bool = True  # 流式 VLM→BlockSplitter 管线
+
+    # 多文件并发
+    max_concurrent_files: int = 5
+
     # MinerU 配置
     mineru_backend: str = "pipeline"  # pipeline | vlm-auto-engine | hybrid-auto-engine
     mineru_parse_method: str = "auto"  # auto | txt | ocr
@@ -108,6 +118,9 @@ class AppConfig(BaseSettings):
     solver_enable_tools: bool = True
     sandbox_timeout: int = 10
     enable_numerical_verification: bool = True
+
+    # 进度守护
+    progress_log_interval: int = 15  # 守护进程日志间隔（秒）
 
     # 日志
     log_level: str = "INFO"

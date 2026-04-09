@@ -46,13 +46,15 @@ class OpenAIBackend:
         }
         if self.config.reasoning_effort:
             params["reasoning_effort"] = self.config.reasoning_effort
+        if self.config.extra_body:
+            params["extra_body"] = self.config.extra_body
         return params
 
     async def generate(self, prompt: str, system: str, **kwargs) -> str:
         params = self._build_params(prompt, system, **kwargs)
         try:
             response = await self.async_client.chat.completions.create(**params)
-            return response.choices[0].message.content
+            return response.choices[0].message.content or ""
         except Exception as e:
             if "timeout" in str(e).lower() or "timed out" in str(e).lower():
                 raise LLMTimeoutError(str(e)) from e
@@ -62,7 +64,91 @@ class OpenAIBackend:
         params = self._build_params(prompt, system, **kwargs)
         try:
             response = self.client.chat.completions.create(**params)
-            return response.choices[0].message.content
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise LLMTimeoutError(str(e)) from e
+            raise LLMError(str(e)) from e
+
+    # ── Vision (多模态) ───────────────────────────────────
+
+    async def generate_vision(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str,
+        system: str,
+        **kwargs,
+    ) -> str:
+        import base64
+
+        b64 = base64.b64encode(image_data).decode()
+        params: dict = {
+            "model": self.config.model,
+            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            "temperature": kwargs.get("temperature", self.config.temperature),
+            "messages": [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{image_media_type};base64,{b64}",
+                                "detail": "high",
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                },
+            ],
+        }
+        if self.config.extra_body:
+            params["extra_body"] = self.config.extra_body
+        try:
+            response = await self.async_client.chat.completions.create(**params)
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise LLMTimeoutError(str(e)) from e
+            raise LLMError(str(e)) from e
+
+    def generate_vision_sync(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str,
+        system: str,
+        **kwargs,
+    ) -> str:
+        import base64
+
+        b64 = base64.b64encode(image_data).decode()
+        params: dict = {
+            "model": self.config.model,
+            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            "temperature": kwargs.get("temperature", self.config.temperature),
+            "messages": [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{image_media_type};base64,{b64}",
+                                "detail": "high",
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                },
+            ],
+        }
+        try:
+            response = self.client.chat.completions.create(**params)
+            return response.choices[0].message.content or ""
         except Exception as e:
             if "timeout" in str(e).lower() or "timed out" in str(e).lower():
                 raise LLMTimeoutError(str(e)) from e

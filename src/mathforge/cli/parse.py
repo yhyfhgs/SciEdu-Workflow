@@ -21,11 +21,16 @@ def parse_run(
     dry_run: bool = typer.Option(False, "--dry-run", help="仅处理，不写入存储"),
     llm_provider: str | None = typer.Option(None, "--llm-provider", help="LLM 提供者"),
     llm_model: str | None = typer.Option(None, "--llm-model", help="LLM 模型"),
-    llm_config_file: Path | None = typer.Option(None, "--llm-config", help="LLM TOML 配置文件路径"),
-    backend: str = typer.Option(
-        "auto", "--backend", "-b", help="文档提取后端 (auto/pymupdf/marker/mineru)"
+    llm_config_file: Path | None = typer.Option(
+        Path("config/mathforge.toml"), "--llm-config", help="LLM TOML 配置文件路径"
     ),
-    db: Path | None = typer.Option(None, "--db", help="SQLite 数据库路径（启用 SQLite 存储）"),
+    backend: str = typer.Option(
+        "vlm", "--backend", "-b", help="文档提取后端 (auto/pymupdf/marker/mineru/vlm)"
+    ),
+    db: Path | None = typer.Option(
+        Path("data/mathforge.db"), "--db", help="SQLite 数据库路径（启用 SQLite 存储）"
+    ),
+    max_files: int = typer.Option(5, "--max-files", "-j", help="目录模式下最大并发文件数"),
 ) -> None:
     """运行统一流水线 Pipeline 处理文件"""
     import asyncio
@@ -34,11 +39,10 @@ def parse_run(
 
     from mathforge.config.settings import AppConfig
 
-    config = (
-        AppConfig(data_dir=output, llm_config_file=llm_config_file)
-        if llm_config_file
-        else AppConfig(data_dir=output)
-    )
+    # 如果配置文件不存在则忽略
+    if llm_config_file and not llm_config_file.exists():
+        llm_config_file = None
+    config = AppConfig(data_dir=output, llm_config_file=llm_config_file)
 
     # 构建 LLM 客户端（per-task）
     from mathforge.llm.client import LLMClient
@@ -56,7 +60,10 @@ def parse_run(
                 cli_overrides["model"] = llm_model
 
             # 为每个 pipeline 任务创建独立 LLM client
-            for task_name in ("process_item", "split", "infer_relations"):
+            task_names = ["process_item", "split", "infer_relations"]
+            if backend == "vlm":
+                task_names.append("vlm_convert")
+            for task_name in task_names:
                 task_cfg = LLMConfig.from_app_config(config, task_name, **cli_overrides)
                 llm_clients[task_name] = LLMClient(task_cfg)
 
@@ -104,7 +111,7 @@ def parse_run(
                 progress.update(task, advance=1)
                 _display_result(result)
             else:
-                results = await orchestrator.process_directory(path)
+                results = await orchestrator.process_directory(path, max_concurrent_files=max_files)
                 total_kps = sum(len(r.knowledge_points) for r in results)
                 total_qs = sum(len(r.questions) for r in results)
                 total_errors = sum(len(r.errors) for r in results)

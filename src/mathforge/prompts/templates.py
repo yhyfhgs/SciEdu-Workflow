@@ -46,6 +46,14 @@ BLOCK_SPLIT_PROMPT = load_prompt("pipeline/block_split.txt")
 
 ITEM_CORRECT_AND_TAG_PROMPT = load_prompt("pipeline/item_correct_and_tag.txt")
 
+# ── Pipeline: 语义分块 + FormatSpec 推断 Prompt ────────────
+
+BLOCK_BOUNDARY_INFER_PROMPT = load_prompt("pipeline/block_boundary_infer.txt")
+
 # ── Pipeline: 关系推断 Prompt ────────────────────────────
 
 RELATION_INFERENCE_PROMPT = load_prompt("pipeline/relation_inference.txt")
+
+# ── Pipeline: VLM 页面转写 Prompt ────────────────────────
+
+VLM_CONVERT_PROMPT = load_prompt("pipeline/vlm_convert.txt")

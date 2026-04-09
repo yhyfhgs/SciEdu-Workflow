@@ -18,6 +18,7 @@ import structlog
 from mathforge.core.models import (
     CorrectionEntry,
     CorrectionResult,
+    EducationLevel,
     ItemProcessingResult,
     PedagogicalLevel,
     RawItem,
@@ -123,30 +124,30 @@ class ItemProcessor:
             paired_section = f"**配对内容（解答/证明）**:\n\n{paired_content}"
 
         # ── LLM 调用 ──
+        def _esc(s: str) -> str:
+            return s.replace("{", "{{").replace("}", "}}")
+
         prompt = ITEM_CORRECT_AND_TAG_PROMPT.format(
             block_type=item.block_type,
             number=item.number or "(无编号)",
-            content_raw=pre_content,
-            paired_content_section=paired_section,
+            content_raw=_esc(pre_content),
+            paired_content_section=_esc(paired_section),
             source_type=context.source_type,
-            chapter_title=context.chapter_title or "(未知)",
-            section_title=context.section_title or "(未知)",
-            detected_structure=context.detected_structure or "(未提供)",
+            chapter_title=_esc(context.chapter_title or "(未知)"),
+            section_title=_esc(context.section_title or "(未知)"),
+            detected_structure=_esc(context.detected_structure or "(未提供)"),
             prev_type=context.prev_type or "(无)",
-            prev_title=context.prev_title or "(无)",
+            prev_title=_esc(context.prev_title or "(无)"),
             next_type=context.next_type or "(无)",
-            next_title=context.next_title or "(无)",
-            suspicious_terms=suspicious or "(无可疑项)",
-            taxonomy_excerpt=taxonomy_excerpt,
+            next_title=_esc(context.next_title or "(无)"),
+            suspicious_terms=_esc(suspicious or "(无可疑项)"),
+            taxonomy_excerpt=_esc(taxonomy_excerpt),
         )
 
-        from mathforge.llm.config import LLMConfig
-
-        llm_config = LLMConfig.for_task("process_item")
         result_dict = None
         for attempt in range(2):  # 1 次尝试 + 1 次重试
             try:
-                result_dict = await self.llm.generate_json(prompt, config=llm_config)
+                result_dict = await self.llm.generate_json(prompt)
                 latency = time.monotonic() - t0
                 logger.info(
                     "item_processed",
@@ -189,28 +190,28 @@ class ItemProcessor:
         if paired_content:
             paired_section = f"**配对内容（解答/证明）**:\n\n{paired_content}"
 
+        def _esc(s: str) -> str:
+            return s.replace("{", "{{").replace("}", "}}")
+
         prompt = ITEM_CORRECT_AND_TAG_PROMPT.format(
             block_type=item.block_type,
             number=item.number or "(无编号)",
-            content_raw=pre_content,
-            paired_content_section=paired_section,
+            content_raw=_esc(pre_content),
+            paired_content_section=_esc(paired_section),
             source_type=context.source_type,
-            chapter_title=context.chapter_title or "(未知)",
-            section_title=context.section_title or "(未知)",
-            detected_structure=context.detected_structure or "(未提供)",
+            chapter_title=_esc(context.chapter_title or "(未知)"),
+            section_title=_esc(context.section_title or "(未知)"),
+            detected_structure=_esc(context.detected_structure or "(未提供)"),
             prev_type=context.prev_type or "(无)",
-            prev_title=context.prev_title or "(无)",
+            prev_title=_esc(context.prev_title or "(无)"),
             next_type=context.next_type or "(无)",
-            next_title=context.next_title or "(无)",
-            suspicious_terms=suspicious or "(无可疑项)",
-            taxonomy_excerpt=taxonomy_excerpt,
+            next_title=_esc(context.next_title or "(无)"),
+            suspicious_terms=_esc(suspicious or "(无可疑项)"),
+            taxonomy_excerpt=_esc(taxonomy_excerpt),
         )
 
         try:
-            from mathforge.llm.config import LLMConfig
-
-            llm_config = LLMConfig.for_task("process_item")
-            result_dict = self.llm.generate_json_sync(prompt, config=llm_config)
+            result_dict = self.llm.generate_json_sync(prompt)
             latency = time.monotonic() - t0
             logger.info(
                 "item_processed",
@@ -237,12 +238,14 @@ class ItemProcessor:
             if report:
                 suspicious_parts.append(
                     f"确定性修复 {len(report)} 处: "
-                    + "; ".join(f"'{r['original']}'→'{r['corrected']}'" for r in report[:5])
+                    + "; ".join(f"'{r['from']}'→'{r['to']}'" for r in report[:5])
                 )
 
-            _, flagged = engine.validate_math_terms(repaired)
+            flagged = engine.validate_math_terms(repaired)
             if flagged:
-                suspicious_parts.append(f"可疑术语: {', '.join(flagged[:10])}")
+                suspicious_parts.append(
+                    f"可疑术语: {', '.join(d['suspicious_term'] for d in flagged[:10])}"
+                )
 
             return repaired, "\n".join(suspicious_parts)
         except ImportError:
@@ -333,23 +336,32 @@ class ItemProcessor:
             except Exception:
                 pass
 
+        # 防御性处理：LLM 可能返回非法 quality grade
+        raw_quality = corr_data.get("overall_quality", "B")
+        if raw_quality not in ("A", "B", "C", "D", "F"):
+            raw_quality = "C"
+
+        # completeness_score 可能是 None 或非数字
+        raw_comp = corr_data.get("completeness_score", 1.0)
+        completeness = float(raw_comp) if isinstance(raw_comp, (int, float)) else 1.0
+
         correction = CorrectionResult(
-            corrected_content=corr_data.get("corrected_content", pre_content),
-            corrected_latex=corr_data.get("corrected_latex", ""),
+            corrected_content=corr_data.get("corrected_content") or pre_content,
+            corrected_latex=corr_data.get("corrected_latex") or "",
             corrections=corrections,
-            semantic_issues=corr_data.get("semantic_issues", []),
-            logic_issues=corr_data.get("logic_issues", []),
+            semantic_issues=corr_data.get("semantic_issues") or [],
+            logic_issues=corr_data.get("logic_issues") or [],
             is_answer_verified=corr_data.get("is_answer_verified"),
-            completeness_score=corr_data.get("completeness_score", 1.0),
-            overall_quality=corr_data.get("overall_quality", "B"),
+            completeness_score=completeness,
+            overall_quality=raw_quality,
         )
 
-        # 解析 TagSet
-        tax_data = class_data.get("taxonomy", {})
+        # 解析 TagSet — 防御 None 值
+        tax_data = class_data.get("taxonomy") or {}
         taxonomy = TaxonomyPath(
-            domain=tax_data.get("domain", "math"),
-            branch=tax_data.get("branch", ""),
-            topic=tax_data.get("topic", ""),
+            domain=tax_data.get("domain") or "math",
+            branch=tax_data.get("branch") or "",
+            topic=tax_data.get("topic") or "",
             subtopic=tax_data.get("subtopic"),
             specific=tax_data.get("specific"),
         )
@@ -366,11 +378,17 @@ class ItemProcessor:
         except ValueError:
             ped_level = PedagogicalLevel.STANDARD
 
+        edu_str = class_data.get("education_level", "undergraduate")
+        try:
+            edu_level = EducationLevel(edu_str)
+        except ValueError:
+            edu_level = EducationLevel.UNDERGRADUATE
+
         classification = TagSet(
             domain=SubjectDomain.MATH,
             subject=subject,
             taxonomy=taxonomy,
-            education_level=class_data.get("education_level", "undergraduate"),
+            education_level=edu_level,
             pedagogical_level=ped_level,
             methods=class_data.get("methods", []),
             tested_topics=class_data.get("tested_topics", []),
@@ -380,11 +398,14 @@ class ItemProcessor:
         # Post-LLM 验证
         self._post_validate(correction)
 
+        raw_diff = class_data.get("difficulty", 5)
+        difficulty = max(1, min(10, int(raw_diff) if isinstance(raw_diff, (int, float)) else 5))
+
         return ItemProcessingResult(
             correction=correction,
             classification=classification,
             item_subtype=class_data.get("item_subtype", item.block_type),
-            difficulty=class_data.get("difficulty", 5),
+            difficulty=difficulty,
         )
 
     def _post_validate(self, correction: CorrectionResult) -> None:

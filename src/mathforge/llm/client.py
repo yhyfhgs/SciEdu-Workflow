@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from mathforge.core.exceptions import ToolCallError
+from mathforge.core.exceptions import LLMVisionError, ToolCallError
 from mathforge.core.models import ConversationMessage, ToolCall, ToolResult
-from mathforge.llm.backends import ToolCallingBackend
+from mathforge.llm.backends import ToolCallingBackend, VisionBackend
 from mathforge.llm.config import LLMConfig, LLMProvider
 from mathforge.llm.parser import parse_llm_json
 
@@ -82,6 +82,14 @@ class LLMClient:
         result = await self._backend.generate(prompt=prompt, system=system, **kwargs)
         elapsed = int((time.monotonic() - start) * 1000)
 
+        if result is None:
+            logger.warning(
+                "llm_response_none",
+                provider=self.config.provider.value,
+                model=self.config.model,
+            )
+            result = ""
+
         logger.info(
             "llm_response",
             provider=self.config.provider.value,
@@ -119,6 +127,14 @@ class LLMClient:
         result = self._backend.generate_sync(prompt=prompt, system=system, **kwargs)
         elapsed = int((time.monotonic() - start) * 1000)
 
+        if result is None:
+            logger.warning(
+                "llm_response_none",
+                provider=self.config.provider.value,
+                model=self.config.model,
+            )
+            result = ""
+
         logger.info(
             "llm_response",
             provider=self.config.provider.value,
@@ -151,6 +167,127 @@ class LLMClient:
         system = system or JSON_SYSTEM
         raw = self.generate_sync(prompt, system=system, **kwargs)
         return parse_llm_json(raw)
+
+    # ── Vision (多模态) ───────────────────────────────────
+
+    @property
+    def supports_vision(self) -> bool:
+        """当前后端是否支持多模态图像输入"""
+        return isinstance(self._backend, VisionBackend)
+
+    async def generate_with_image(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str = "image/png",
+        system: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        """异步多模态生成：图像 + 文本 → 文本"""
+        if not self.supports_vision:
+            raise LLMVisionError(f"后端 {self.config.provider} 不支持多模态图像输入")
+
+        system = system or DEFAULT_SYSTEM
+        kwargs = {}
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+
+        logger.debug(
+            "llm_vision_request",
+            provider=self.config.provider.value,
+            model=self.config.model,
+            image_size_bytes=len(image_data),
+            image_media_type=image_media_type,
+        )
+
+        start = time.monotonic()
+        result = await self._backend.generate_vision(
+            prompt=prompt,
+            image_data=image_data,
+            image_media_type=image_media_type,
+            system=system,
+            **kwargs,
+        )
+        elapsed = int((time.monotonic() - start) * 1000)
+
+        if result is None:
+            logger.warning(
+                "llm_response_none",
+                provider=self.config.provider.value,
+                model=self.config.model,
+            )
+            result = ""
+
+        logger.info(
+            "llm_vision_response",
+            provider=self.config.provider.value,
+            model=self.config.model,
+            image_size_bytes=len(image_data),
+            response_length=len(result),
+            latency_ms=elapsed,
+        )
+        self._log_exchange(f"[image:{len(image_data)}B] {prompt}", result, elapsed)
+        return result
+
+    def generate_with_image_sync(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str = "image/png",
+        system: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        """同步多模态生成：图像 + 文本 → 文本"""
+        if not self.supports_vision:
+            raise LLMVisionError(f"后端 {self.config.provider} 不支持多模态图像输入")
+
+        system = system or DEFAULT_SYSTEM
+        kwargs = {}
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+
+        logger.debug(
+            "llm_vision_request",
+            provider=self.config.provider.value,
+            model=self.config.model,
+            image_size_bytes=len(image_data),
+            image_media_type=image_media_type,
+        )
+
+        start = time.monotonic()
+        result = self._backend.generate_vision_sync(
+            prompt=prompt,
+            image_data=image_data,
+            image_media_type=image_media_type,
+            system=system,
+            **kwargs,
+        )
+        elapsed = int((time.monotonic() - start) * 1000)
+
+        if result is None:
+            logger.warning(
+                "llm_response_none",
+                provider=self.config.provider.value,
+                model=self.config.model,
+            )
+            result = ""
+
+        logger.info(
+            "llm_vision_response",
+            provider=self.config.provider.value,
+            model=self.config.model,
+            image_size_bytes=len(image_data),
+            response_length=len(result),
+            latency_ms=elapsed,
+        )
+        self._log_exchange(f"[image:{len(image_data)}B] {prompt}", result, elapsed)
+        return result
 
     # ── Tool Calling ─────────────────────────────────────
 

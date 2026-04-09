@@ -36,9 +36,13 @@ def main(
     ),
     log_level: str = typer.Option("INFO", "--log-level", help="日志级别"),
     log_format: str = typer.Option("console", "--log-format", help="日志格式 (console|json)"),
+    log_dir: Path = typer.Option(Path("data"), "--log-dir", help="日志文件目录"),
 ) -> None:
     """MathForge CLI"""
-    setup_logging(level=log_level, format=log_format)
+    from datetime import datetime
+
+    log_file = log_dir / f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    setup_logging(level=log_level, format=log_format, log_file=log_file)
 
 
 app.add_typer(parse_app)

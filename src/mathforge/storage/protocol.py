@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from mathforge.core.models import KnowledgePoint, Question, Solution
+    from mathforge.core.models import ItemRelation, KnowledgePoint, Question, Solution
 
 
 @runtime_checkable
@@ -27,3 +27,20 @@ class StorageBackend(Protocol):
     def search_knowledge(self, filters: dict) -> list[str]: ...
 
     def knowledge_count(self) -> int: ...
+
+
+class BatchStorageBackend(StorageBackend, Protocol):
+    """支持批量操作的存储后端"""
+
+    def save_batch(
+        self,
+        kps: list[KnowledgePoint],
+        questions: list[tuple[Question, Solution | None]],
+    ) -> int: ...
+
+    def update_relations_batch(
+        self,
+        items: list[tuple[str, str, list[ItemRelation]]],
+    ) -> None: ...
+
+    def find_duplicates(self, content: str, item_type: str = "all") -> list[str]: ...

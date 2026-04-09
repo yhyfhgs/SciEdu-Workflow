@@ -1,21 +1,24 @@
-"""BlockSplitter — 文档拆分器
+"""BlockSplitter — 文档语义分块器
 
-两阶段架构：
-1. 一次性 FormatSpec 推断（1 次 LLM 调用，文档级）
-2. 确定性分块（用推断出的 FormatSpec 正则切分）
+全文档滑动窗口架构：
+1. 按 chunk_size 行读取文档 + 完整下一个 chunk 作为后续上下文
+2. LLM 返回截断行号（语义完整边界）+ FormatSpec
+3. 截断行包含在下一个 block 中（防止行内分割漏字）
+4. LLM 可返回 "incomplete" 表示需要更多内容，系统自动追加下一个 chunk
+5. 循环直到文档末尾
 
-Fallback：逐 chunk LLM 拆分（保留原有逻辑）。
 输出为 async generator，支持流水线消费。
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 import structlog
 
@@ -24,11 +27,9 @@ from mathforge.core.models import (
     FormatSpec,
     MdBlockType,
     MdBlockV2,
-    SplitCursor,
 )
 from mathforge.pipeline.format_spec_library import FormatSpecLibrary
-from mathforge.pipeline.sampling import AdaptiveSampler
-from mathforge.prompts.templates import BLOCK_SPLIT_PROMPT, FORMAT_SPEC_INFER_PROMPT
+from mathforge.prompts.templates import BLOCK_BOUNDARY_INFER_PROMPT
 
 if TYPE_CHECKING:
     from mathforge.config.settings import AppConfig
@@ -43,8 +44,61 @@ _TEX_PREAMBLE_RE = re.compile(
 )
 
 
+class StreamingLineBuffer(Sequence[str]):
+    """可增量追加内容的行缓冲区，供流式 VLM→BlockSplitter 管线使用。
+
+    VLM producer 调用 append_chunk() 追加 Markdown 文本，
+    BlockSplitter consumer 调用 wait_for_lines() 等待足够的行可用。
+    所有操作在同一 event loop 上，无需锁。
+    """
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._finished = False
+        self._new_content = asyncio.Event()
+
+    def append_chunk(self, text: str) -> None:
+        """追加一段 Markdown 文本（由 VLM producer 调用）"""
+        if text:
+            new_lines = text.splitlines(keepends=True)
+            self._lines.extend(new_lines)
+        self._new_content.set()
+
+    def finish(self) -> None:
+        """标记流结束（不会再有新内容到达）"""
+        self._finished = True
+        self._new_content.set()
+
+    @property
+    def is_finished(self) -> bool:
+        return self._finished
+
+    def __len__(self) -> int:
+        return len(self._lines)
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[str]: ...
+
+    def __getitem__(self, index: int | slice) -> str | list[str]:
+        return self._lines[index]
+
+    async def wait_for_lines(self, needed: int) -> bool:
+        """等待至少 needed 行可用或流结束。
+
+        Returns:
+            True 如果有足够行可用，False 如果流已结束且行数不够。
+        """
+        while len(self._lines) < needed and not self._finished:
+            self._new_content.clear()
+            await self._new_content.wait()
+        return len(self._lines) >= needed
+
+
 class BlockSplitter:
-    """文档块拆分器"""
+    """文档语义分块器 — 滑动窗口 + LLM 截断点推断"""
 
     def __init__(
         self,
@@ -54,7 +108,6 @@ class BlockSplitter:
     ) -> None:
         self.llm = llm_client
         self.config = config
-        self._sampler = AdaptiveSampler()
         self._spec_library = spec_library
 
     async def split_file(
@@ -63,55 +116,11 @@ class BlockSplitter:
         content: str,
         source_format: DocumentFormat,
     ) -> AsyncGenerator[MdBlockV2, None]:
-        """拆分文件为 MdBlockV2 流
-
-        Phase A: 一次性 LLM 推断 FormatSpec → 确定性分块
-        Phase B (fallback): 逐 chunk LLM 分块
-        """
+        """将文档拆分为语义完整的 MdBlockV2 流，每个 block 附带 FormatSpec"""
         t0 = time.monotonic()
 
-        # Phase A: 一次性推断 FormatSpec
-        spec: FormatSpec | None = None
-        if self.llm:
-            spec = await self._infer_format_spec(file_path, content, source_format)
-
-        if spec:
-            logger.info(
-                "block_split_spec_inferred",
-                file=file_path.name,
-                content_blocks=len(spec.content_blocks),
-                has_section_pattern=spec.section_pattern is not None,
-            )
-            block_index = 0
-            async for block in self._split_by_spec(file_path, content, spec, source_format):
-                block.block_index = block_index
-                block_index += 1
-                elapsed = time.monotonic() - t0
-                logger.info(
-                    "block_split",
-                    block_index=block.block_index,
-                    lines=f"{block.line_start}-{block.line_end}",
-                    method="spec",
-                    elapsed_sec=round(elapsed, 2),
-                )
-                yield block
-        elif self.llm:
-            logger.info("block_split_llm_fallback", file=file_path.name)
-            block_index = 0
-            async for block in self._split_by_llm(file_path, content, source_format):
-                block.block_index = block_index
-                block_index += 1
-                elapsed = time.monotonic() - t0
-                logger.info(
-                    "block_split",
-                    block_index=block.block_index,
-                    lines=f"{block.line_start}-{block.line_end}",
-                    method="llm_fallback",
-                    elapsed_sec=round(elapsed, 2),
-                )
-                yield block
-        else:
-            # 无 LLM，整个文件作为单 block
+        if not self.llm:
+            # 无 LLM: 整个文件作为单 block
             logger.warning("block_split_single_block", file=file_path.name)
             yield MdBlockV2(
                 block_id=str(uuid.uuid4()),
@@ -122,441 +131,424 @@ class BlockSplitter:
                 line_start=0,
                 line_end=len(content.splitlines()),
             )
+            return
 
-    # ── Phase A: 一次性 FormatSpec 推断 ──
+        lines = content.splitlines(keepends=True)
+        block_index = 0
+        async for block in self._split_sliding_window(file_path, lines, source_format):
+            block.block_index = block_index
+            block_index += 1
+            elapsed = time.monotonic() - t0
+            logger.info(
+                "block_split",
+                block_index=block.block_index,
+                lines=f"{block.line_start}-{block.line_end}",
+                content_len=len(block.content),
+                method="sliding_window",
+                elapsed_sec=round(elapsed, 2),
+            )
+            yield block
 
-    async def _infer_format_spec(
+    async def split_file_streaming(
         self,
         file_path: Path,
-        content: str,
+        line_buffer: StreamingLineBuffer,
         source_format: DocumentFormat,
-    ) -> FormatSpec | None:
-        """从文档采样中推断 FormatSpec
+    ) -> AsyncGenerator[MdBlockV2, None]:
+        """流式分块：从 StreamingLineBuffer 读取增量到达的内容。
 
-        优先查缓存库 → LLM 推断 → 验证 pattern → 失败则重试一次
+        当 buffer 中的行不够组装一个 chunk 时，会等待 VLM producer 追加更多内容。
+        """
+        t0 = time.monotonic()
+
+        if not self.llm:
+            # 无 LLM: 等待全部内容，作为单 block
+            while not line_buffer.is_finished:
+                await line_buffer.wait_for_lines(len(line_buffer) + 1)
+            content = "".join(line_buffer[:])
+            if content.strip():
+                yield MdBlockV2(
+                    block_id=str(uuid.uuid4()),
+                    block_type=MdBlockType.TEXT,
+                    content=content,
+                    source_file=str(file_path),
+                    source_format=source_format,
+                    line_start=0,
+                    line_end=len(line_buffer),
+                )
+            return
+
+        block_index = 0
+        async for block in self._split_sliding_window_streaming(
+            file_path, line_buffer, source_format
+        ):
+            block.block_index = block_index
+            block_index += 1
+            elapsed = time.monotonic() - t0
+            logger.info(
+                "block_split",
+                block_index=block.block_index,
+                lines=f"{block.line_start}-{block.line_end}",
+                content_len=len(block.content),
+                method="streaming_window",
+                elapsed_sec=round(elapsed, 2),
+            )
+            yield block
+
+    # ── 滑动窗口分块 ──
+
+    async def _split_sliding_window(
+        self,
+        file_path: Path,
+        lines: list[str],
+        source_format: DocumentFormat,
+    ) -> AsyncGenerator[MdBlockV2, None]:
+        """全文档滑动窗口：循环推断截断点 + FormatSpec"""
+        assert self.llm is not None
+
+        chunk_size = self.config.pipeline_split_batch_lines
+        total = len(lines)
+        raw_metadata = self._extract_file_metadata(file_path, source_format)
+
+        pos = 0
+        carry_over_lines: list[str] = []
+        prev_tail = ""
+        global_line_offset = 0
+
+        while pos < total or carry_over_lines:
+            # 1. 组装当前 chunk = carry_over + 新读取的行
+            read_count = max(0, chunk_size - len(carry_over_lines))
+            read_end = min(pos + read_count, total)
+            chunk_lines = carry_over_lines + list(lines[pos:read_end])
+            pos = read_end
+
+            # 2. 取完整的下一个 chunk 作为后续上下文
+            next_end = min(pos + chunk_size, total)
+            next_block = "".join(lines[pos:next_end])
+
+            is_last = pos >= total
+
+            if is_last and not next_block.strip():
+                # 最后一批，直接输出
+                text = "".join(chunk_lines)
+                if text.strip():
+                    yield self._make_block(
+                        text,
+                        None,
+                        file_path,
+                        source_format,
+                        global_line_offset,
+                        global_line_offset + len(chunk_lines),
+                        raw_metadata,
+                    )
+                break
+
+            # 3. LLM 调用：截断点 + FormatSpec
+            chunk_text = "".join(chunk_lines)
+            result = await self._infer_boundary(
+                chunk_text,
+                next_block,
+                prev_tail,
+                file_path,
+                source_format,
+            )
+            trunc = result.get("truncation_line")
+
+            # 4. 处理 "incomplete" — 追加下一个 chunk 继续扩展
+            while trunc == "incomplete" and pos < total:
+                extend_end = min(pos + chunk_size, total)
+                chunk_lines.extend(lines[pos:extend_end])
+                pos = extend_end
+                # 重新取下一段上下文
+                next_end = min(pos + chunk_size, total)
+                next_block = "".join(lines[pos:next_end])
+                chunk_text = "".join(chunk_lines)
+
+                logger.info(
+                    "block_split_extend",
+                    chunk_lines=len(chunk_lines),
+                    reason="incomplete",
+                )
+
+                result = await self._infer_boundary(
+                    chunk_text,
+                    next_block,
+                    prev_tail,
+                    file_path,
+                    source_format,
+                )
+                trunc = result.get("truncation_line")
+
+            # 到文档末尾仍然 incomplete，直接全部输出
+            if trunc == "incomplete":
+                trunc = None
+
+            spec_data = result.get("format_spec", {})
+            spec = self._parse_format_spec(spec_data) if spec_data else None
+
+            # 缓存有效 spec
+            if spec and spec.content_blocks and self._spec_library:
+                self._spec_library.put(lines, source_format, spec, 1.0)
+
+            # 5. 按截断点分割（截断行纳入下一个 block）
+            if trunc is not None and isinstance(trunc, int) and 0 < trunc < len(chunk_lines):
+                complete_lines = chunk_lines[:trunc]
+                carry_over_lines = chunk_lines[trunc:]
+            else:
+                complete_lines = chunk_lines
+                carry_over_lines = []
+
+            # 6. yield 完整部分
+            complete_text = "".join(complete_lines)
+            if complete_text.strip():
+                line_end = global_line_offset + len(complete_lines)
+                yield self._make_block(
+                    complete_text,
+                    spec,
+                    file_path,
+                    source_format,
+                    global_line_offset,
+                    line_end,
+                    raw_metadata,
+                )
+                prev_tail = "\n".join(complete_text.strip().splitlines()[-10:])
+                global_line_offset = line_end
+
+        # 处理最终残余
+        if carry_over_lines:
+            text = "".join(carry_over_lines)
+            if text.strip():
+                yield self._make_block(
+                    text,
+                    None,
+                    file_path,
+                    source_format,
+                    global_line_offset,
+                    global_line_offset + len(carry_over_lines),
+                    raw_metadata,
+                )
+
+    async def _split_sliding_window_streaming(
+        self,
+        file_path: Path,
+        buf: StreamingLineBuffer,
+        source_format: DocumentFormat,
+    ) -> AsyncGenerator[MdBlockV2, None]:
+        """流式滑动窗口：与 _split_sliding_window 相同逻辑，但从 StreamingLineBuffer 读取。
+
+        当 pos 到达 buffer 当前末尾但流未结束时，等待更多内容到达后继续。
         """
         assert self.llm is not None
 
-        lines = content.splitlines(keepends=True)
-        total_lines = len(lines)
+        chunk_size = self.config.pipeline_split_batch_lines
+        raw_metadata = self._extract_file_metadata(file_path, source_format)
 
-        # 1. 查缓存库
-        if self._spec_library:
-            cached = self._spec_library.get(lines, source_format)
-            if cached:
-                is_valid, _ = self._validate_spec(cached, lines)
-                if is_valid:
-                    return cached
-            # 尝试模糊匹配
-            similar = self._spec_library.find_similar(lines, source_format)
-            if similar:
-                is_valid, _ = self._validate_spec(similar, lines)
-                if is_valid:
-                    return similar
+        pos = 0
+        carry_over_lines: list[str] = []
+        prev_tail = ""
+        global_line_offset = 0
 
-        # 2. LLM 推断
-        text_sample = self._sampler.sample(lines, source_format)
-        spec = await self._llm_infer_spec(file_path, text_sample, source_format, total_lines)
+        while True:
+            # 等待足够的行来组装 chunk（或流结束）
+            needed = pos + max(0, chunk_size - len(carry_over_lines))
+            await buf.wait_for_lines(needed)
 
-        if spec:
-            # 3. 验证 pattern 匹配有效性
-            is_valid, failures = self._validate_spec(spec, lines)
-            if not is_valid and failures:
-                # 4. 用失败信息重试一次
-                logger.warning(
-                    "format_spec_validation_failed",
-                    file=file_path.name,
-                    failures=failures[:3],
+            total = len(buf)
+            if pos >= total and not carry_over_lines:
+                if buf.is_finished:
+                    break
+                # 流未结束但暂时没新内容，继续等
+                continue
+
+            # 1. 组装当前 chunk = carry_over + 新读取的行
+            read_count = max(0, chunk_size - len(carry_over_lines))
+            read_end = min(pos + read_count, total)
+            chunk_lines = carry_over_lines + list(buf[pos:read_end])
+            pos = read_end
+
+            # 2. 取后续上下文（可能需要等待更多行到达）
+            next_needed = pos + chunk_size
+            await buf.wait_for_lines(min(next_needed, pos + 1))
+            cur_total = len(buf)
+            next_end = min(pos + chunk_size, cur_total)
+            next_block = "".join(buf[pos:next_end])
+
+            is_last = buf.is_finished and pos >= cur_total
+
+            if is_last and not next_block.strip():
+                text = "".join(chunk_lines)
+                if text.strip():
+                    yield self._make_block(
+                        text,
+                        None,
+                        file_path,
+                        source_format,
+                        global_line_offset,
+                        global_line_offset + len(chunk_lines),
+                        raw_metadata,
+                    )
+                carry_over_lines = []
+                break
+
+            # 3. LLM 调用
+            chunk_text = "".join(chunk_lines)
+            result = await self._infer_boundary(
+                chunk_text, next_block, prev_tail, file_path, source_format
+            )
+            trunc = result.get("truncation_line")
+
+            # 4. 处理 "incomplete" — 追加更多行
+            while trunc == "incomplete":
+                # 等待更多行到达（或流结束）
+                extend_needed = pos + chunk_size
+                await buf.wait_for_lines(min(extend_needed, pos + 1))
+                cur_total = len(buf)
+
+                if pos >= cur_total and buf.is_finished:
+                    break  # 流结束，不再有更多内容
+
+                extend_end = min(pos + chunk_size, cur_total)
+                chunk_lines.extend(buf[pos:extend_end])
+                pos = extend_end
+
+                next_end = min(pos + chunk_size, len(buf))
+                next_block = "".join(buf[pos:next_end])
+                chunk_text = "".join(chunk_lines)
+
+                logger.info(
+                    "block_split_extend",
+                    chunk_lines=len(chunk_lines),
+                    reason="incomplete_streaming",
                 )
-                retry_spec = await self._llm_infer_spec_retry(
-                    file_path, text_sample, source_format, total_lines, failures
+
+                result = await self._infer_boundary(
+                    chunk_text, next_block, prev_tail, file_path, source_format
                 )
-                if retry_spec:
-                    is_valid, _ = self._validate_spec(retry_spec, lines)
-                    if is_valid:
-                        spec = retry_spec
-                    else:
-                        # 重试后仍无效，放弃此 spec，降级到 LLM fallback
-                        logger.warning(
-                            "format_spec_retry_still_invalid",
-                            file=file_path.name,
-                        )
-                        spec = None
-                else:
-                    # 重试失败，放弃此 spec
-                    spec = None
+                trunc = result.get("truncation_line")
 
-            # 存入缓存库（仅存有效的）
-            if spec and self._spec_library:
-                self._spec_library.put(lines, source_format, spec, 1.0)
+            if trunc == "incomplete":
+                trunc = None
 
-        return spec
+            spec_data = result.get("format_spec", {})
+            spec = self._parse_format_spec(spec_data) if spec_data else None
 
-    async def _llm_infer_spec(
+            if spec and spec.content_blocks and self._spec_library:
+                self._spec_library.put(list(buf[:]), source_format, spec, 1.0)
+
+            # 5. 按截断点分割
+            if trunc is not None and isinstance(trunc, int) and 0 < trunc < len(chunk_lines):
+                complete_lines = chunk_lines[:trunc]
+                carry_over_lines = chunk_lines[trunc:]
+            else:
+                complete_lines = chunk_lines
+                carry_over_lines = []
+
+            # 6. yield 完整部分
+            complete_text = "".join(complete_lines)
+            if complete_text.strip():
+                line_end = global_line_offset + len(complete_lines)
+                yield self._make_block(
+                    complete_text,
+                    spec,
+                    file_path,
+                    source_format,
+                    global_line_offset,
+                    line_end,
+                    raw_metadata,
+                )
+                prev_tail = "\n".join(complete_text.strip().splitlines()[-10:])
+                global_line_offset = line_end
+
+        # 处理最终残余
+        if carry_over_lines:
+            text = "".join(carry_over_lines)
+            if text.strip():
+                yield self._make_block(
+                    text,
+                    None,
+                    file_path,
+                    source_format,
+                    global_line_offset,
+                    global_line_offset + len(carry_over_lines),
+                    raw_metadata,
+                )
+
+    # ── LLM 调用 ──
+
+    async def _infer_boundary(
         self,
+        chunk_text: str,
+        next_block: str,
+        prev_tail: str,
         file_path: Path,
-        text_sample: str,
         source_format: DocumentFormat,
-        total_lines: int,
-    ) -> FormatSpec | None:
-        """单次 LLM FormatSpec 推断"""
+    ) -> dict[str, Any]:
+        """调用 LLM 推断截断点和 FormatSpec"""
         assert self.llm is not None
 
-        prompt = FORMAT_SPEC_INFER_PROMPT.format(
+        safe_chunk = chunk_text.replace("{", "{{").replace("}", "}}")
+        safe_next = next_block.replace("{", "{{").replace("}", "}}")
+        safe_tail = prev_tail.replace("{", "{{").replace("}", "}}")
+
+        prompt = BLOCK_BOUNDARY_INFER_PROMPT.format(
+            current_block=safe_chunk,
+            next_block=safe_next if safe_next.strip() else "(文档结尾，无后续内容)",
+            previous_tail=safe_tail or "(文档开头)",
             file_name=file_path.name,
             source_format=source_format.value,
-            total_lines=total_lines,
-            text_sample=text_sample,
         )
 
         t0 = time.monotonic()
         try:
-            from mathforge.llm.config import LLMConfig
-
-            llm_config = LLMConfig.for_task("split")
-            result = await self.llm.generate_json(prompt, config=llm_config)
+            result = await self.llm.generate_json(prompt)
             latency = time.monotonic() - t0
-
             logger.info(
-                "format_spec_infer_done",
+                "block_boundary_infer",
                 file=file_path.name,
+                chunk_lines=len(chunk_text.splitlines()),
+                truncation=result.get("truncation_line"),
                 latency_sec=round(latency, 2),
             )
-
-            format_spec_data = result.get("format_spec", result)
-            spec = self._parse_format_spec(format_spec_data)
-
-            if not spec.content_blocks:
-                logger.warning(
-                    "format_spec_empty_blocks",
-                    file=file_path.name,
-                )
-                return None
-
-            return spec
-
+            return result
         except Exception:
             logger.error(
-                "format_spec_infer_failed",
+                "block_boundary_infer_failed",
                 file=file_path.name,
                 exc_info=True,
             )
-            return None
-
-    async def _llm_infer_spec_retry(
-        self,
-        file_path: Path,
-        text_sample: str,
-        source_format: DocumentFormat,
-        total_lines: int,
-        failures: list[str],
-    ) -> FormatSpec | None:
-        """用失败信息重试一次 FormatSpec 推断"""
-        assert self.llm is not None
-
-        failure_text = "\n".join(f"- {f}" for f in failures[:5])
-        retry_prompt = FORMAT_SPEC_INFER_PROMPT.format(
-            file_name=file_path.name,
-            source_format=source_format.value,
-            total_lines=total_lines,
-            text_sample=text_sample,
-        ) + (
-            f"\n\n--- 重要补充 ---\n"
-            f"上一次推断的 FormatSpec 存在以下问题：\n{failure_text}\n"
-            f"请修正这些 pattern，确保它们能匹配文档中的实际内容。"
-        )
-
-        try:
-            from mathforge.llm.config import LLMConfig
-
-            llm_config = LLMConfig.for_task("split")
-            result = await self.llm.generate_json(retry_prompt, config=llm_config)
-            format_spec_data = result.get("format_spec", result)
-            spec = self._parse_format_spec(format_spec_data)
-            if spec.content_blocks:
-                logger.info("format_spec_retry_success", file=file_path.name)
-                return spec
-        except Exception:
-            logger.error("format_spec_retry_failed", file=file_path.name, exc_info=True)
-        return None
-
-    @staticmethod
-    def _validate_spec(spec: FormatSpec, lines: list[str]) -> tuple[bool, list[str]]:
-        """验证 FormatSpec 的 pattern 是否能匹配实际文档内容
-
-        返回 (is_valid, failure_descriptions)
-        """
-        if not spec.content_blocks:
-            return False, ["content_blocks 为空"]
-
-        # 用前 500 行测试
-        test_text = "".join(lines[: min(500, len(lines))])
-        failures: list[str] = []
-        match_count = 0
-
-        for bs in spec.content_blocks:
-            try:
-                pattern = re.compile(bs.open_pattern, re.MULTILINE)
-                matches = list(pattern.finditer(test_text))
-                if matches:
-                    match_count += 1
-                else:
-                    failures.append(
-                        f"pattern '{bs.open_pattern}' (type={bs.block_type}) 在前500行中无匹配"
-                    )
-            except re.error as e:
-                failures.append(
-                    f"pattern '{bs.open_pattern}' (type={bs.block_type}) 正则编译错误: {e}"
-                )
-
-        # 至少一半 pattern 要有匹配
-        total = len(spec.content_blocks)
-        is_valid = match_count >= max(total / 2, 1)
-
-        return is_valid, failures
-
-    # ── 确定性分块（用 FormatSpec）──
-
-    async def _split_by_spec(
-        self,
-        file_path: Path,
-        content: str,
-        spec: FormatSpec,
-        source_format: DocumentFormat,
-    ) -> AsyncGenerator[MdBlockV2, None]:
-        """用 FormatSpec 的正则确定性拆分
-
-        优先按 section_pattern 切分，否则按固定行数 + 语义边界切分。
-        """
-        lines = content.splitlines(keepends=True)
-        total_lines = len(lines)
-        file_str = str(file_path)
-
-        raw_metadata = self._extract_file_metadata(file_path, source_format)
-
-        # 尝试按 section pattern 切分
-        sections: list[tuple[int, int, str]] | None = None
-        if spec.section_pattern:
-            sections = self._split_by_section_pattern(lines, spec.section_pattern)
-
-        if sections and len(sections) > 1:
-            for sec_start, sec_end, sec_title in sections:
-                block_content = "".join(lines[sec_start:sec_end])
-                if not block_content.strip():
-                    continue
-                yield MdBlockV2(
-                    block_id=str(uuid.uuid4()),
-                    block_type=MdBlockType.TEXT,
-                    content=block_content,
-                    source_file=file_str,
-                    source_format=source_format,
-                    line_start=sec_start,
-                    line_end=sec_end,
-                    format_spec=spec,
-                    section_title=sec_title,
-                    raw_metadata=raw_metadata,
-                )
-        else:
-            # 按固定行数切分 + 语义边界检测
-            batch_size = self.config.pipeline_split_batch_lines
-            start = 0
-            while start < total_lines:
-                end = min(start + batch_size, total_lines)
-                end = self._find_semantic_boundary(lines, end, spec, block_start=start)
-                block_content = "".join(lines[start:end])
-                if block_content.strip():
-                    yield MdBlockV2(
-                        block_id=str(uuid.uuid4()),
-                        block_type=MdBlockType.TEXT,
-                        content=block_content,
-                        source_file=file_str,
-                        source_format=source_format,
-                        line_start=start,
-                        line_end=end,
-                        format_spec=spec,
-                        raw_metadata=raw_metadata,
-                    )
-                start = end
-
-    def _split_by_section_pattern(
-        self, lines: list[str], section_pattern: str
-    ) -> list[tuple[int, int, str]]:
-        """按 section pattern 切分，返回 (start, end, title) 列表"""
-        try:
-            pattern = re.compile(section_pattern, re.MULTILINE)
-        except re.error:
-            return []
-
-        sections: list[tuple[int, int, str]] = []
-        matches: list[tuple[int, str]] = []
-
-        for i, line in enumerate(lines):
-            m = pattern.match(line.rstrip())
-            if m:
-                title = m.group(1) if m.lastindex and m.lastindex >= 1 else line.strip()
-                matches.append((i, title))
-
-        for idx, (start, title) in enumerate(matches):
-            end = matches[idx + 1][0] if idx + 1 < len(matches) else len(lines)
-            sections.append((start, end, title))
-
-        return sections
-
-    def _find_semantic_boundary(
-        self,
-        lines: list[str],
-        target_end: int,
-        spec: FormatSpec,
-        block_start: int = 0,
-    ) -> int:
-        """在 target_end 附近找到最佳语义切分点
-
-        往前扫描最多 30 行，找到空行或 block open 标记作为切分点。
-        保证返回值 > block_start，避免零进度循环。
-        """
-        max_lookback = 30
-        # 不能退到 block_start 或更前，至少保留 1 行进度
-        floor = block_start + 1
-
-        for offset in range(min(max_lookback, target_end)):
-            idx = target_end - offset
-            if idx <= floor:
-                break
-            line = lines[idx - 1] if idx <= len(lines) else ""
-            # 空行是好的切分点
-            if not line.strip():
-                return idx
-            # block open 标记也是好的切分点（在前一行切）
-            for bs in spec.content_blocks:
-                try:
-                    if re.match(bs.open_pattern, line.strip()):
-                        return max(idx - 1, floor)
-                except re.error:
-                    pass
-
-        return max(target_end, floor)
-
-    # ── Fallback: 逐 chunk LLM 拆分 ──
-
-    async def _split_by_llm(
-        self,
-        file_path: Path,
-        content: str,
-        source_format: DocumentFormat,
-    ) -> AsyncGenerator[MdBlockV2, None]:
-        """逐 chunk LLM 拆分（fallback 路径）"""
-        assert self.llm is not None
-
-        lines = content.splitlines(keepends=True)
-        total_lines = len(lines)
-        file_str = str(file_path)
-        batch_size = self.config.pipeline_split_batch_lines
-        raw_metadata = self._extract_file_metadata(file_path, source_format)
-
-        cursor = SplitCursor()
-
-        while not cursor.is_finished and cursor.current_line < total_lines:
-            start = cursor.current_line
-            end = min(start + batch_size, total_lines)
-            text_chunk = "".join(lines[start:end])
-
-            prompt = BLOCK_SPLIT_PROMPT.format(
-                start_line=start,
-                end_line=end,
-                text_chunk=text_chunk,
-                previous_block_tail=cursor.previous_block_tail,
-            )
-
-            t0 = time.monotonic()
-            try:
-                from mathforge.llm.config import LLMConfig
-
-                llm_config = LLMConfig.for_task("split")
-                result = await self.llm.generate_json(prompt, config=llm_config)
-                latency = time.monotonic() - t0
-
-                logger.info(
-                    "block_split_llm_call",
-                    start_line=start,
-                    end_line=end,
-                    latency_sec=round(latency, 2),
-                )
-            except Exception:
-                logger.error(
-                    "block_split_llm_failed",
-                    start_line=start,
-                    end_line=end,
-                    exc_info=True,
-                )
-                yield MdBlockV2(
-                    block_id=str(uuid.uuid4()),
-                    block_type=MdBlockType.TEXT,
-                    content=text_chunk,
-                    source_file=file_str,
-                    source_format=source_format,
-                    line_start=start,
-                    line_end=end,
-                    raw_metadata=raw_metadata,
-                )
-                cursor.current_line = end
-                continue
-
-            blocks_data = result.get("blocks", [])
-            format_spec_data = result.get("format_spec", {})
-            ends_mid = result.get("ends_mid_block", False)
-            extend = result.get("suggested_extend_lines", 0)
-
-            if ends_mid and extend > 0 and end < total_lines:
-                new_end = min(end + extend, total_lines)
-                text_chunk = "".join(lines[start:new_end])
-                end = new_end
-
-            spec = self._parse_format_spec(format_spec_data)
-
-            if blocks_data:
-                for bd in blocks_data:
-                    block_content = bd.get("content", text_chunk)
-                    yield MdBlockV2(
-                        block_id=str(uuid.uuid4()),
-                        block_type=MdBlockType.TEXT,
-                        content=block_content,
-                        source_file=file_str,
-                        source_format=source_format,
-                        line_start=bd.get("line_start", start),
-                        line_end=bd.get("line_end", end),
-                        format_spec=spec,
-                        chapter_title=bd.get("chapter_title", ""),
-                        section_title=bd.get("section_title", ""),
-                        preceding_context=cursor.previous_block_tail,
-                        raw_metadata=raw_metadata,
-                    )
-            else:
-                yield MdBlockV2(
-                    block_id=str(uuid.uuid4()),
-                    block_type=MdBlockType.TEXT,
-                    content=text_chunk,
-                    source_file=file_str,
-                    source_format=source_format,
-                    line_start=start,
-                    line_end=end,
-                    format_spec=spec,
-                    preceding_context=cursor.previous_block_tail,
-                    raw_metadata=raw_metadata,
-                )
-
-            tail_lines = text_chunk.strip().splitlines()[-3:]
-            cursor.previous_block_tail = "\n".join(tail_lines)
-            cursor.current_line = end
-            cursor.blocks_so_far += len(blocks_data) or 1
-
-            if end >= total_lines:
-                cursor.is_finished = True
+            return {"truncation_line": None, "format_spec": {}}
 
     # ── 辅助方法 ──
 
     @staticmethod
-    def _parse_format_spec(data: dict[str, Any]) -> FormatSpec:
+    def _make_block(
+        content: str,
+        spec: FormatSpec | None,
+        file_path: Path,
+        source_format: DocumentFormat,
+        line_start: int,
+        line_end: int,
+        raw_metadata: dict[str, Any],
+    ) -> MdBlockV2:
+        """构造 MdBlockV2"""
+        return MdBlockV2(
+            block_id=str(uuid.uuid4()),
+            block_type=MdBlockType.TEXT,
+            content=content,
+            source_file=str(file_path),
+            source_format=source_format,
+            line_start=line_start,
+            line_end=line_end,
+            format_spec=spec,
+            raw_metadata=raw_metadata,
+        )
+
+    @staticmethod
+    def _parse_format_spec(data: dict[str, Any]) -> FormatSpec | None:
         """从 LLM 输出解析 FormatSpec"""
+        if not data:
+            return None
+
         from mathforge.core.models import AnswerFormatSpec, ContentBlockSpec
 
         blocks = []
@@ -572,12 +564,23 @@ class BlockSplitter:
         except Exception:
             answer = AnswerFormatSpec()
 
+        # LLM 可能返回 dict 列表而非 string 列表，需要归一化
+        raw_structure = data.get("detected_structure", [])
+        structure: list[str] = []
+        for item in raw_structure:
+            if isinstance(item, str):
+                structure.append(item)
+            elif isinstance(item, dict):
+                structure.append(item.get("title", str(item)))
+            else:
+                structure.append(str(item))
+
         return FormatSpec(
             content_blocks=blocks,
             answer_format=answer,
             section_pattern=data.get("section_pattern"),
             source_type=data.get("source_type", ""),
-            detected_structure=data.get("detected_structure", []),
+            detected_structure=structure,
             document_description=data.get("document_description", ""),
         )
 
@@ -590,12 +593,10 @@ class BlockSplitter:
         }
 
         name = file_path.stem
-        # 通用年份检测
         year_match = re.search(r"(19|20)\d{2}", name)
         if year_match:
             metadata["year"] = int(year_match.group())
 
-        # 关键词类型提示
         for keyword, exam_type in [
             ("零试", "lingshi"),
             ("一试", "yishi"),

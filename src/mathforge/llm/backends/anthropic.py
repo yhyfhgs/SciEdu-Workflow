@@ -66,6 +66,90 @@ class AnthropicBackend:
                 raise LLMTimeoutError(str(e)) from e
             raise LLMError(str(e)) from e
 
+    # ── Vision (多模态) ───────────────────────────────────
+
+    async def generate_vision(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str,
+        system: str,
+        **kwargs,
+    ) -> str:
+        import base64
+
+        b64 = base64.b64encode(image_data).decode()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image_media_type,
+                            "data": b64,
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        try:
+            response = await self.async_client.messages.create(
+                model=self.config.model,
+                max_tokens=kwargs.get("max_tokens", self.config.max_tokens),
+                temperature=kwargs.get("temperature", self.config.temperature),
+                system=system,
+                messages=messages,
+            )
+            return response.content[0].text
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise LLMTimeoutError(str(e)) from e
+            raise LLMError(str(e)) from e
+
+    def generate_vision_sync(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str,
+        system: str,
+        **kwargs,
+    ) -> str:
+        import base64
+
+        b64 = base64.b64encode(image_data).decode()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image_media_type,
+                            "data": b64,
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        try:
+            response = self.client.messages.create(
+                model=self.config.model,
+                max_tokens=kwargs.get("max_tokens", self.config.max_tokens),
+                temperature=kwargs.get("temperature", self.config.temperature),
+                system=system,
+                messages=messages,
+            )
+            return response.content[0].text
+        except Exception as e:
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                raise LLMTimeoutError(str(e)) from e
+            raise LLMError(str(e)) from e
+
     # ── Tool Calling ─────────────────────────────────────
 
     async def generate_with_tools(

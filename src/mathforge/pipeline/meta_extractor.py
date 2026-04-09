@@ -22,6 +22,56 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+# ── 噪声过滤：纯标题/章节名等无效条目 ──
+
+_TITLE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^#{1,6}\s+.{0,40}$"),  # Markdown header
+    re.compile(r"^第[一二三四五六七八九十百\d]+[章节部分讲]"),  # 中文章节号
+    re.compile(r"^Chapter\s+\d+", re.IGNORECASE),  # English chapter
+    re.compile(r"^Section\s+\d+", re.IGNORECASE),  # English section
+    re.compile(r"^\d+[\.\s]+[^\n]{2,30}$"),  # "3.2 连续函数"
+    re.compile(r"^[一二三四五六七八九十]+[、.]\s*.{2,20}$"),  # "三、极限"
+    re.compile(r"^§\s*\d+"),  # "§3 群的同态"
+    re.compile(r"^\*\*第[一二三四五六七八九十百\d]+[章节部分讲]"),  # 加粗的章节标题
+]
+_MIN_CONTENT_CHARS = 20
+
+# 目录/结构性内容的特征模式
+_TOC_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\.{3,}"),  # 目录中的省略号连接 "......"
+    re.compile(r"…{2,}"),  # Unicode 省略号
+    re.compile(r"^目\s*录\s*$"),  # "目录"
+    re.compile(r"^contents?\s*$", re.IGNORECASE),  # "Contents"
+    re.compile(r"^(前言|序言|编者|序$)", re.IGNORECASE),  # 前言序言
+    re.compile(r"^(参考文献|references|bibliography)", re.IGNORECASE),  # 参考文献
+    re.compile(r"^(索引|index)\s*$", re.IGNORECASE),  # 索引
+]
+
+# 纯过渡性/说明性段落
+_TRANSITION_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^(本[章节]|本[部分]|下面|以下|接下来)(我们|将|来|介绍|讨论|学习|研究)"),
+    re.compile(r"^(在本[章节]中|在这[一]?[章节]中)"),
+    re.compile(r"^(回顾|复习|总结|小结)\s*[:：]?\s*$"),
+]
+
+
+def _is_toc_content(content: str) -> bool:
+    """检测是否为目录/参考文献/索引等结构性内容"""
+    lines = content.strip().splitlines()
+    if not lines:
+        return False
+    # 整块匹配目录关键词
+    first = lines[0].strip()
+    if any(p.search(first) for p in _TOC_PATTERNS):
+        return True
+    # 多数行含目录连接符 "......" 或 "……"
+    if len(lines) >= 2:
+        dot_lines = sum(1 for ln in lines if re.search(r"\.{3,}|…{2,}", ln))
+        if dot_lines >= len(lines) * 0.5:
+            return True
+    return False
+
+
 # 启发式提取的结构标记
 _HEURISTIC_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
@@ -109,6 +159,7 @@ class MetaExtractor:
             score = self._score_extraction(items, block)
             if score >= 0.2 and items:
                 self._attach_content_markers(items)
+                items = self._filter_noise_items(items)
                 report = ExtractionReport(
                     block_id=block.block_id,
                     strategy_used="spec",
@@ -130,6 +181,7 @@ class MetaExtractor:
         score = self._score_extraction(items, block)
         if items:
             self._attach_content_markers(items)
+            items = self._filter_noise_items(items)
             report = ExtractionReport(
                 block_id=block.block_id,
                 strategy_used="heuristic",
@@ -149,6 +201,7 @@ class MetaExtractor:
         # 策略 3: fallback — 整块作为单条目
         items = self._fallback_extract(block)
         self._attach_content_markers(items)
+        items = self._filter_noise_items(items)
         report = ExtractionReport(
             block_id=block.block_id,
             strategy_used="fallback",
@@ -163,6 +216,60 @@ class MetaExtractor:
             source_file=block.source_file,
         )
         return items, report
+
+    # ── 噪声过滤 ──
+
+    @staticmethod
+    def _filter_noise_items(items: list[RawItem]) -> list[RawItem]:
+        """过滤纯标题/章节名/目录/页码/过渡段落等无效条目"""
+        filtered: list[RawItem] = []
+        for item in items:
+            content = item.content_raw.strip()
+            # 过滤纯文字和注记类型
+            if item.block_type in ("text", "remark"):
+                logger.debug(
+                    "type_filtered",
+                    block_type=item.block_type,
+                    content=content[:50],
+                )
+                continue
+
+            # 目录条目检测（含 "......" 的行 + 短内容）
+            if _is_toc_content(content):
+                logger.debug("toc_item_filtered", content=content[:60])
+                continue
+
+            # 纯章节/过渡性标题检测（不论长度）
+            first_line = content.split("\n", 1)[0].strip()
+            if any(p.search(first_line) for p in _TITLE_PATTERNS):
+                # 如果除了标题行外没有实质内容，过滤
+                rest = content.split("\n", 1)[1].strip() if "\n" in content else ""
+                if len(rest) < _MIN_CONTENT_CHARS:
+                    logger.debug("title_item_filtered", content=first_line[:60])
+                    continue
+
+            # 纯过渡性段落
+            if any(p.match(content) for p in _TRANSITION_PATTERNS) and len(content) < 80:
+                logger.debug("transition_item_filtered", content=content[:60])
+                continue
+
+            # 内容足够长的条目直接保留
+            if len(content) >= _MIN_CONTENT_CHARS:
+                filtered.append(item)
+                continue
+
+            # 短内容：纯数字/标点
+            if re.fullmatch(r"[\d\s.,:;，。：；、\-—()（）\[\]]*", content):
+                logger.debug("noise_item_filtered", content=content[:50])
+                continue
+            filtered.append(item)
+        if len(filtered) < len(items):
+            logger.info(
+                "noise_items_removed",
+                removed=len(items) - len(filtered),
+                remaining=len(filtered),
+            )
+        return filtered
 
     # ── 策略 1: FormatSpec regex 提取 ──
 

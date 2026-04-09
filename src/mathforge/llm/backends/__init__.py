@@ -50,3 +50,34 @@ class ToolCallingBackend(Protocol):
     ) -> dict:
         """同步 tool calling，返回格式同上"""
         ...
+
+
+@runtime_checkable
+class VisionBackend(Protocol):
+    """支持多模态图像输入的 LLM 后端协议
+
+    与 LLMBackend 并列，后端可同时实现两个协议。
+    接收原始图像 bytes，各后端内部处理 base64 编码。
+    """
+
+    async def generate_vision(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str,
+        system: str,
+        **kwargs,
+    ) -> str:
+        """异步多模态生成：图像 + 文本 → 文本"""
+        ...
+
+    def generate_vision_sync(
+        self,
+        prompt: str,
+        image_data: bytes,
+        image_media_type: str,
+        system: str,
+        **kwargs,
+    ) -> str:
+        """同步多模态生成"""
+        ...

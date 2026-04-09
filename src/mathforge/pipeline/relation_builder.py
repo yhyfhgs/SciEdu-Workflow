@@ -153,13 +153,11 @@ class RelationBuilder:
                 continue
 
             items_desc = self._format_items_for_prompt(batch)
-            prompt = RELATION_INFERENCE_PROMPT.format(items_list=items_desc)
+            safe_desc = items_desc.replace("{", "{{").replace("}", "}}")
+            prompt = RELATION_INFERENCE_PROMPT.format(items_list=safe_desc)
 
             try:
-                from mathforge.llm.config import LLMConfig
-
-                llm_config = LLMConfig.for_task("infer_relations")
-                result = await self.llm.generate_json(prompt, config=llm_config)
+                result = await self.llm.generate_json(prompt)
 
                 for rel in result.get("relations", []):
                     source_item = id_map.get(rel.get("source_id", ""))
@@ -295,8 +293,6 @@ class RelationBuilder:
 
             # 如果有 target→source 的反向边且其 confidence 更低，移除那条
             reverse_conf = _edge_confidence(target_id, source_id)
-            if target_id in prereq_graph.get(target_id, set()):
-                pass  # target→source 不一定在图中
             if (
                 target_id in prereq_graph
                 and source_id in prereq_graph.get(target_id, set())
