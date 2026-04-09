@@ -12,11 +12,11 @@ from typing import TYPE_CHECKING
 import structlog
 
 from mathforge.core.models import (
+    ChunkExtractionResult,
     ExampleItem,
     ItemSource,
     KnowledgeItem,
     KPType,
-    MdBlockV2,
     ProofContent,
     QualityAssessment,
     QuestionItem,
@@ -85,7 +85,7 @@ class ItemUnifier:
 
     def unify_batch(
         self,
-        raw_items: list[tuple[RawItem, ItemProcessingResult, MdBlockV2]],
+        raw_items: list[tuple[RawItem, ItemProcessingResult, ChunkExtractionResult]],
     ) -> list[UnifiedItemBase]:
         """批量转化，处理配对关系"""
         results: list[UnifiedItemBase] = []
@@ -105,7 +105,7 @@ class ItemUnifier:
         self,
         raw: RawItem,
         result: ItemProcessingResult,
-        block: MdBlockV2,
+        block: ChunkExtractionResult,
     ) -> UnifiedItemBase | None:
         """转化单个 RawItem"""
         subtype = result.item_subtype or raw.block_type
@@ -121,10 +121,16 @@ class ItemUnifier:
             file_path=raw.source_file,
             block_id=raw.source_block_id,
             line_range=(raw.line_start, raw.line_end),
-            source_type=block.format_spec.source_type if block.format_spec else "",
-            chapter=block.chapter_title or None,
-            section=block.section_title or None,
-            extraction_method="meta_extractor",
+            source_type=getattr(block, "structural_context", None)
+            and block.structural_context.document_type
+            or "",
+            chapter=getattr(block, "structural_context", None)
+            and block.structural_context.chapter_title
+            or None,
+            section=getattr(block, "structural_context", None)
+            and block.structural_context.section_title
+            or None,
+            extraction_method="chunk_extractor",
         )
         if raw.raw_metadata:
             source.exam_type = raw.raw_metadata.get("exam_type")
