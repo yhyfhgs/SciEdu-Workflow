@@ -390,72 +390,21 @@ class VlmConverter:
             figure_hint="",
         )
 
-        if len(images) == 1:
-            return await self.llm.generate_with_image(
-                prompt=prompt,
-                image_data=images[0],
+        # 逐页调用 generate_with_image，通过 LLMClient 标准接口
+        # 避免绕过 LLMClient 直接访问 backend（兼容性问题）
+        results: list[str] = []
+        for i, img in enumerate(images):
+            page_prompt = prompt if i == 0 else f"继续转写第 {page_nums[i] + 1} 页内容。"
+            md = await self.llm.generate_with_image(
+                prompt=page_prompt,
+                image_data=img,
                 image_media_type="image/png",
                 system=_SYSTEM_PROMPT,
                 temperature=0.0,
                 max_tokens=16384,
             )
-
-        # 多图：用 generate_with_images（多张图片）
-        return await self._call_multi_image(prompt, images)
-
-    async def _call_multi_image(self, prompt: str, images: list[bytes]) -> str:
-        """发送多张图片给 VLM"""
-        # 构造多图消息：通过底层 backend 直接调用
-        import base64
-        import time
-
-        from mathforge.core.exceptions import LLMError, LLMTimeoutError
-
-        backend = self.llm._backend
-        b64_images = [base64.b64encode(img).decode() for img in images]
-
-        content: list[dict] = []
-        for b64 in b64_images:
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{b64}",
-                        "detail": "high",
-                    },
-                }
-            )
-        content.append({"type": "text", "text": prompt})
-
-        params = {
-            "model": self.llm.config.model,
-            "max_tokens": 16384,
-            "temperature": 0.0,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
-        }
-
-        t0 = time.monotonic()
-        try:
-            response = await backend.async_client.chat.completions.create(**params)
-            result = response.choices[0].message.content or ""
-        except Exception as e:
-            if "timeout" in str(e).lower():
-                raise LLMTimeoutError(str(e)) from e
-            raise LLMError(str(e)) from e
-
-        elapsed = int((time.monotonic() - t0) * 1000)
-        logger.info(
-            "llm_multi_vision_response",
-            model=self.llm.config.model,
-            image_count=len(images),
-            total_image_bytes=sum(len(i) for i in images),
-            response_length=len(result),
-            latency_ms=elapsed,
-        )
-        return result
+            results.append(md)
+        return "\n\n".join(results)
 
     # ── 插图裁剪 ─────────────────────────────────────────
 
