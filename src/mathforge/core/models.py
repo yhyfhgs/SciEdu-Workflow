@@ -1028,18 +1028,16 @@ class PipelineRunProgress(BaseModel):
 
     file_path: str = ""
     file_hash: str = ""
-    stage: str = "not_started"  # not_started|vlm_convert|split|extract_process|relations|completed
-    phase: int = 1  # 向后兼容
+    stage: str = "not_started"  # not_started|vlm_convert|chunk_extract|process_tree|graph|completed
     blocks_completed: int = 0
-    blocks_total: int | None = None
-    completed_block_ids: list[str] = Field(default_factory=list)
+    completed_block_ids: list[str] = Field(default_factory=list)  # chunk IDs
     items_extracted: int = 0
     items_processed: int = 0
     items_stored: int = 0
-    items_unified: int = 0
     errors: list[str] = Field(default_factory=list)
     started_at: datetime = Field(default_factory=datetime.now)
     last_checkpoint_at: datetime | None = None
+    tree_state: str | None = None  # JSON-serialized DocumentTree
 
 
 class DirectoryProgress(BaseModel):

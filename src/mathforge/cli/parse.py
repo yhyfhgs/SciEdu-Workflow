@@ -138,7 +138,7 @@ def _display_result(result: PipelineResult) -> None:  # type: ignore[name-define
         table = Table(title=f"Pipeline 结果: {Path(result.file_path).name}")
         table.add_column("指标", style="cyan")
         table.add_column("值", style="green")
-        table.add_row("Blocks", str(result.blocks_count))
+        table.add_row("Chunks", str(result.chunks_count))
         table.add_row("Items 提取", str(result.items_extracted))
         table.add_row("Items 处理", str(result.items_processed))
         table.add_row("知识点", str(len(result.knowledge_points)))
