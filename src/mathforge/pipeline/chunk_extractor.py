@@ -411,25 +411,29 @@ class ChunkExtractor:
         )
 
         t0 = time.monotonic()
-        try:
-            result = await self.llm.generate_json(prompt, max_tokens=16384)
-            # 空结果重试一次
-            if not result or not result.get("extracted_items"):
-                logger.info("chunk_extract_retry", file=file_path.name, reason="empty_response")
+        for attempt in range(2):
+            try:
                 result = await self.llm.generate_json(prompt, max_tokens=16384)
-            latency = time.monotonic() - t0
-            logger.info(
-                "chunk_extract_llm",
-                file=file_path.name,
-                chunk_lines=len(chunk_text_numbered.splitlines()),
-                truncation=result.get("truncation_line"),
-                items=len(result.get("extracted_items", [])),
-                latency_sec=round(latency, 2),
-            )
-            return result
-        except Exception:
-            logger.warning("chunk_extract_llm_failed", file=file_path.name, exc_info=True)
-            return {"truncation_line": None, "structural_context": {}, "extracted_items": []}
+                if result and result.get("extracted_items") is not None:
+                    latency = time.monotonic() - t0
+                    logger.info(
+                        "chunk_extract_llm",
+                        file=file_path.name,
+                        chunk_lines=len(chunk_text_numbered.splitlines()),
+                        truncation=result.get("truncation_line"),
+                        items=len(result.get("extracted_items", [])),
+                        latency_sec=round(latency, 2),
+                    )
+                    return result
+                # 空响应，重试
+                if attempt == 0:
+                    logger.info("chunk_extract_retry", file=file_path.name, reason="empty")
+            except Exception:
+                if attempt == 0:
+                    logger.info("chunk_extract_retry", file=file_path.name, reason="parse_error")
+                else:
+                    logger.warning("chunk_extract_llm_failed", file=file_path.name, exc_info=True)
+        return {"truncation_line": None, "structural_context": {}, "extracted_items": []}
 
     async def _call_extract(
         self,
