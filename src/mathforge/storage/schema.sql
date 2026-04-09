@@ -189,3 +189,29 @@ CREATE TRIGGER IF NOT EXISTS q_fts_update AFTER UPDATE ON questions BEGIN
     INSERT INTO question_fts(rowid, content_plain, taxonomy_path)
     VALUES (NEW.rowid, NEW.content_plain, NEW.taxonomy_path);
 END;
+
+-- ── 文档结构树 ──
+
+CREATE TABLE IF NOT EXISTS taxonomy_nodes (
+    node_id TEXT PRIMARY KEY,
+    level TEXT NOT NULL CHECK(level IN ('book', 'chapter', 'section', 'subsection')),
+    title TEXT NOT NULL DEFAULT '',
+    number TEXT DEFAULT '',
+    parent_id TEXT REFERENCES taxonomy_nodes(node_id),
+    source_file TEXT NOT NULL DEFAULT '',
+    position INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS item_tree_placement (
+    item_id TEXT NOT NULL,
+    item_type TEXT NOT NULL CHECK(item_type IN ('kp', 'question')),
+    node_id TEXT NOT NULL REFERENCES taxonomy_nodes(node_id),
+    position_in_node INTEGER DEFAULT 0,
+    PRIMARY KEY (item_id, item_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tree_parent ON taxonomy_nodes(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tree_source ON taxonomy_nodes(source_file);
+CREATE INDEX IF NOT EXISTS idx_tree_level ON taxonomy_nodes(level);
+CREATE INDEX IF NOT EXISTS idx_placement_node ON item_tree_placement(node_id);

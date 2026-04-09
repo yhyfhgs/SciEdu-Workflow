@@ -16,6 +16,7 @@ from pathlib import Path
 import structlog
 
 from mathforge.core.models import (
+    DocumentTree,
     ItemRelation,
     KnowledgePoint,
     KPSource,
@@ -25,6 +26,7 @@ from mathforge.core.models import (
     QuestionType,
     Solution,
     Subject,
+    TaxonomyNode,
 )
 
 logger = structlog.get_logger()
@@ -574,3 +576,109 @@ class SQLiteStorageBackend:
             is_generated=bool(row["is_generated"]),
             parent_id=row["parent_id"],
         )
+
+    # ── 文档结构树持久化 ──
+
+    def save_tree_node(self, node: TaxonomyNode) -> None:
+        """增量保存单个树节点"""
+        self._conn.execute(
+            """INSERT OR REPLACE INTO taxonomy_nodes
+               (node_id, level, title, number, parent_id, source_file, position)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                node.node_id,
+                node.level,
+                node.title,
+                node.number,
+                node.parent_id,
+                node.source_file,
+                node.position,
+            ),
+        )
+        self._conn.commit()
+
+    def save_item_placement(
+        self, item_id: str, item_type: str, node_id: str, position: int
+    ) -> None:
+        """保存 item 在树中的挂载关系"""
+        self._conn.execute(
+            """INSERT OR REPLACE INTO item_tree_placement
+               (item_id, item_type, node_id, position_in_node)
+               VALUES (?, ?, ?, ?)""",
+            (item_id, item_type, node_id, position),
+        )
+        self._conn.commit()
+
+    def load_tree(self, source_file: str) -> DocumentTree:
+        """加载某个文件的完整文档结构树"""
+        from mathforge.core.models import DocumentTree, TaxonomyNode
+
+        rows = self._conn.execute(
+            "SELECT * FROM taxonomy_nodes WHERE source_file = ? ORDER BY position",
+            (source_file,),
+        ).fetchall()
+
+        tree = DocumentTree()
+        for row in rows:
+            node = TaxonomyNode(
+                node_id=row["node_id"],
+                level=row["level"],
+                title=row["title"],
+                number=row["number"] or "",
+                parent_id=row["parent_id"],
+                source_file=row["source_file"],
+                position=row["position"],
+            )
+            tree.nodes[node.node_id] = node
+            if node.level == "book":
+                tree.root_id = node.node_id
+
+        # 重建 children_ids
+        for node in tree.nodes.values():
+            if node.parent_id and node.parent_id in tree.nodes:
+                tree.nodes[node.parent_id].children_ids.append(node.node_id)
+
+        # 加载 item placements
+        placements = self._conn.execute(
+            """SELECT p.item_id, p.node_id
+               FROM item_tree_placement p
+               JOIN taxonomy_nodes n ON p.node_id = n.node_id
+               WHERE n.source_file = ?
+               ORDER BY p.position_in_node""",
+            (source_file,),
+        ).fetchall()
+
+        for p in placements:
+            item_id = p["item_id"]
+            node_id = p["node_id"]
+            tree.item_to_node[item_id] = node_id
+            if node_id in tree.nodes:
+                tree.nodes[node_id].item_ids.append(item_id)
+
+        return tree
+
+    def get_subtree_items(self, node_id: str) -> list[str]:
+        """获取某个节点及其所有子节点下的 item_id 列表"""
+        # 递归收集子节点
+        node_ids = [node_id]
+        queue = [node_id]
+        while queue:
+            current = queue.pop(0)
+            children = self._conn.execute(
+                "SELECT node_id FROM taxonomy_nodes WHERE parent_id = ?",
+                (current,),
+            ).fetchall()
+            for child in children:
+                cid = child["node_id"]
+                node_ids.append(cid)
+                queue.append(cid)
+
+        # 查询所有 item
+        placeholders = ",".join("?" * len(node_ids))
+        rows = self._conn.execute(
+            f"SELECT item_id FROM item_tree_placement WHERE node_id IN ({placeholders})"
+            " ORDER BY position_in_node",
+            node_ids,
+        ).fetchall()
+
+        return [r["item_id"] for r in rows]
