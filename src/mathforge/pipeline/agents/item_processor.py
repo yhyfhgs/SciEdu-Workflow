@@ -148,6 +148,9 @@ class ItemProcessor:
         for attempt in range(2):  # 1 次尝试 + 1 次重试
             try:
                 result_dict = await self.llm.generate_json(prompt)
+                if not result_dict:
+                    logger.info("item_process_retry", item_id=item.item_id, reason="empty")
+                    continue
                 latency = time.monotonic() - t0
                 logger.info(
                     "item_processed",

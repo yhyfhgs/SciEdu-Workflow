@@ -413,6 +413,10 @@ class ChunkExtractor:
         t0 = time.monotonic()
         try:
             result = await self.llm.generate_json(prompt, max_tokens=16384)
+            # 空结果重试一次
+            if not result or not result.get("extracted_items"):
+                logger.info("chunk_extract_retry", file=file_path.name, reason="empty_response")
+                result = await self.llm.generate_json(prompt, max_tokens=16384)
             latency = time.monotonic() - t0
             logger.info(
                 "chunk_extract_llm",
