@@ -72,6 +72,19 @@ class OpenAIBackend:
 
     # ── Vision (多模态) ───────────────────────────────────
 
+    @staticmethod
+    def _make_image_block(image_data: bytes, media_type: str) -> dict:
+        """构建 base64 图片内容块"""
+        import base64
+
+        b64 = base64.b64encode(image_data).decode()
+        return {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{media_type};base64,{b64}",
+            },
+        }
+
     async def generate_vision(
         self,
         prompt: str,
@@ -80,9 +93,6 @@ class OpenAIBackend:
         system: str,
         **kwargs,
     ) -> str:
-        import base64
-
-        b64 = base64.b64encode(image_data).decode()
         params: dict = {
             "model": self.config.model,
             "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
@@ -92,13 +102,7 @@ class OpenAIBackend:
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{image_media_type};base64,{b64}",
-                                "detail": "high",
-                            },
-                        },
+                        self._make_image_block(image_data, image_media_type),
                         {"type": "text", "text": prompt},
                     ],
                 },
@@ -123,19 +127,9 @@ class OpenAIBackend:
         **kwargs,
     ) -> str:
         """多图 vision 调用"""
-        import base64
-
-        content: list[dict] = []
-        for img in images:
-            b64 = base64.b64encode(img).decode()
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{image_media_type};base64,{b64}",
-                    },
-                }
-            )
+        content: list[dict] = [
+            self._make_image_block(img, image_media_type) for img in images
+        ]
         content.append({"type": "text", "text": prompt})
 
         params: dict = {
@@ -165,9 +159,6 @@ class OpenAIBackend:
         system: str,
         **kwargs,
     ) -> str:
-        import base64
-
-        b64 = base64.b64encode(image_data).decode()
         params: dict = {
             "model": self.config.model,
             "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
@@ -177,13 +168,7 @@ class OpenAIBackend:
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{image_media_type};base64,{b64}",
-                                "detail": "high",
-                            },
-                        },
+                        self._make_image_block(image_data, image_media_type),
                         {"type": "text", "text": prompt},
                     ],
                 },
