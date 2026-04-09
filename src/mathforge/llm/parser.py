@@ -53,6 +53,14 @@ def parse_llm_json(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
+    # Stage 5: 截断 JSON 修复 — LLM 输出被 max_tokens 截断时
+    truncated = _repair_truncated_json(cleaned)
+    if truncated:
+        try:
+            return json.loads(truncated)
+        except json.JSONDecodeError:
+            pass
+
     raise LLMParseError(raw_response=text, parse_error="所有解析策略均失败")
 
 
@@ -84,6 +92,62 @@ def _extract_json_object(text: str) -> str | None:
             if depth == 0:
                 return text[start : i + 1]
     return None
+
+
+def _repair_truncated_json(text: str) -> str | None:
+    """修复被截断的 JSON — 关闭未闭合的字符串、数组、对象
+
+    当 LLM 输出因 max_tokens 被截断时，JSON 通常缺少尾部闭合。
+    策略：找到最后一个完整的数组元素，截断其后内容，补齐闭合符号。
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    # 尝试在截断位置补齐闭合
+    fragment = text[start:]
+
+    # 去掉尾部的不完整 value（从最后一个完整的 }, 或 ] 处截断）
+    # 找最后一个完整的 JSON 值结束位置
+    last_complete = -1
+    for pattern in ["},", "}]", '"},', '"]', "null,", "true,", "false,"]:
+        pos = fragment.rfind(pattern)
+        if pos > last_complete:
+            last_complete = pos + len(pattern) - 1  # 保留逗号前的字符
+
+    if last_complete <= 0:
+        return None
+
+    truncated = fragment[: last_complete + 1]
+
+    # 去掉尾部逗号
+    truncated = truncated.rstrip().rstrip(",")
+
+    # 计算需要补齐的闭合符号
+    in_string = False
+    escape = False
+    stack: list[str] = []
+    for ch in truncated:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+
+    # 闭合
+    truncated += "".join(reversed(stack))
+
+    return truncated
 
 
 def _safe_replace_quotes(text: str) -> str:

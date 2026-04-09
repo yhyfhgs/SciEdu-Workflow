@@ -424,7 +424,7 @@ class ChunkExtractor:
             )
             return result
         except Exception:
-            logger.error("chunk_extract_llm_failed", file=file_path.name, exc_info=True)
+            logger.warning("chunk_extract_llm_failed", file=file_path.name, exc_info=True)
             return {"truncation_line": None, "structural_context": {}, "extracted_items": []}
 
     async def _call_extract(
@@ -483,14 +483,20 @@ class ChunkExtractor:
         items: list[ExtractedItem] = []
         for item_data in llm_result.get("extracted_items", []):
             try:
+                # LLM 可能返回 null 而非 0，防御性处理
+                item_line_start = item_data.get("line_start") or 0
+                item_line_end = item_data.get("line_end") or 0
+                item_content = item_data.get("content", "")
+                if not item_content or not item_data.get("item_type"):
+                    continue  # 跳过空条目
                 items.append(ExtractedItem(
                     item_type=item_data.get("item_type", ""),
                     number=item_data.get("number"),
                     title=item_data.get("title"),
-                    content=item_data.get("content", ""),
+                    content=item_content,
                     parent_ref=item_data.get("parent_ref"),
-                    line_start=line_start + item_data.get("line_start", 0),
-                    line_end=line_start + item_data.get("line_end", 0),
+                    line_start=line_start + item_line_start,
+                    line_end=line_start + item_line_end,
                     source_chunk_id=chunk_id,
                     source_file=str(file_path),
                     structural_context=ctx,

@@ -650,7 +650,7 @@ class PipelineOrchestrator:
                     live.vlm_pages_done += converter.pages_per_batch
                     live.vlm_pages_done = min(live.vlm_pages_done, live.vlm_pages_total)
         except Exception as e:
-            logger.error("vlm_stream_failed", file=file_path.name, error=str(e))
+            logger.warning("vlm_stream_failed", file=file_path.name, error=str(e))
             if live:
                 live.errors += 1
         finally:
