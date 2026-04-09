@@ -98,32 +98,47 @@ def _repair_truncated_json(text: str) -> str | None:
     """修复被截断的 JSON — 关闭未闭合的字符串、数组、对象
 
     当 LLM 输出因 max_tokens 被截断时，JSON 通常缺少尾部闭合。
-    策略：找到最后一个完整的数组元素，截断其后内容，补齐闭合符号。
+    多重策略：
+    1. 找到最后一个完整的 JSON 对象/数组元素边界
+    2. 截断不完整部分
+    3. 补齐所有未闭合的括号
     """
     start = text.find("{")
     if start == -1:
         return None
 
-    # 尝试在截断位置补齐闭合
     fragment = text[start:]
 
-    # 去掉尾部的不完整 value（从最后一个完整的 }, 或 ] 处截断）
-    # 找最后一个完整的 JSON 值结束位置
-    last_complete = -1
-    for pattern in ["},", "}]", '"},', '"]', "null,", "true,", "false,"]:
+    # 策略 A: 找最后一个完整的数组元素边界
+    # 搜索多种完整元素结束模式
+    candidates: list[int] = []
+    for pattern in [
+        "},", "}]", '"},', '"]', "null,", "true,", "false,",
+        '"}\n', '}\n', ']\n',  # 换行分隔
+        "null}", "null]",
+    ]:
         pos = fragment.rfind(pattern)
-        if pos > last_complete:
-            last_complete = pos + len(pattern) - 1  # 保留逗号前的字符
+        if pos > 0:
+            # 保留到 pattern 的结束字符（但不含尾部逗号/换行）
+            end = pos + len(pattern)
+            candidates.append(end)
 
-    if last_complete <= 0:
+    # 策略 B: 如果截断在字符串中间，找最后一个完整的 key-value 对
+    # 匹配 "key": "value" 或 "key": number 的结束位置
+    for m in re.finditer(r'"[^"]*"\s*:\s*(?:"[^"]*"|[\d.]+|null|true|false)\s*[,}\]]', fragment):
+        candidates.append(m.end())
+
+    if not candidates:
         return None
 
-    truncated = fragment[: last_complete + 1]
+    # 取最靠后的完整位置
+    best = max(candidates)
+    truncated = fragment[:best]
 
-    # 去掉尾部逗号
-    truncated = truncated.rstrip().rstrip(",")
+    # 去掉尾部逗号和空白
+    truncated = truncated.rstrip().rstrip(",").rstrip()
 
-    # 计算需要补齐的闭合符号
+    # 补齐闭合括号
     in_string = False
     escape = False
     stack: list[str] = []
@@ -144,7 +159,6 @@ def _repair_truncated_json(text: str) -> str | None:
         elif ch in "}]" and stack:
             stack.pop()
 
-    # 闭合
     truncated += "".join(reversed(stack))
 
     return truncated
