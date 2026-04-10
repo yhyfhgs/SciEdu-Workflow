@@ -171,53 +171,53 @@ class KPSource(BaseModel):
 
 
 class KnowledgePoint(BaseModel):
+    """知识点存储模型 — 与 DB schema 一一对应"""
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    title: str = ""
-    content_latex: str = ""
-    content_plain: str = ""
     kp_type: KPType = KPType.THEOREM
+    number: str = ""
+    content: str = ""  # LaTeX+文本混排，唯一内容字段
+    proof_content: str | None = None  # 证明文本（定理/引理/命题）
+    proof_methods: list[str] = Field(default_factory=list)
     difficulty: int = Field(ge=1, le=10, default=5)
-    tags: list[str] = Field(default_factory=list)
-    prerequisites: list[str] = Field(default_factory=list)
+    subject: str = ""
+    taxonomy_path: str = ""
+    tags: list[str] = Field(default_factory=list)  # ["group_theory:群论", ...]
     relations: list[ItemRelation] = Field(default_factory=list)
-    solution: SolutionContent | None = None  # 用于 EXAMPLE 类型
-    source: KPSource | None = None
-    embedding: list[float] | None = None
+    source_file: str = ""
+    source_chapter: str = ""
+    source_section: str = ""
+    quality_grade: str = "B"
     created_at: datetime = Field(default_factory=datetime.now)
 
     model_config = ConfigDict(validate_assignment=True)
 
 
 class Question(BaseModel):
+    """题目存储模型 — solution 直接嵌入，不再有独立 solutions 表"""
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    content_latex: str = ""
-    content_plain: str = ""
-    difficulty: int = Field(ge=1, le=10, default=5)
-    difficulty_ai: float | None = None
     question_type: QuestionType = QuestionType.PROOF
-    subject: Subject = Subject.ANALYSIS
+    number: str = ""
+    content: str = ""  # 题目内容
+    solution_content: str | None = None  # 解答文本
+    solution_methods: list[str] = Field(default_factory=list)
+    answer: str = ""  # 简答（选择题答案、填空答案等）
+    difficulty: int = Field(ge=1, le=10, default=5)
+    subject: str = ""
+    taxonomy_path: str = ""
     tags: list[str] = Field(default_factory=list)
     relations: list[ItemRelation] = Field(default_factory=list)
-    source: QuestionSource | None = None
+    source_file: str = ""
+    source_chapter: str = ""
+    exam_type: str | None = None
+    exam_year: int | None = None
+    quality_grade: str = "B"
     is_generated: bool = False
     parent_id: str | None = None
-    generation_meta: dict = Field(default_factory=dict)
-    embedding: list[float] | None = None
     created_at: datetime = Field(default_factory=datetime.now)
 
     model_config = ConfigDict(validate_assignment=True)
-
-
-class Solution(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    question_id: str = ""
-    solution_latex: str = ""
-    methods_used: list[str] = Field(default_factory=list)
-    step_count: int = Field(ge=0, default=0)
-    confidence: str = "medium"
-    is_verified: bool = False
-    conversation_history: list[ConversationMessage] = Field(default_factory=list)
-    tool_calls_made: int = 0
 
 
 class DifficultyScore(BaseModel):
@@ -628,45 +628,21 @@ class StructuralContext(BaseModel):
 class ExtractedItem(BaseModel):
     """Task1 LLM 直接提取的条目
 
-    定理与证明、题目与解答分别作为独立条目提取，
-    通过 parent_ref 建立关联（如 "theorem:3.1"）。
+    proof/solution 直接嵌入父条目，不再拆分为独立 item。
     """
 
     item_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    item_type: str = ""  # definition, theorem, lemma, proof, exercise, solution, etc.
+    item_type: str = ""  # definition/theorem/lemma/corollary/proposition/example/exercise/problem
     number: str | None = None
-    title: str | None = None
-    content: str = ""
-    parent_ref: str | None = None  # "theorem:3.1" / "example:2.5" / null
+    content: str = ""  # 主内容（定理陈述/题目描述）
+    proof: str | None = None  # 证明文本（定理/引理/命题的配套）
+    solution: str | None = None  # 解答文本（例题/习题的配套）
     line_start: int = 0
     line_end: int = 0
     source_chunk_id: str = ""
     source_file: str = ""
     structural_context: StructuralContext = Field(default_factory=StructuralContext)
     raw_metadata: dict = Field(default_factory=dict)
-
-    @property
-    def is_child(self) -> bool:
-        """是否为配套条目（证明/解答）"""
-        return self.item_type in ("proof", "solution", "answer")
-
-    def to_raw_item(self) -> RawItem:
-        """适配器：转换为 RawItem 供 ItemProcessor 复用"""
-        return RawItem(
-            item_id=self.item_id,
-            block_type=self.item_type,
-            number=self.number,
-            title=self.title,
-            content_raw=self.content,
-            content_latex=self.content,
-            line_start=self.line_start,
-            line_end=self.line_end,
-            paired_item_id=None,
-            source_block_id=self.source_chunk_id,
-            source_file=self.source_file,
-            extraction_mode="explicit",
-            raw_metadata=self.raw_metadata,
-        )
 
 
 class ChunkExtractionResult(BaseModel):
