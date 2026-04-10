@@ -487,8 +487,8 @@ class PipelineOrchestrator:
                     and ei.item_type not in ("text", "remark")
                 ]
 
-                # 增量入库 + 树构建
-                if self.storage and valid_items:
+                # 树构建 + 增量入库
+                if valid_items:
                     try:
                         batch_tuples = [
                             (ei.to_raw_item(), pr, ChunkExtractionResult(chunk_id=chunk.chunk_id))
@@ -497,26 +497,27 @@ class PipelineOrchestrator:
                         block_unified = ItemUnifier().unify_batch(batch_tuples)
                         block_kps, block_qs = build_entities(block_unified)
 
-                        # 树构建
+                        # 树构建（始终执行，不依赖 storage）
                         for unified in block_unified:
                             item_type = "question" if unified.item_category == "question" else "kp"
                             tree_builder.insert(
                                 unified.item_id, item_type, chunk.structural_context
                             )
 
-                        # 存储
-                        if hasattr(self.storage, "save_batch"):
-                            saved = await asyncio.to_thread(
-                                self.storage.save_batch, block_kps, block_qs
-                            )
-                        else:
-                            saved = 0
-                            for kp in block_kps:
-                                await asyncio.to_thread(self.storage.save_knowledge_point, kp)
-                                saved += 1
-                            for q, sol in block_qs:
-                                await asyncio.to_thread(self.storage.save_question, q, sol)
-                                saved += 1
+                        # 入库（仅在有 storage 时）
+                        saved = 0
+                        if self.storage:
+                            if hasattr(self.storage, "save_batch"):
+                                saved = await asyncio.to_thread(
+                                    self.storage.save_batch, block_kps, block_qs
+                                )
+                            else:
+                                for kp in block_kps:
+                                    await asyncio.to_thread(self.storage.save_knowledge_point, kp)
+                                    saved += 1
+                                for q, sol in block_qs:
+                                    await asyncio.to_thread(self.storage.save_question, q, sol)
+                                    saved += 1
                         result.items_stored += saved
                         if live:
                             live.items_stored += saved
