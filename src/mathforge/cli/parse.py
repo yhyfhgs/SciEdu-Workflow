@@ -30,7 +30,7 @@ def parse_run(
     db: Path | None = typer.Option(
         Path("data/mathforge.db"), "--db", help="SQLite 数据库路径（启用 SQLite 存储）"
     ),
-    max_files: int = typer.Option(5, "--max-files", "-j", help="目录模式下最大并发文件数"),
+    max_files: int = typer.Option(8, "--max-files", "-j", help="目录模式下最大并发文件数"),
 ) -> None:
     """运行统一流水线 Pipeline 处理文件"""
     import asyncio

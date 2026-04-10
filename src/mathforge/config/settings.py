@@ -70,7 +70,7 @@ class AppConfig(BaseSettings):
     llm_config_file: Path | None = None
 
     # Pipeline 配置
-    max_concurrent_llm_calls: int = 3
+    max_concurrent_llm_calls: int = 5
     generation_max_rounds: int = 3
     generation_candidates_per_round: int = 3
 
@@ -81,12 +81,12 @@ class AppConfig(BaseSettings):
 
     # VLM 转换配置
     vlm_dpi: int = 200
-    vlm_max_concurrent: int = 2
-    vlm_pages_per_batch: int = 5
+    vlm_max_concurrent: int = 3
+    vlm_pages_per_batch: int = 8
     vlm_streaming: bool = True  # 流式 VLM→BlockSplitter 管线
 
     # 多文件并发
-    max_concurrent_files: int = 5
+    max_concurrent_files: int = 8
 
     # MinerU 配置
     mineru_backend: str = "pipeline"  # pipeline | vlm-auto-engine | hybrid-auto-engine
@@ -100,8 +100,8 @@ class AppConfig(BaseSettings):
     sqlite_db_path: Path = Path("data/mathforge.db")
 
     # 流水线 Pipeline
-    pipeline_queue_size: int = 10
-    pipeline_split_batch_lines: int = 150
+    pipeline_queue_size: int = 16
+    pipeline_split_batch_lines: int = 200
 
     # LLM 日志
     llm_log_interval: int = 10

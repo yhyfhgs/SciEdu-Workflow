@@ -413,7 +413,7 @@ class ChunkExtractor:
         t0 = time.monotonic()
         for attempt in range(2):
             try:
-                result = await self.llm.generate_json(prompt, max_tokens=16384)
+                result = await self.llm.generate_json(prompt, max_tokens=32768)
                 if result and result.get("extracted_items") is not None:
                     latency = time.monotonic() - t0
                     logger.info(
