@@ -245,11 +245,19 @@ class ChunkExtractor:
             complete_text = "".join(complete_lines)
             if complete_text.strip():
                 line_end = global_line_offset + len(complete_lines)
-                result = self._build_result(
-                    llm_result, file_path, source_format,
-                    global_line_offset, line_end, raw_metadata,
-                )
-                yield result
+                try:
+                    result = self._build_result(
+                        llm_result, file_path, source_format,
+                        global_line_offset, line_end, raw_metadata,
+                    )
+                    yield result
+                except Exception:
+                    logger.warning(
+                        "chunk_build_result_failed",
+                        file=file_path.name,
+                        lines=f"{global_line_offset}-{line_end}",
+                        exc_info=True,
+                    )
                 prev_tail = "\n".join(complete_text.strip().splitlines()[-10:])
                 global_line_offset = line_end
 
@@ -366,11 +374,19 @@ class ChunkExtractor:
             complete_text = "".join(complete_lines)
             if complete_text.strip():
                 line_end = global_line_offset + len(complete_lines)
-                result = self._build_result(
-                    llm_result, file_path, source_format,
-                    global_line_offset, line_end, raw_metadata,
-                )
-                yield result
+                try:
+                    result = self._build_result(
+                        llm_result, file_path, source_format,
+                        global_line_offset, line_end, raw_metadata,
+                    )
+                    yield result
+                except Exception:
+                    logger.warning(
+                        "chunk_build_result_failed",
+                        file=file_path.name,
+                        lines=f"{global_line_offset}-{line_end}",
+                        exc_info=True,
+                    )
                 prev_tail = "\n".join(complete_text.strip().splitlines()[-10:])
                 global_line_offset = line_end
 
@@ -478,13 +494,13 @@ class ChunkExtractor:
         # 解析 structural_context
         ctx_data = llm_result.get("structural_context", {})
         ctx = StructuralContext(
-            chapter_title=ctx_data.get("chapter_title", ""),
-            chapter_number=str(ctx_data.get("chapter_number", "")),
-            section_title=ctx_data.get("section_title", ""),
-            section_number=str(ctx_data.get("section_number", "")),
-            subsection_title=ctx_data.get("subsection_title", ""),
-            subsection_number=str(ctx_data.get("subsection_number", "")),
-            document_type=ctx_data.get("document_type", ""),
+            chapter_title=ctx_data.get("chapter_title") or "",
+            chapter_number=str(ctx_data.get("chapter_number") or ""),
+            section_title=ctx_data.get("section_title") or "",
+            section_number=str(ctx_data.get("section_number") or ""),
+            subsection_title=ctx_data.get("subsection_title") or "",
+            subsection_number=str(ctx_data.get("subsection_number") or ""),
+            document_type=ctx_data.get("document_type") or "",
         )
 
         # 解析 extracted_items
