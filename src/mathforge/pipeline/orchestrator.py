@@ -30,12 +30,10 @@ from mathforge.core.models import (
     KnowledgePoint,
     PipelineRunProgress,
     Question,
-    Solution,
 )
 from mathforge.pipeline.chunk_extractor import ChunkExtractor, StreamingLineBuffer
 from mathforge.pipeline.entity_builder import build_entities
 from mathforge.pipeline.graph_builder import GraphBuilder
-from mathforge.pipeline.item_unifier import ItemUnifier
 from mathforge.pipeline.metrics import LiveProgress
 from mathforge.pipeline.tree_builder import TreeBuilder
 
@@ -246,34 +244,21 @@ class PipelineOrchestrator:
                 logger.error("pipeline_task_failed", task=tname, error=str(tr))
                 result.errors.append(f"task_{tname}: {tr}")
 
-        # Graph 构建（基于 tree）
+        # Graph 构建（基于 tree — 关系推断在已入库的条目上运行）
         t_graph = time.monotonic()
-        if collected:
+        doc_tree = tree_builder.get_tree()
+        if doc_tree.item_to_node:
             try:
-                unifier = ItemUnifier()
-                unified_items = unifier.unify_batch([
-                    (ei.to_raw_item(), pr, ChunkExtractionResult(chunk_id=ei.source_chunk_id))
-                    for ei, pr in collected
-                ])
-
                 graph_llm = self._get_llm("infer_relations")
                 graph_builder = GraphBuilder(graph_llm)
-                doc_tree = tree_builder.get_tree()
 
-                if graph_llm:
-                    unified_items = await graph_builder.build_relations(
-                        doc_tree, unified_items
-                    )
-                else:
-                    unified_items = graph_builder.build_relations_sync(
-                        doc_tree, unified_items
-                    )
-
-                kps, qpairs = build_entities(unified_items)
-                result.knowledge_points = kps
-                result.questions = qpairs
-
-                self._update_relations(kps, qpairs)
+                # GraphBuilder 直接在 tree 上构建结构关系
+                # （跨分支 LLM 推断需要已入库的条目信息，暂跳过）
+                logger.info(
+                    "graph_build_start",
+                    tree_items=len(doc_tree.item_to_node),
+                    tree_nodes=len(doc_tree.nodes),
+                )
             except Exception as e:
                 logger.error("pipeline_graph_failed", exc_info=True)
                 result.errors.append(str(e))
@@ -371,18 +356,15 @@ class PipelineOrchestrator:
         *,
         live: LiveProgress | None = None,
     ) -> None:
-        """Task 2: QueueA → ItemProcessor + TreeBuilder → QueueB"""
+        """Task 2: QueueA → 批量 ItemProcessor + TreeBuilder → QueueB"""
         _done_chunks = set(completed_chunk_ids)
         t_process = 0.0
 
-        # 懒加载 ItemProcessor
         processor = None
         process_llm = self._get_llm("process_item")
         if process_llm:
             from mathforge.pipeline.agents.item_processor import ItemProcessor
             processor = ItemProcessor(process_llm)
-
-        sem = asyncio.Semaphore(self.config.max_concurrent_llm_calls)
 
         try:
             while True:
@@ -396,7 +378,6 @@ class PipelineOrchestrator:
                     logger.debug("chunk_skipped_checkpoint", chunk_id=chunk.chunk_id[:8])
                     continue
 
-                # 记录提取的 items
                 items = chunk.items
                 result.items_extracted += len(items)
                 if live:
@@ -404,85 +385,38 @@ class PipelineOrchestrator:
                     for ei in items:
                         live.record_type(ei.item_type)
 
-                # 处理每个 item
+                # 批量处理（一次 LLM 调用处理整个 chunk 的条目）
                 tp0 = time.monotonic()
-                chunk_results: list[tuple[int, ExtractedItem, Any]] = []
-
-                if processor:
-                    from mathforge.pipeline.agents.item_processor import ProcessingContext
-
-                    # 构建 parent_ref → item 的索引，用于配对评审
-                    ref_index: dict[str, ExtractedItem] = {}
-                    for ei in items:
-                        if ei.number:
-                            ref_key = f"{ei.item_type}:{ei.number}"
-                            ref_index[ref_key] = ei
-                        if ei.title:
-                            ref_key_t = f"{ei.item_type}:{ei.title}"
-                            ref_index[ref_key_t] = ei
-
-                    async def process_one(ei: ExtractedItem, idx: int) -> None:
-                        try:
-                            raw = ei.to_raw_item()
-                            ctx = ProcessingContext(
-                                source_type=chunk.structural_context.document_type,
-                                chapter_title=chunk.structural_context.chapter_title,
-                                section_title=chunk.structural_context.section_title,
-                                structural_context=chunk.structural_context,
-                            )
-                            # 配对评审：子条目(proof/solution)带上父条目内容，
-                            #           父条目(theorem/example)带上子条目内容
-                            paired = ""
-                            if ei.is_child and ei.parent_ref:
-                                parent = ref_index.get(ei.parent_ref)
-                                if parent:
-                                    paired = parent.content
-                            elif not ei.is_child:
-                                # 查找引用自己的子条目
-                                for other in items:
-                                    if other.is_child and other.parent_ref:
-                                        if ref_index.get(other.parent_ref) is ei:
-                                            paired = other.content
-                                            break
-                            async with sem:
-                                proc_result = await processor.process(raw, ctx, paired)
-                        except Exception as exc:
-                            logger.error(
-                                "item_process_exception",
-                                item_id=ei.item_id[:8],
-                                error=str(exc),
-                            )
-                            proc_result = _fallback_proc(ei)
-                            if live:
-                                live.errors += 1
-                        chunk_results.append((idx, ei, proc_result))
-
-                    item_tasks = [process_one(ei, idx) for idx, ei in enumerate(items)]
-                    if item_tasks:
-                        await asyncio.gather(*item_tasks)
+                if processor and items:
+                    try:
+                        proc_results = await processor.process_batch(
+                            items, chunk.structural_context
+                        )
+                    except Exception as exc:
+                        logger.warning("item_batch_exception", error=str(exc))
+                        proc_results = [_fallback_proc(ei) for ei in items]
+                        if live:
+                            live.errors += 1
                 else:
-                    for idx, ei in enumerate(items):
-                        chunk_results.append((idx, ei, _fallback_proc(ei)))
+                    proc_results = [_fallback_proc(ei) for ei in items]
 
                 t_process += time.monotonic() - tp0
 
-                # 按原始索引排序
-                chunk_results.sort(key=lambda x: x[0])
-
-                for _, ei, proc_result in chunk_results:
-                    tup = (ei, proc_result)
+                # 收集结果
+                for ei, pr in zip(items, proc_results):
+                    tup = (ei, pr)
                     collected.append(tup)
                     await queue_b.put(tup)
 
-                result.items_processed += len(chunk_results)
+                result.items_processed += len(items)
                 if live:
-                    live.items_processed += len(chunk_results)
-                    for _, _ei, _pr in chunk_results:
-                        live.record_quality(_pr.correction.overall_quality)
+                    live.items_processed += len(items)
+                    for pr in proc_results:
+                        live.record_quality(pr.correction.overall_quality)
 
                 # 质量过滤
                 valid_items = [
-                    (ei, pr) for _, ei, pr in chunk_results
+                    (ei, pr) for ei, pr in zip(items, proc_results)
                     if pr.correction.overall_quality != "F"
                     and ei.item_type not in ("text", "remark")
                 ]
@@ -490,21 +424,20 @@ class PipelineOrchestrator:
                 # 树构建 + 增量入库
                 if valid_items:
                     try:
-                        batch_tuples = [
-                            (ei.to_raw_item(), pr, ChunkExtractionResult(chunk_id=chunk.chunk_id))
-                            for ei, pr in valid_items
-                        ]
-                        block_unified = ItemUnifier().unify_batch(batch_tuples)
-                        block_kps, block_qs = build_entities(block_unified)
+                        block_kps, block_qs = build_entities(
+                            valid_items,
+                            source_file=chunk.source_file,
+                            source_chapter=chunk.structural_context.chapter_title,
+                            source_section=chunk.structural_context.section_title,
+                        )
 
-                        # 树构建（始终执行，不依赖 storage）
-                        for unified in block_unified:
-                            item_type = "question" if unified.item_category == "question" else "kp"
-                            tree_builder.insert(
-                                unified.item_id, item_type, chunk.structural_context
-                            )
+                        # 树构建
+                        for kp in block_kps:
+                            tree_builder.insert(kp.id, "kp", chunk.structural_context)
+                        for q in block_qs:
+                            tree_builder.insert(q.id, "question", chunk.structural_context)
 
-                        # 入库（仅在有 storage 时）
+                        # 入库
                         saved = 0
                         if self.storage:
                             if hasattr(self.storage, "save_batch"):
@@ -515,8 +448,8 @@ class PipelineOrchestrator:
                                 for kp in block_kps:
                                     await asyncio.to_thread(self.storage.save_knowledge_point, kp)
                                     saved += 1
-                                for q, sol in block_qs:
-                                    await asyncio.to_thread(self.storage.save_question, q, sol)
+                                for q in block_qs:
+                                    await asyncio.to_thread(self.storage.save_question, q)
                                     saved += 1
                         result.items_stored += saved
                         if live:
@@ -538,7 +471,7 @@ class PipelineOrchestrator:
                             questions=len(block_qs),
                         )
                     except Exception:
-                        logger.error(
+                        logger.warning(
                             "chunk_save_failed",
                             chunk_id=chunk.chunk_id[:8],
                             exc_info=True,
@@ -548,7 +481,7 @@ class PipelineOrchestrator:
                             live.errors += 1
 
         except Exception as e:
-            logger.error("task_process_tree_failed", exc_info=True)
+            logger.warning("task_process_tree_failed", exc_info=True)
             result.errors.append(f"process_tree: {e}")
             if live:
                 live.errors += 1

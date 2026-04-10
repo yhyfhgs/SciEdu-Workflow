@@ -992,12 +992,20 @@ class ExampleItem(UnifiedItemBase):
 
 
 class ItemProcessingResult(BaseModel):
-    """单次 LLM 调用的合并结果：校准 + 分类"""
+    """LLM 校准+分类的合并结果"""
 
     correction: CorrectionResult = Field(default_factory=CorrectionResult)
     classification: TagSet = Field(default_factory=TagSet)
     item_subtype: str = ""
     difficulty: int = Field(ge=1, le=10, default=5)
+    # 批量处理新增字段
+    corrected_proof: str | None = None
+    corrected_solution: str | None = None
+    taxonomy_path: str = ""
+    subject: str = ""
+    tags: list[str] = Field(default_factory=list)  # "english:中文" 格式
+    methods: list[str] = Field(default_factory=list)
+    question_type: str | None = None
 
 
 class PipelineRunProgress(BaseModel):

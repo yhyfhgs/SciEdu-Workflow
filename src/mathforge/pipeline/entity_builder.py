@@ -1,12 +1,6 @@
-"""EntityBuilder — UnifiedItem → 最终持久化实体
+"""EntityBuilder — ExtractedItem + ItemProcessingResult → KnowledgePoint / Question
 
-将扁平化的 UnifiedItem 转化为核心实体：
-  KnowledgeItem → KnowledgePoint
-  QuestionItem → Question + Solution
-  ExampleItem → KnowledgePoint(kp_type=EXAMPLE)
-
-注意：parse pipeline 已可直接通过 save_item 存储 UnifiedItem，
-本模块保留用于 generate pipeline 的向后兼容。
+直接从提取结果构建存储实体，不经过 UnifiedItemBase 中间层。
 """
 
 from __future__ import annotations
@@ -14,207 +8,104 @@ from __future__ import annotations
 import structlog
 
 from mathforge.core.models import (
-    ExampleItem,
-    KnowledgeItem,
+    ExtractedItem,
+    ItemProcessingResult,
     KnowledgePoint,
-    KPSource,
     KPType,
     Question,
-    QuestionItem,
-    QuestionSource,
-    Solution,
-    Subject,
-    UnifiedItemBase,
+    QuestionType,
 )
 
 logger = structlog.get_logger()
 
+# 知识类 item_type → KPType 映射
+_KP_TYPE_MAP: dict[str, KPType] = {
+    "definition": KPType.DEFINITION,
+    "theorem": KPType.THEOREM,
+    "lemma": KPType.LEMMA,
+    "corollary": KPType.COROLLARY,
+    "proposition": KPType.PROPOSITION,
+    "property": KPType.PROPOSITION,
+    "formula": KPType.FORMULA,
+    "example": KPType.EXAMPLE,
+}
+
+# 题目类 question_type 映射
+_Q_TYPE_MAP: dict[str, QuestionType] = {
+    "proof": QuestionType.PROOF,
+    "calculation": QuestionType.CALCULATION,
+    "choice": QuestionType.CHOICE,
+    "fill_blank": QuestionType.FILL_BLANK,
+    "true_false": QuestionType.TRUE_FALSE,
+    "construction": QuestionType.PROOF,
+}
+
+# 哪些 item_type 是题目
+_QUESTION_TYPES = {"example", "exercise", "problem"}
+
 
 def build_entities(
-    items: list[UnifiedItemBase],
-) -> tuple[list[KnowledgePoint], list[tuple[Question, Solution | None]]]:
-    """将 UnifiedItem 列表转化为最终持久化实体"""
-    knowledge_points: list[KnowledgePoint] = []
-    question_pairs: list[tuple[Question, Solution | None]] = []
+    items: list[tuple[ExtractedItem, ItemProcessingResult]],
+    source_file: str = "",
+    source_chapter: str = "",
+    source_section: str = "",
+) -> tuple[list[KnowledgePoint], list[Question]]:
+    """从提取+处理结果直接构建存储实体"""
+    kps: list[KnowledgePoint] = []
+    questions: list[Question] = []
 
-    for item in items:
-        try:
-            if isinstance(item, QuestionItem):
-                q, sol = _build_question(item)
-                question_pairs.append((q, sol))
-            elif isinstance(item, ExampleItem):
-                kp = _build_kp_from_example(item)
-                knowledge_points.append(kp)
-            elif isinstance(item, KnowledgeItem):
-                kp = _build_kp(item)
-                knowledge_points.append(kp)
-            else:
-                kp = _build_kp_generic(item)
-                knowledge_points.append(kp)
-        except Exception:
-            logger.error(
-                "entity_build_failed",
-                item_id=item.item_id,
-                item_type=type(item).__name__,
-                exc_info=True,
+    for ei, pr in items:
+        if pr.correction.overall_quality == "F":
+            continue
+
+        content = pr.correction.corrected_content or ei.content
+        tags = pr.tags if pr.tags else []
+        difficulty = pr.difficulty
+
+        if ei.item_type in _QUESTION_TYPES:
+            q_type_str = pr.question_type or ei.item_type
+            q_type = _Q_TYPE_MAP.get(q_type_str, QuestionType.PROOF)
+
+            q = Question(
+                id=ei.item_id,
+                question_type=q_type,
+                number=ei.number or "",
+                content=content,
+                solution_content=pr.corrected_solution or ei.solution,
+                solution_methods=pr.methods,
+                difficulty=difficulty,
+                subject=pr.subject,
+                taxonomy_path=pr.taxonomy_path,
+                tags=tags,
+                source_file=source_file or ei.source_file,
+                source_chapter=source_chapter,
+                quality_grade=pr.correction.overall_quality,
             )
+            if ei.raw_metadata:
+                q.exam_type = ei.raw_metadata.get("exam_type")
+                q.exam_year = ei.raw_metadata.get("year")
+            questions.append(q)
+        else:
+            kp_type_str = pr.item_subtype or ei.item_type
+            kp_type = _KP_TYPE_MAP.get(kp_type_str, KPType.THEOREM)
 
-    logger.info(
-        "entities_built",
-        knowledge_points=len(knowledge_points),
-        questions=len(question_pairs),
-    )
-    return knowledge_points, question_pairs
-
-
-def _build_kp(item: KnowledgeItem) -> KnowledgePoint:
-    tags = []
-    if item.tags:
-        tags = list(item.tags.methods) + list(item.tags.custom_tags)
-
-    prerequisites = list(item.prerequisites)
-    for rel in item.relations:
-        if rel.relation_type.value == "prerequisite" and rel.target_id not in prerequisites:
-            prerequisites.append(rel.target_id)
-
-    source = KPSource(
-        source_file=item.source.file_path if item.source else None,
-        chapter=item.source.chapter if item.source else None,
-        section=item.source.section if item.source else None,
-        line_range=item.source.line_range if item.source else None,
-    )
-
-    solution = None
-    if item.proof:
-        from mathforge.core.models import SolutionContent
-
-        solution = SolutionContent(
-            solution_latex=item.proof.proof_latex,
-            solution_plain=item.proof.proof_plain,
-            methods_used=item.proof.methods_used,
-            step_count=item.proof.step_count,
-        )
-
-    return KnowledgePoint(
-        id=item.item_id,
-        title=item.title,
-        content_latex=item.content_latex,
-        content_plain=item.content_plain,
-        kp_type=item.kp_type,
-        difficulty=item.difficulty,
-        tags=tags,
-        prerequisites=prerequisites,
-        relations=list(item.relations),
-        solution=solution,
-        source=source,
-    )
-
-
-def _build_kp_from_example(item: ExampleItem) -> KnowledgePoint:
-    tags = []
-    if item.tags:
-        tags = list(item.tags.methods) + list(item.tags.custom_tags)
-
-    source = KPSource(
-        source_file=item.source.file_path if item.source else None,
-        chapter=item.source.chapter if item.source else None,
-        section=item.source.section if item.source else None,
-        line_range=item.source.line_range if item.source else None,
-    )
-
-    # illustrates_ids 是例题所展示的知识点，不是前置依赖
-    # 通过 relations 表达 ILLUSTRATES 关系
-    from mathforge.core.models import ItemRelation, RelationType
-
-    relations = list(item.relations)
-    for target_id in item.illustrates_ids:
-        if not any(r.target_id == target_id for r in relations):
-            relations.append(
-                ItemRelation(
-                    relation_type=RelationType.ILLUSTRATES,
-                    target_id=target_id,
-                    confidence=0.9,
-                    source="entity_builder",
-                )
+            kp = KnowledgePoint(
+                id=ei.item_id,
+                kp_type=kp_type,
+                number=ei.number or "",
+                content=content,
+                proof_content=pr.corrected_proof or ei.proof,
+                proof_methods=pr.methods,
+                difficulty=difficulty,
+                subject=pr.subject,
+                taxonomy_path=pr.taxonomy_path,
+                tags=tags,
+                source_file=source_file or ei.source_file,
+                source_chapter=source_chapter,
+                source_section=source_section,
+                quality_grade=pr.correction.overall_quality,
             )
+            kps.append(kp)
 
-    return KnowledgePoint(
-        id=item.item_id,
-        title=item.title,
-        content_latex=item.content_latex,
-        content_plain=item.content_plain,
-        kp_type=KPType.EXAMPLE,
-        difficulty=item.difficulty,
-        tags=tags,
-        prerequisites=[],
-        relations=relations,
-        solution=item.solution,
-        source=source,
-    )
-
-
-def _build_question(item: QuestionItem) -> tuple[Question, Solution | None]:
-    tags = []
-    if item.tags:
-        tags = list(item.tags.methods) + list(item.tags.custom_tags)
-
-    q_source = QuestionSource(
-        exam_type=item.source.exam_type if item.source else None,
-        year=item.source.year if item.source else None,
-    )
-    if item.source:
-        q_source.book_title = item.source.book_title
-        q_source.chapter = item.source.chapter
-
-    try:
-        subject = item.subject
-    except Exception:
-        subject = Subject.ANALYSIS
-
-    question = Question(
-        id=item.item_id,
-        content_latex=item.content_latex,
-        content_plain=item.content_plain,
-        difficulty=item.difficulty,
-        question_type=item.question_type,
-        subject=subject,
-        tags=tags,
-        relations=list(item.relations),
-        source=q_source,
-        is_generated=False,
-    )
-
-    solution: Solution | None = None
-    if item.solution:
-        solution = Solution(
-            question_id=item.item_id,
-            solution_latex=item.solution.solution_latex,
-            methods_used=list(item.solution.methods_used),
-            step_count=item.solution.step_count,
-            confidence=item.solution.confidence,
-            is_verified=item.solution.is_verified,
-        )
-    return question, solution
-
-
-def _build_kp_generic(item: UnifiedItemBase) -> KnowledgePoint:
-    tags = []
-    if item.tags:
-        tags = list(item.tags.methods) + list(item.tags.custom_tags)
-
-    source = KPSource(
-        source_file=item.source.file_path if item.source else None,
-        line_range=item.source.line_range if item.source else None,
-    )
-
-    return KnowledgePoint(
-        id=item.item_id,
-        title=item.title,
-        content_latex=item.content_latex,
-        content_plain=item.content_plain,
-        kp_type=KPType.REMARK,
-        difficulty=5,
-        tags=tags,
-        relations=list(item.relations),
-        source=source,
-    )
+    logger.info("entities_built", kps=len(kps), questions=len(questions))
+    return kps, questions

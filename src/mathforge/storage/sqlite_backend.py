@@ -90,18 +90,21 @@ class SQLiteStorageBackend:
     def save_batch(
         self,
         kps: list[KnowledgePoint],
-        questions: list[tuple[Question, Solution | None]],
+        questions: list[Question] | list[tuple[Question, ...]] = (),
     ) -> int:
-        """一次事务保存多个 KP + Question，返回保存总数"""
+        """一次事务保存多个 KP + Question"""
         saved = 0
         with self.transaction():
             for kp in kps:
                 self.save_knowledge_point(kp)
                 saved += 1
-            for q, sol in questions:
-                self.save_question(q, sol)
+            for q in questions:
+                if isinstance(q, tuple):
+                    self.save_question(q[0])
+                else:
+                    self.save_question(q)
                 saved += 1
-        logger.info("storage_batch_saved", kps=len(kps), questions=len(questions))
+        logger.info("storage_batch_saved", kps=len(kps), questions=len(list(questions)))
         return saved
 
     def update_relations_batch(

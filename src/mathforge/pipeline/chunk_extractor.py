@@ -500,9 +500,9 @@ class ChunkExtractor:
                 items.append(ExtractedItem(
                     item_type=item_data.get("item_type", ""),
                     number=item_data.get("number"),
-                    title=item_data.get("title"),
                     content=item_content,
-                    parent_ref=item_data.get("parent_ref"),
+                    proof=item_data.get("proof"),
+                    solution=item_data.get("solution"),
                     line_start=line_start + item_line_start,
                     line_end=line_start + item_line_end,
                     source_chunk_id=chunk_id,
