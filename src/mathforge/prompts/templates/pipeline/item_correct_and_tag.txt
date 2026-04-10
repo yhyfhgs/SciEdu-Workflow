@@ -1,173 +1,105 @@
-你是数学教育领域的资深编辑与分类专家，具备扎实的数学功底和丰富的教材审校经验。你将同时完成两项任务：(A) 对提取的数学条目进行质量校准修复；(B) 对其进行多维分类标注。
-
-两项任务共享同一份内容理解，请一次性完成，以确保校正与分类的一致性。
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 待处理条目
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-**类型**: {block_type}
-**编号**: {number}
-**原始内容**:
-
-{content_raw}
-
-{paired_content_section}
+你是数学教育领域的资深编辑与分类专家。你将**批量审校**以下数学条目，对每个条目完成：(A) 质量校准修复；(B) 多维分类标注。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## 文档上下文
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-- **文档类型**: {source_type}（exam_paper=考试卷 / lecture_notes=讲义 / textbook=教材）
+- **文档类型**: {source_type}
 - **章节**: {chapter_title} > {section_title}
-- **文档骨架**: {detected_structure}
-- **前一条目**: [{prev_type}] {prev_title}
-- **后一条目**: [{next_type}] {next_title}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## OCR 预检结果（确定性阶段已处理，以下为残余可疑项）
+## 待审校条目（共 {item_count} 个）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-{suspicious_terms}
+{items_block}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 分类参考：知识点 Taxonomy 树（仅展示相关分支）
+## 任务 A：质量校准
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-{taxonomy_excerpt}
+对每个条目检查：
+
+1. **文字**：OCR 错字（盐德金→戴德金）、术语（特征植→特征值）
+2. **LaTeX**：未闭合 `$...$`、错误符号（`\ln` vs `\in`）
+3. **语义**：定义是否完整、定理条件是否齐全、是否被截断
+4. **逻辑**：推导是否连贯、条件结论是否匹配
+5. **证明/解答**：如有 proof 或 solution，检查论证完整性和正确性
+
+**有效性判断**：纯标题、页码、引言、注记 → `overall_quality = "F"`
+
+**quality 评级**：
+- A = 完整准确，无需修改
+- B = 小瑕疵（拼写/格式），已修正
+- C = 有实质问题但可修复
+- D = 严重问题，勉强可用
+- F = 无效内容，应丢弃
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 前置判断：是否为有效数学内容
+## 任务 B：多维分类
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-在执行校准之前，请先判断此条目是否为有效的数学内容。以下内容**不应**作为独立条目：
-- 纯章节标题（如"第三章 极限"、"3.2 连续函数的性质"）
-- 纯页码、页眉、页脚
-- 仅包含编号而无实质内容的条目
-- 目录条目
-- 纯文字性质的引言、绪论、介绍段落（如"本章介绍..."、"Introduction"、"In this section we..."）
-- 注记（Remark）、注（Note）等评论性、补充说明性内容——它们是辅助说明，不构成独立知识条目
-- 纯文字叙述段落，不包含定义、定理、公式或习题的内容
+### kp_type 精确判断（知识类条目）
 
-如果判定为无效内容，请直接设 `overall_quality` 为 `"F"`，并在 `semantic_issues` 中注明 `"非有效数学内容：<原因>"`，其余字段可留空或使用默认值。
+- `definition` — 包含"称为"、"叫做"、"定义为"的定义性陈述
+- `theorem` — 有条件+结论的数学命题（"若...则..."）
+- `lemma` — 辅助性命题
+- `corollary` — 从定理推出的直接结论
+- `proposition` — 较弱的命题
+- `property` — 性质列举
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 任务 A: 质量校准修复
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+### question_type 精确判断（题目类条目）
 
-请逐一检查以下 5 个质量维度，对发现的问题进行修正：
+- `proof` — "证明..."、"试证..."、"说明...为什么..."
+- `calculation` — "计算..."、"求..."、"求值..."、"化简..."
+- `fill_blank` — 含下划线、空格待填
+- `choice` — 有 A/B/C/D 选项
+- `true_false` — "判断正误"、"是否成立"
+- `construction` — "构造..."、"给出一个满足...的..."
 
-### 维度 1: 文字修正
+### 学科与 Taxonomy
 
-- **OCR 错字**：如"盐德金"→"戴德金"、"收玫"→"收敛"、"定罣"→"定理"
-- **数学术语错误**：如"特征植"→"特征值"、"正交鸡"→"正交基"
-- **标点与排版**：中文标点与英文标点的一致性、多余空格等
+- `subject`: 从内容关键词判断学科（如"群/环/域"→代数, "极限/连续/积分"→分析）
+- `taxonomy_path`: `math.algebra.group_theory` 或 `math.analysis.sequences_and_limits` 格式
+- 根据**内容实质**选取 taxonomy，不要随意猜测
 
-### 维度 2: LaTeX 修正
+### Tags 格式（必须遵守）
 
-- 公式语法错误（未闭合的 `$...$` 或 `\begin/\end`）
-- 错误的数学符号（如 `\in` 写成 `\ln`、`\subset` 写成 `\supset`）
-- 缺失的数学环境（行内公式未加 `$`、行间公式未加 `$$`）
+所有 tag 必须用 `"english:中文"` 双语格式，例如：
+- `"group_theory:群论"`, `"normal_subgroup:正规子群"`, `"epsilon_delta:ε-δ语言"`
+- `"lagrange_theorem:拉格朗日定理"`, `"integration_by_parts:分部积分"`
+- **禁止**纯中文或纯英文 tag
 
-### 维度 3: 语义完整性
+### Difficulty（1-10）
 
-- 定义是否包含了所有必要的条件和限定？
-- 定理的条件集合是否完整？结论是否清晰？
-- 内容是否存在截断（句子不完整、公式缺少右半部分等）？
-
-### 维度 4: 逻辑正确性
-
-- 推导步骤的逻辑链条是否完整？
-- 条件与结论是否匹配？
-- 是否存在循环论证或跳步？
-
-### 维度 5: 答案验证（仅适用于题目类条目）
-
-- 给出的答案/解答是否正确？
-- 解答过程是否完整？
-
-### 修正原则
-
-- **明确的错误**（OCR/拼写/LaTeX 语法）→ 直接修正
-- **可能正确也可能错误的内容** → 保留原文，在 `semantic_issues` 中标注疑点
-- 修正后的内容应**保持原始的表述风格和详细程度**，不要过度改写
-- 所有数学公式必须使用标准 LaTeX 语法
+根据内容复杂度、所需前置知识、抽象程度综合判断。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 任务 B: 多维分类标注
+## 输出 JSON（不要 markdown 代码块）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-基于你对内容的深入理解（已在任务 A 中完成），完成以下多层分类：
-
-### 第 1-2 层：学科域与学科
-
-- **domain**: `math` / `physics` / `cs`
-- **subject**: 数学分析 / 高等代数 / 群论（等）
-
-### 第 3 层：Taxonomy 路径
-
-从上方提供的 taxonomy 树中选择**最精确**的分类路径：
-- 格式: `domain.branch.topic[.subtopic[.specific]]`
-- 优先选择叶子节点，避免停留在过于宽泛的上层节点
-
-### 第 4 层：教育阶段与教学难度
-
-- **education_level**: `high_school` / `undergraduate` / `graduate`
-- **pedagogical_level**: `basic` / `standard` / `intermediate` / `advanced` / `competition`
-
-### 第 5 层：方法与技巧标签
-
-- **methods**: 列出该条目涉及或考查的具体数学方法/技巧
-- 例如：ε-δ 语言、夹逼定理、数学归纳法、Jordan 标准形、分部积分等
-
-### 分类决策依据
-
-综合考虑以下信号源进行分类判断：
-1. **内容本身的主题与方法**（最主要依据）
-2. **所在章节标题**（提供领域上下文）
-3. **相邻条目的类型和主题**（提供序列上下文）
-4. **文档来源类型**（教材/讲义/试卷影响难度判断）
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-## 输出格式
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-请严格按以下 JSON 格式输出（**不要**使用 markdown 代码块包裹）：
 
 {{
-  "correction": {{
-    "corrected_content": "修正后的完整内容文本（纯文本格式）",
-    "corrected_latex": "修正后的 LaTeX 格式内容",
-    "corrections": [
-      {{
-        "original": "原始文本片段",
-        "corrected": "修正后文本",
-        "reason": "修正原因的简要说明",
-        "category": "ocr|typo|math_symbol|semantic|logic|formatting"
-      }}
-    ],
-    "semantic_issues": [],
-    "logic_issues": [],
-    "is_answer_verified": null,
-    "completeness_score": 1.0,
-    "overall_quality": "A|B|C|D"
-  }},
-  "classification": {{
-    "domain": "math",
-    "subject": "数学分析",
-    "taxonomy": {{
-      "domain": "math",
-      "branch": "analysis",
-      "topic": "limits",
-      "subtopic": null,
-      "specific": null
-    }},
-    "education_level": "undergraduate",
-    "pedagogical_level": "standard",
-    "difficulty": 5,
-    "methods": [],
-    "tested_topics": [],
-    "custom_tags": [],
-    "item_subtype": "definition"
-  }}
+  "items": [
+    {{
+      "index": 0,
+      "corrected_content": "修正后的主内容",
+      "corrected_proof": "修正后的证明（无则 null）",
+      "corrected_solution": "修正后的解答（无则 null）",
+      "overall_quality": "A",
+      "kp_type": "theorem",
+      "question_type": null,
+      "subject": "abstract_algebra:抽象代数",
+      "taxonomy_path": "math.algebra.group_theory",
+      "difficulty": 6,
+      "tags": ["normal_subgroup:正规子群", "quotient_group:商群"],
+      "methods": ["first_isomorphism_theorem:第一同构定理"]
+    }}
+  ]
 }}
+
+注意：
+- `index` 对应输入条目的序号（从 0 开始）
+- `kp_type` 仅知识类条目需要，题目类为 `null`
+- `question_type` 仅题目类条目需要，知识类为 `null`
+- `corrected_proof`/`corrected_solution` 无配套时为 `null`
+- 每个 tag 和 method 必须 `"english:中文"` 格式
+- `subject` 也用 `"english:中文"` 格式
