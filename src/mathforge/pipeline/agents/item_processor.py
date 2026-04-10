@@ -145,11 +145,12 @@ class ItemProcessor:
         )
 
         result_dict = None
-        for attempt in range(2):  # 1 次尝试 + 1 次重试
+        for attempt in range(2):
             try:
-                result_dict = await self.llm.generate_json(prompt)
+                result_dict = await self.llm.generate_json(prompt, max_tokens=8192)
                 if not result_dict:
-                    logger.info("item_process_retry", item_id=item.item_id, reason="empty")
+                    if attempt == 0:
+                        logger.info("item_process_retry", item_id=item.item_id, reason="empty")
                     continue
                 latency = time.monotonic() - t0
                 logger.info(
@@ -161,13 +162,12 @@ class ItemProcessor:
                 break
             except Exception:
                 if attempt == 0:
-                    logger.warning("item_process_retry", item_id=item.item_id)
+                    logger.info("item_process_retry", item_id=item.item_id, reason="parse_error")
                     continue
-                logger.error(
+                logger.warning(
                     "item_process_failed",
                     item_id=item.item_id,
                     block_type=item.block_type,
-                    exc_info=True,
                 )
                 return self._fallback_result(item, pre_content)
 
