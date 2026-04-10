@@ -19,15 +19,17 @@ from mathforge.core.models import (
     DocumentTree,
     ItemRelation,
     KnowledgePoint,
-    KPSource,
     KPType,
     Question,
-    QuestionSource,
     QuestionType,
-    Solution,
-    Subject,
     TaxonomyNode,
 )
+
+# 向后兼容 — save_question 签名保留 solution 参数但不再使用
+try:
+    from mathforge.core.models import Solution
+except ImportError:
+    Solution = None  # type: ignore[assignment,misc]
 
 logger = structlog.get_logger()
 
@@ -114,59 +116,35 @@ class SQLiteStorageBackend:
     # ── KnowledgePoint ────────────────────────────────
 
     def save_knowledge_point(self, kp: KnowledgePoint) -> str:
-        content_hash = _content_hash(kp.content_latex)
-
-        taxonomy_path = ""
-
-        solution_json = None
-        if kp.solution:
-            solution_json = kp.solution.model_dump_json()
-
-        source_file = ""
-        source_chapter = None
-        source_section = None
-        source_line_start = None
-        source_line_end = None
-        if kp.source:
-            source_file = kp.source.source_file or ""
-            source_chapter = kp.source.chapter
-            source_section = kp.source.section
-            if kp.source.line_range:
-                source_line_start, source_line_end = kp.source.line_range
+        content_hash = _content_hash(kp.content)
 
         self._conn.execute(
             """INSERT OR REPLACE INTO knowledge_points
-            (id, title, content_latex, content_plain, kp_type, difficulty,
-             solution_json, source_file, source_chapter, source_section,
-             source_line_start, source_line_end,
-             taxonomy_path, tags_json, prerequisites_json,
-             content_hash, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (id, kp_type, number, content, proof_content, proof_methods,
+             difficulty, subject, taxonomy_path, tags,
+             source_file, source_chapter, source_section,
+             quality_grade, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 kp.id,
-                kp.title,
-                kp.content_latex,
-                kp.content_plain,
-                kp.kp_type.value,
+                kp.kp_type.value if hasattr(kp.kp_type, "value") else str(kp.kp_type),
+                kp.number,
+                kp.content,
+                kp.proof_content,
+                json.dumps(kp.proof_methods, ensure_ascii=False),
                 kp.difficulty,
-                solution_json,
-                source_file,
-                source_chapter,
-                source_section,
-                source_line_start,
-                source_line_end,
-                taxonomy_path,
+                kp.subject,
+                kp.taxonomy_path,
                 json.dumps(kp.tags, ensure_ascii=False),
-                json.dumps(kp.prerequisites, ensure_ascii=False),
+                kp.source_file,
+                kp.source_chapter,
+                kp.source_section,
+                kp.quality_grade,
                 content_hash,
             ),
         )
 
-        # 保存关系
         self._save_relations(kp.id, "kp", kp.relations)
-
-        # 保存标签
-        self._save_tags(kp.id, "kp", kp.tags)
 
         if not self._in_transaction:
             self._conn.commit()
@@ -188,70 +166,39 @@ class SQLiteStorageBackend:
     # ── Question ──────────────────────────────────────
 
     def save_question(self, question: Question, solution: Solution | None = None) -> str:
-        content_hash = _content_hash(question.content_latex)
-
-        source_file = ""
-        source_chapter = None
-        exam_type = None
-        exam_year = None
-        book_title = None
-        if question.source:
-            book_title = question.source.book_title
-            source_chapter = question.source.chapter
-            exam_type = question.source.exam_type.value if question.source.exam_type else None
-            exam_year = question.source.year
+        content_hash = _content_hash(question.content)
 
         self._conn.execute(
             """INSERT OR REPLACE INTO questions
-            (id, content_latex, content_plain, question_type, difficulty,
-             subject, answer, source_file, source_chapter,
-             exam_type, exam_year, book_title,
-             is_generated, parent_id,
-             taxonomy_path, tags_json,
-             content_hash, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (id, question_type, number, content, solution_content, solution_methods,
+             answer, difficulty, subject, taxonomy_path, tags,
+             source_file, source_chapter, exam_type, exam_year,
+             quality_grade, content_hash, is_generated, parent_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 question.id,
-                question.content_latex,
-                question.content_plain,
-                question.question_type.value,
+                question.question_type.value if hasattr(question.question_type, "value") else str(question.question_type),
+                question.number,
+                question.content,
+                question.solution_content,
+                json.dumps(question.solution_methods, ensure_ascii=False),
+                question.answer,
                 question.difficulty,
-                question.subject.value,
-                "",
-                source_file,
-                source_chapter,
-                exam_type,
-                exam_year,
-                book_title,
+                question.subject,
+                question.taxonomy_path,
+                json.dumps(question.tags, ensure_ascii=False),
+                question.source_file,
+                question.source_chapter,
+                question.exam_type,
+                question.exam_year,
+                question.quality_grade,
+                content_hash,
                 int(question.is_generated),
                 question.parent_id,
-                "",
-                json.dumps(question.tags, ensure_ascii=False),
-                content_hash,
             ),
         )
 
-        if solution:
-            self._conn.execute(
-                """INSERT OR REPLACE INTO solutions
-                (id, question_id, solution_latex, solution_plain,
-                 methods_used_json, step_count, confidence, is_verified)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    solution.id,
-                    solution.question_id,
-                    solution.solution_latex,
-                    "",
-                    json.dumps(solution.methods_used, ensure_ascii=False),
-                    solution.step_count,
-                    solution.confidence,
-                    int(solution.is_verified),
-                ),
-            )
-
-        # 保存关系和标签
         self._save_relations(question.id, "question", question.relations)
-        self._save_tags(question.id, "question", question.tags)
 
         if not self._in_transaction:
             self._conn.commit()
@@ -271,22 +218,6 @@ class SQLiteStorageBackend:
         return row[0] if row else 0
 
     # ── Solution ──────────────────────────────────────
-
-    def load_solution(self, question_id: str) -> Solution | None:
-        row = self._conn.execute(
-            "SELECT * FROM solutions WHERE question_id = ?", (question_id,)
-        ).fetchone()
-        if not row:
-            return None
-        return Solution(
-            id=row["id"],
-            question_id=row["question_id"],
-            solution_latex=row["solution_latex"],
-            methods_used=json.loads(row["methods_used_json"]) if row["methods_used_json"] else [],
-            step_count=row["step_count"] or 0,
-            confidence=row["confidence"] or "medium",
-            is_verified=bool(row["is_verified"]),
-        )
 
     # ── 全文检索 ──────────────────────────────────────
 
@@ -381,13 +312,13 @@ class SQLiteStorageBackend:
         """数据库统计信息"""
         kp_count = self.knowledge_count()
         q_count = self.question_count()
-        sol_row = self._conn.execute("SELECT COUNT(*) FROM solutions").fetchone()
         rel_row = self._conn.execute("SELECT COUNT(*) FROM relations").fetchone()
+        tree_row = self._conn.execute("SELECT COUNT(*) FROM taxonomy_nodes").fetchone()
         return {
             "knowledge_points": kp_count,
             "questions": q_count,
-            "solutions": sol_row[0] if sol_row else 0,
             "relations": rel_row[0] if rel_row else 0,
+            "tree_nodes": tree_row[0] if tree_row else 0,
         }
 
     # ── 批量操作 ─────────────────────────────────────
@@ -447,17 +378,6 @@ class SQLiteStorageBackend:
             return "question"
         return "kp"
 
-    def _save_tags(self, item_id: str, item_type: str, tags: list[str]) -> None:
-        self._conn.execute(
-            "DELETE FROM tags WHERE item_id = ? AND item_type = ?",
-            (item_id, item_type),
-        )
-        for tag in tags:
-            self._conn.execute(
-                "INSERT INTO tags (item_id, item_type, tag) VALUES (?, ?, ?)",
-                (item_id, item_type, tag),
-            )
-
     def _search(self, table: str, filters: dict) -> list[str]:
         """动态构建 WHERE 子句"""
         conditions: list[str] = []
@@ -499,24 +419,8 @@ class SQLiteStorageBackend:
         return [r["id"] for r in rows]
 
     def _row_to_kp(self, row: sqlite3.Row) -> KnowledgePoint:
-        source = KPSource(
-            source_file=row["source_file"] or None,
-            chapter=row["source_chapter"],
-            section=row["source_section"],
-            line_range=(row["source_line_start"], row["source_line_end"])
-            if row["source_line_start"] is not None
-            else None,
-        )
-        tags = json.loads(row["tags_json"]) if row["tags_json"] else []
-        prerequisites = json.loads(row["prerequisites_json"]) if row["prerequisites_json"] else []
+        tags = json.loads(row["tags"]) if row["tags"] else []
         relations = self.get_relations(row["id"], "outgoing")
-
-        solution = None
-        if row["solution_json"]:
-            from mathforge.core.models import SolutionContent
-
-            solution = SolutionContent.model_validate_json(row["solution_json"])
-
         try:
             kp_type = KPType(row["kp_type"])
         except ValueError:
@@ -524,33 +428,24 @@ class SQLiteStorageBackend:
 
         return KnowledgePoint(
             id=row["id"],
-            title=row["title"],
-            content_latex=row["content_latex"],
-            content_plain=row["content_plain"],
             kp_type=kp_type,
+            number=row["number"] or "",
+            content=row["content"],
+            proof_content=row["proof_content"],
+            proof_methods=json.loads(row["proof_methods"]) if row["proof_methods"] else [],
             difficulty=row["difficulty"],
+            subject=row["subject"] or "",
+            taxonomy_path=row["taxonomy_path"] or "",
             tags=tags,
-            prerequisites=prerequisites,
             relations=relations,
-            solution=solution,
-            source=source,
+            quality_grade=row["quality_grade"] or "B",
+            source_file=row["source_file"] or "",
+            source_chapter=row["source_chapter"] or "",
+            source_section=row["source_section"] or "",
         )
 
     def _row_to_question(self, row: sqlite3.Row) -> Question:
-        source = QuestionSource(
-            book_title=row["book_title"],
-            chapter=row["source_chapter"],
-            year=row["exam_year"],
-        )
-        if row["exam_type"]:
-            from mathforge.core.models import ExamType
-
-            try:
-                source.exam_type = ExamType(row["exam_type"])
-            except ValueError:
-                pass
-
-        tags = json.loads(row["tags_json"]) if row["tags_json"] else []
+        tags = json.loads(row["tags"]) if row["tags"] else []
         relations = self.get_relations(row["id"], "outgoing")
 
         try:
@@ -558,21 +453,24 @@ class SQLiteStorageBackend:
         except ValueError:
             q_type = QuestionType.PROOF
 
-        try:
-            subject = Subject(row["subject"])
-        except ValueError:
-            subject = Subject.ANALYSIS
-
         return Question(
             id=row["id"],
-            content_latex=row["content_latex"],
-            content_plain=row["content_plain"],
-            difficulty=row["difficulty"],
             question_type=q_type,
-            subject=subject,
+            number=row["number"] or "",
+            content=row["content"],
+            solution_content=row["solution_content"],
+            solution_methods=json.loads(row["solution_methods"]) if row["solution_methods"] else [],
+            answer=row["answer"] or "",
+            difficulty=row["difficulty"],
+            subject=row["subject"] or "",
+            taxonomy_path=row["taxonomy_path"] or "",
             tags=tags,
             relations=relations,
-            source=source,
+            quality_grade=row["quality_grade"] or "B",
+            source_file=row["source_file"] or "",
+            source_chapter=row["source_chapter"] or "",
+            exam_type=row["exam_type"],
+            exam_year=row["exam_year"],
             is_generated=bool(row["is_generated"]),
             parent_id=row["parent_id"],
         )
