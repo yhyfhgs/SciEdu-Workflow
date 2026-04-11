@@ -647,6 +647,34 @@ class DirectoryProgress(BaseModel):
     started_at: datetime = Field(default_factory=datetime.now)
 
 
+# ── 讲义 (DocAssembly Agent 输出) ─────────────────────
+
+
+class LectureSection(BaseModel):
+    """讲义的一节"""
+
+    title: str = ""
+    intro: str = ""  # 引言/动机
+    knowledge_point_ids: list[str] = Field(default_factory=list)
+    worked_example_ids: list[str] = Field(default_factory=list)  # 作为例题的 Question id
+    exercise_ids: list[str] = Field(default_factory=list)  # 作为练习的 Question id
+    notes: str = ""  # Agent 串讲文本
+
+
+class Lecture(BaseModel):
+    """AI 生成的讲义 (DocAssemblyAgent lite 版输出)"""
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str = ""
+    discipline: Discipline = Discipline.MATH
+    topic_tags: list[str] = Field(default_factory=list)
+    sections: list[LectureSection] = Field(default_factory=list)
+    target_audience: str = ""  # "高中" / "大学一年级"
+    estimated_duration_min: int = 60
+    generated_at: datetime = Field(default_factory=datetime.now)
+    generation_meta: dict[str, object] = Field(default_factory=dict)
+
+
 # ── 前向引用解析 ──────────────────────────────────────
 # KnowledgePoint/Question 引用了后续定义的 ItemRelation
 KnowledgePoint.model_rebuild()
