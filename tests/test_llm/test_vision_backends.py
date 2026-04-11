@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mathforge.llm.backends import VisionBackend
-from mathforge.llm.config import LLMConfig, LLMProvider
+from sciforge.llm.backends import VisionBackend
+from sciforge.llm.config import LLMConfig, LLMProvider
 
 # ── Protocol 一致性 ──────────────────────────────────────
 
@@ -17,7 +17,7 @@ class TestVisionBackendProtocol:
 
     def test_anthropic_is_vision_backend(self):
         with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
-            from mathforge.llm.backends.anthropic import AnthropicBackend
+            from sciforge.llm.backends.anthropic import AnthropicBackend
 
             cfg = LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test")
             backend = AnthropicBackend(cfg)
@@ -25,7 +25,7 @@ class TestVisionBackendProtocol:
 
     def test_openai_is_vision_backend(self):
         with patch("openai.OpenAI"), patch("openai.AsyncOpenAI"):
-            from mathforge.llm.backends.openai_backend import OpenAIBackend
+            from sciforge.llm.backends.openai_backend import OpenAIBackend
 
             cfg = LLMConfig(provider=LLMProvider.OPENAI, api_key="test")
             backend = OpenAIBackend(cfg)
@@ -33,7 +33,7 @@ class TestVisionBackendProtocol:
 
     def test_gemini_is_vision_backend(self):
         with patch("google.genai.Client"):
-            from mathforge.llm.backends.gemini import GeminiBackend
+            from sciforge.llm.backends.gemini import GeminiBackend
 
             cfg = LLMConfig(provider=LLMProvider.GEMINI, api_key="test")
             backend = GeminiBackend(cfg)
@@ -50,7 +50,7 @@ class TestAnthropicVision:
             patch("anthropic.Anthropic") as mock_sync,
             patch("anthropic.AsyncAnthropic") as mock_async,
         ):
-            from mathforge.llm.backends.anthropic import AnthropicBackend
+            from sciforge.llm.backends.anthropic import AnthropicBackend
 
             cfg = LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test")
             b = AnthropicBackend(cfg)
@@ -106,7 +106,7 @@ class TestOpenAIVision:
     @pytest.fixture
     def backend(self):
         with patch("openai.OpenAI") as mock_sync, patch("openai.AsyncOpenAI") as mock_async:
-            from mathforge.llm.backends.openai_backend import OpenAIBackend
+            from sciforge.llm.backends.openai_backend import OpenAIBackend
 
             cfg = LLMConfig(provider=LLMProvider.OPENAI, api_key="test")
             b = OpenAIBackend(cfg)
@@ -145,7 +145,7 @@ class TestOpenAIVision:
 class TestLLMClientVision:
     def test_supports_vision_true(self):
         with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
-            from mathforge.llm.client import LLMClient
+            from sciforge.llm.client import LLMClient
 
             cfg = LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test")
             client = LLMClient(cfg)
@@ -153,7 +153,7 @@ class TestLLMClientVision:
 
     def test_supports_vision_false_for_non_vision(self):
         """自定义 backend 不实现 VisionBackend 时返回 False"""
-        from mathforge.llm.client import LLMClient
+        from sciforge.llm.client import LLMClient
 
         cfg = LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test")
         client = LLMClient.__new__(LLMClient)
@@ -166,8 +166,8 @@ class TestLLMClientVision:
 
     @pytest.mark.asyncio
     async def test_generate_with_image_raises_without_vision(self):
-        from mathforge.core.exceptions import LLMVisionError
-        from mathforge.llm.client import LLMClient
+        from sciforge.core.exceptions import LLMVisionError
+        from sciforge.llm.client import LLMClient
 
         cfg = LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test")
         client = LLMClient.__new__(LLMClient)

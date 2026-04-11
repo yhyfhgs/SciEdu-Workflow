@@ -1,7 +1,7 @@
 [project]
-name = "mathforge"
+name = "sciforge"
 version = "0.1.0"
-description = "AI-driven university mathematics education platform"
+description = "SciForge: AI-driven STEM knowledge processing & generation platform (math/physics/chem/bio)"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
@@ -29,17 +29,18 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
 ]
-all = ["mathforge[gemini,pdf,db,compute,dev]"]
+all = ["sciforge[gemini,pdf,db,compute,dev]"]
 
 [project.scripts]
-mathforge = "mathforge.cli.main:app"
+sciforge = "sciforge.cli.main:app"
+sf = "sciforge.cli.main:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mathforge"]
+packages = ["src/sciforge"]
 
 [tool.uv]
 conflicts = [
@@ -60,8 +61,12 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["mathforge"]
+packages = ["sciforge"]
 mypy_path = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["fitz", "yaml"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

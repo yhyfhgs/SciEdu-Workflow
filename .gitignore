@@ -39,6 +39,7 @@ htmlcov/
 .coverage
 
 # User config (keep .example.toml, ignore actual config)
+config/sciforge.toml
 config/mathforge.toml
 
 # Binary / large files
