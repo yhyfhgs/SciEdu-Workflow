@@ -10,11 +10,9 @@ import structlog
 from sciforge.core.models import ContextBundle, Discipline, Question, Solution
 from sciforge.llm.client import LLMClient
 from sciforge.pipeline.retry import call_llm_json_with_retry
-from sciforge.prompts.loader import load_prompt
+from sciforge.prompts.templates import get_generation_prompt_template
 
 logger = structlog.get_logger()
-
-_SOLVE_PROMPT_RAW = load_prompt("solving/solve.txt")
 
 
 class SolveEngine:
@@ -23,6 +21,9 @@ class SolveEngine:
     def __init__(self, llm: LLMClient, discipline: Discipline = Discipline.MATH) -> None:
         self.llm = llm
         self.discipline = discipline
+        self._solve_template = get_generation_prompt_template(
+            "solving/solve.txt", discipline
+        )
 
     async def solve(
         self,
@@ -37,7 +38,7 @@ class SolveEngine:
                 for kp in context.knowledge_points[:5]
             )
 
-        prompt = _SOLVE_PROMPT_RAW.format(
+        prompt = self._solve_template.format(
             question_latex=question.content,
             knowledge_context=kp_context,
         )

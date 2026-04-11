@@ -10,11 +10,9 @@ import structlog
 from sciforge.core.models import DifficultyScore, Discipline, Question, Solution
 from sciforge.llm.client import LLMClient
 from sciforge.pipeline.retry import call_llm_json_with_retry
-from sciforge.prompts.loader import load_prompt
+from sciforge.prompts.templates import get_generation_prompt_template
 
 logger = structlog.get_logger()
-
-_DIFFICULTY_SCORING_RAW = load_prompt("verification/difficulty_scoring.txt")
 
 
 class DifficultyAnnotator:
@@ -23,11 +21,14 @@ class DifficultyAnnotator:
     def __init__(self, llm: LLMClient, discipline: Discipline = Discipline.MATH) -> None:
         self.llm = llm
         self.discipline = discipline
+        self._scoring_template = get_generation_prompt_template(
+            "verification/difficulty_scoring.txt", discipline
+        )
 
     async def annotate(self, question: Question, solution: Solution) -> DifficultyScore:
         sketch = solution.solution_latex[:300] if solution.solution_latex else "无解答"
 
-        prompt = _DIFFICULTY_SCORING_RAW.format(
+        prompt = self._scoring_template.format(
             question_latex=question.content,
             solution_sketch=sketch,
         )

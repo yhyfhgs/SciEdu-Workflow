@@ -13,11 +13,9 @@ from sciforge.core.models import (
 )
 from sciforge.llm.client import LLMClient
 from sciforge.pipeline.retry import call_llm_json_with_retry
-from sciforge.prompts.loader import load_prompt
+from sciforge.prompts.templates import get_generation_prompt_template
 
 logger = structlog.get_logger()
-
-_REVIEW_PROMPT_RAW = load_prompt("verification/review.txt")
 
 
 class VerificationPipeline:
@@ -25,7 +23,7 @@ class VerificationPipeline:
 
     Check 清单:
     1. solve_confidence: solver 的置信度不为 low
-    2. math_correctness: 独立 LLM 审核判断题目逻辑是否成立
+    2. review_passed: 独立 LLM 审核判断题目逻辑是否成立
     3. non_trivial: 题干长度足够
     """
 
@@ -36,6 +34,9 @@ class VerificationPipeline:
     ) -> None:
         self.review_llm = review_llm  # 独立实例避免确认偏差
         self.discipline = discipline
+        self._review_template = get_generation_prompt_template(
+            "verification/review.txt", discipline
+        )
 
     async def verify(
         self,
@@ -72,7 +73,7 @@ class VerificationPipeline:
 
     async def _check_with_review_llm(self, question: Question) -> dict[str, object]:
         """独立审核 LLM 判断题目合理性"""
-        prompt = _REVIEW_PROMPT_RAW.format(question_latex=question.content)
+        prompt = self._review_template.format(question_latex=question.content)
 
         try:
             result = await call_llm_json_with_retry(

@@ -24,13 +24,9 @@ from sciforge.core.models import (
 from sciforge.disciplines import DISCIPLINE_REGISTRY
 from sciforge.llm.client import LLMClient
 from sciforge.pipeline.retry import call_llm_json_with_retry
-from sciforge.prompts.loader import load_prompt
+from sciforge.prompts.templates import get_generation_prompt_template
 
 logger = structlog.get_logger()
-
-_FREE_PROMPT_RAW = load_prompt("generation/free_generation.txt")
-_VARIANT_PROMPT_RAW = load_prompt("generation/variant_generation.txt")
-_DIFFICULTY_CAL_RAW = load_prompt("generation/difficulty_calibration.txt")
 
 
 class QuestionGenerator:
@@ -40,6 +36,16 @@ class QuestionGenerator:
         self.llm = llm
         self.discipline = discipline
         self.spec = DISCIPLINE_REGISTRY.get(discipline)
+        # 按学科加载 prompt 模板（含词语替换）
+        self._free_template = get_generation_prompt_template(
+            "generation/free_generation.txt", discipline
+        )
+        self._variant_template = get_generation_prompt_template(
+            "generation/variant_generation.txt", discipline
+        )
+        self._difficulty_cal = get_generation_prompt_template(
+            "generation/difficulty_calibration.txt", discipline
+        )
 
     async def generate_candidates(
         self,
@@ -74,15 +80,14 @@ class QuestionGenerator:
 
     def _build_prompt(self, req: GenerationRequest, ctx: ContextBundle) -> str:
         """构建 prompt（按 variant / free 模式 + 学科参数化）"""
-        difficulty_cal = _DIFFICULTY_CAL_RAW.format(target=req.difficulty_target)
+        difficulty_cal = self._difficulty_cal.format(target=req.difficulty_target)
         context_block = ctx.to_prompt_block()
 
         # 学科上下文：用 discipline spec 的 display_name 替换 "数学"
         subject_text = req.subject or self.spec.display_name
 
         if req.source_question is not None:
-            tpl = _VARIANT_PROMPT_RAW
-            return tpl.format(
+            return self._variant_template.format(
                 subject=subject_text,
                 source_question_latex=req.source_question.content,
                 strategy_instruction=req.strategy.value,
@@ -92,8 +97,7 @@ class QuestionGenerator:
                 context_block=context_block,
             )
 
-        tpl = _FREE_PROMPT_RAW
-        return tpl.format(
+        return self._free_template.format(
             subject=subject_text,
             topics=", ".join(req.topics),
             target_difficulty=req.difficulty_target,
