@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import typer
 
 from sciforge.cli.display import console, error, success
+from sciforge.core.models import Discipline
 
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
@@ -58,6 +59,7 @@ def _build_orchestrator(
     backend: str,
     llm_provider: str | None,
     llm_model: str | None,
+    discipline: Discipline = Discipline.MATH,
 ) -> PipelineOrchestrator:
     """构建 PipelineOrchestrator 实例"""
     from sciforge.pipeline.orchestrator import PipelineOrchestrator
@@ -82,7 +84,19 @@ def _build_orchestrator(
         db_path=None if dry_run else db,
         llm_clients=llm_clients if llm_clients else None,
         pdf_backend=backend,
+        discipline=discipline,
     )
+
+
+def _parse_discipline(value: str) -> Discipline:
+    """CLI 参数 → Discipline 枚举，校验失败时给友好错误"""
+    try:
+        return Discipline(value)
+    except ValueError as exc:
+        allowed = ", ".join(d.value for d in Discipline)
+        raise typer.BadParameter(
+            f"未知学科 {value!r}；允许值: {allowed}"
+        ) from exc
 
 
 def _load_book_manifest(path: Path) -> list[Path]:
@@ -153,11 +167,19 @@ def parse_run(
     llm_config_file: Path | None = typer.Option(
         Path("config/sciforge.toml"), "--llm-config", help="LLM TOML 配置文件路径"
     ),
+    discipline: str = typer.Option(
+        "math",
+        "--discipline",
+        "-D",
+        help="文档学科 (math/physics/chemistry/biology/other)",
+    ),
 ) -> None:
     """运行 Pipeline 处理文件"""
     import asyncio
 
     from sciforge.config.settings import AppConfig
+
+    discipline_enum = _parse_discipline(discipline)
 
     if llm_config_file and not llm_config_file.exists():
         llm_config_file = None
@@ -180,6 +202,7 @@ def parse_run(
         backend=backend,
         llm_provider=llm_provider,
         llm_model=llm_model,
+        discipline=discipline_enum,
     )
 
     if restart:
@@ -228,6 +251,12 @@ def parse_run_book(
     llm_config_file: Path | None = typer.Option(
         Path("config/sciforge.toml"), "--llm-config", help="LLM TOML 配置文件路径"
     ),
+    discipline: str = typer.Option(
+        "math",
+        "--discipline",
+        "-D",
+        help="文档学科 (math/physics/chemistry/biology/other)",
+    ),
 ) -> None:
     """把多个 md/tex 文件作为一本书处理，共享 order_index、tag_tree 与断点状态
 
@@ -239,6 +268,8 @@ def parse_run_book(
     import asyncio
 
     from sciforge.config.settings import AppConfig
+
+    discipline_enum = _parse_discipline(discipline)
 
     # 合并文件列表
     book_files: list[Path] = []
@@ -287,6 +318,7 @@ def parse_run_book(
         backend="vlm",  # run-book 仅处理 md/tex，backend 未使用 VLM
         llm_provider=llm_provider,
         llm_model=llm_model,
+        discipline=discipline_enum,
     )
 
     if restart:

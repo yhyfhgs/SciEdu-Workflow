@@ -24,16 +24,18 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from sciforge.core.models import (
+    Discipline,
     FileExtractionState,
     KnowledgePoint,
     MdBlockSource,
     Question,
     StoredItemBatch,
 )
+from sciforge.disciplines import DISCIPLINE_REGISTRY
 from sciforge.pipeline.resume_state import save_state_locked
 from sciforge.pipeline.retry import RetryExhausted, call_llm_json_with_retry
 from sciforge.pipeline.tag_tree import TagTree
-from sciforge.prompts.templates import EXTRACT_AND_CLASSIFY_PROMPT
+from sciforge.prompts.templates import get_extract_prompt_template
 
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
@@ -56,8 +58,8 @@ SENTINEL = _Sentinel()
 
 
 # ── Task1Extractor ──────────────────────────────────
-# NOTE: kp_type / question_type 现在是 str 字段，合法值由 DisciplineSpec 在
-# Task 7 接入时校验。本文件当前阶段暂不做白名单校验。
+# kp_type / question_type 现在是 str 字段，通过 DisciplineSpec 在运行时校验：
+# 不在白名单的 LLM 输出会被 kp_type_or / question_type_or 回退到安全默认值。
 
 
 class Task1Extractor:
@@ -69,11 +71,16 @@ class Task1Extractor:
         config: AppConfig,
         storage: BatchStorageBackend | None,
         checkpoint_root: Path,
+        discipline: Discipline = Discipline.MATH,
     ) -> None:
         self.llm = llm_client
         self.config = config
         self.storage = storage
         self.checkpoint_root = checkpoint_root
+        self.discipline = discipline
+        # 按学科预取 spec + prompt 模板（避免每次 LLM 调用都重新 format）
+        self.discipline_spec = DISCIPLINE_REGISTRY.get(discipline)
+        self.prompt_template = get_extract_prompt_template(discipline)
 
         # Runtime state
         self.tag_tree = TagTree()
@@ -301,7 +308,7 @@ class Task1Extractor:
         safe_chunk = chunk_text.replace("{", "{{").replace("}", "}}")
         safe_subtree = tag_subtree.replace("{", "{{").replace("}", "}}")
 
-        prompt = EXTRACT_AND_CLASSIFY_PROMPT.format(
+        prompt = self.prompt_template.format(
             current_block=safe_chunk,
             tag_subtree=safe_subtree,
         )
@@ -394,11 +401,13 @@ class Task1Extractor:
         block: MdBlockSource | None,
         order_index: int,
     ) -> KnowledgePoint:
-        kp_type = str(it.get("item_type") or "theorem")
+        raw_type = str(it.get("item_type") or "theorem")
+        kp_type = self.discipline_spec.kp_type_or(raw_type, fallback="theorem")
 
         ctx = it.get("structural_context") or {}
 
         return KnowledgePoint(
+            discipline=self.discipline,
             kp_type=kp_type,
             number=str(it.get("number") or ""),
             content=str(it.get("corrected_content") or ""),
@@ -425,11 +434,13 @@ class Task1Extractor:
         block: MdBlockSource | None,
         order_index: int,
     ) -> Question:
-        q_type = str(it.get("question_type") or "proof")
+        raw_q_type = str(it.get("question_type") or "calculation")
+        q_type = self.discipline_spec.question_type_or(raw_q_type, fallback="calculation")
 
         ctx = it.get("structural_context") or {}
 
         return Question(
+            discipline=self.discipline,
             question_type=q_type,
             number=str(it.get("number") or ""),
             content=str(it.get("corrected_content") or ""),

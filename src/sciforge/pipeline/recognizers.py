@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
-from sciforge.core.models import DocumentFormat
+from sciforge.core.models import Discipline, DocumentFormat
 
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
@@ -63,7 +63,12 @@ class Recognizer(Protocol):
 class VlmRecognizer:
     """基于 VlmConverter 的多模态 PDF/DOCX → Markdown 识别器"""
 
-    def __init__(self, llm_client: LLMClient, config: AppConfig) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        config: AppConfig,
+        discipline: Discipline = Discipline.MATH,
+    ) -> None:
         from sciforge.pipeline.vlm_converter import VlmConverter
 
         self._converter = VlmConverter(
@@ -73,6 +78,7 @@ class VlmRecognizer:
             dpi=config.vlm_dpi,
             max_concurrent=config.vlm_max_concurrent,
             pages_per_batch=config.pages_per_batch,
+            discipline=discipline,
         )
 
     async def recognize_in_batches(
@@ -206,6 +212,7 @@ def get_recognizer(
     backend: str,
     llm_client: LLMClient | None,
     config: AppConfig,
+    discipline: Discipline = Discipline.MATH,
 ) -> Recognizer:
     """根据文件格式 + backend 选择 Recognizer
 
@@ -213,13 +220,14 @@ def get_recognizer(
         fmt: 文件格式
         backend: 'vlm' / 'pymupdf' / 'auto'
         llm_client: vlm 后端必需
+        discipline: 学科（仅 VLM 后端使用，用于参数化 VLM prompt）
     """
     if fmt in (DocumentFormat.MARKDOWN, DocumentFormat.TEX):
         return MarkdownRecognizer()
 
     if fmt in (DocumentFormat.PDF, DocumentFormat.DOCX, DocumentFormat.PPTX):
         if backend == "vlm" and llm_client is not None and llm_client.supports_vision:
-            return VlmRecognizer(llm_client, config)
+            return VlmRecognizer(llm_client, config, discipline=discipline)
         if fmt == DocumentFormat.PDF:
             return PyMuPdfRecognizer()
         raise RuntimeError(

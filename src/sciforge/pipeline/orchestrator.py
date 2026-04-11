@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from sciforge.core.models import (
+    Discipline,
     DirectoryProgress,
     DocumentFormat,
     FileExtractionState,
@@ -79,12 +80,14 @@ class PipelineOrchestrator:
         db_path: Path | None = None,
         llm_clients: dict[str, LLMClient] | None = None,
         pdf_backend: str = "vlm",
+        discipline: Discipline = Discipline.MATH,
     ) -> None:
         """
         Args:
             storage: 共享 backend 实例（dry-run / 测试场景下传入）
             db_path: SQLite 路径，每个 process_file 会在内部构造独立 backend
                     （目录并发模式下避免多协程共享 sqlite3.Connection 的线程风险）
+            discipline: 文档所属学科，参数化 VLM prompt 和 Task1 提取 prompt
         """
         self.config = config
         self.llm = llm_client
@@ -92,6 +95,7 @@ class PipelineOrchestrator:
         self.db_path = db_path
         self._llm_clients = llm_clients or {}
         self._pdf_backend = pdf_backend
+        self.discipline = discipline
 
     def _get_llm(self, task: str) -> LLMClient | None:
         return self._llm_clients.get(task) or self.llm
@@ -169,6 +173,7 @@ class PipelineOrchestrator:
                 config=self.config,
                 storage=storage_for_task1,
                 checkpoint_root=self.config.checkpoint_dir,
+                discipline=self.discipline,
             )
             consumer_task = asyncio.create_task(
                 self._task1_consumer(extractor, queue, state, result)
@@ -245,7 +250,13 @@ class PipelineOrchestrator:
 
                 vlm_llm = self._get_llm("vlm_convert")
                 try:
-                    recognizer = get_recognizer(fmt, self._pdf_backend, vlm_llm, self.config)
+                    recognizer = get_recognizer(
+                        fmt,
+                        self._pdf_backend,
+                        vlm_llm,
+                        self.config,
+                        discipline=self.discipline,
+                    )
                 except Exception as exc:
                     logger.error(
                         "pipeline_recognizer_init_failed",
