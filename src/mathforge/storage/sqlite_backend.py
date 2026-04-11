@@ -1,7 +1,13 @@
-"""SQLite 存储后端 — 替代 JSON 文件存储
+"""SQLite 存储后端 — MathForge 主存储
 
-提供：事务安全、FTS5 全文检索、索引查询、去重检测。
-实现 StorageBackend Protocol。
+提供事务安全、FTS5 全文检索、索引查询、内容哈希去重。
+实现 `BatchStorageBackend` Protocol。
+
+并发约定：
+- 每个 logical_document 处理时**构造自己的 SQLiteStorageBackend 实例**
+  （见 orchestrator.process_file），因此不同协程不会共享 connection
+- PRAGMA busy_timeout 确保 WAL 模式下并发写自动等待而非立即失败
+- `_write_lock` 是防御锁，应对同一实例被异外并发调用的情况
 """
 
 from __future__ import annotations
@@ -9,55 +15,142 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import structlog
 
 from mathforge.core.models import (
-    DocumentTree,
-    ItemRelation,
     KnowledgePoint,
     KPType,
     Question,
     QuestionType,
-    TaxonomyNode,
 )
-
-# 向后兼容 — save_question 签名保留 solution 参数但不再使用
-try:
-    from mathforge.core.models import Solution
-except ImportError:
-    Solution = None  # type: ignore[assignment,misc]
 
 logger = structlog.get_logger()
 
 
+# ── SQL 常量（executemany 批量写入复用）──────────────────
+
+_KP_INSERT_SQL = """
+INSERT OR REPLACE INTO knowledge_points
+    (id, kp_type, number, content, proof_content, proof_methods,
+     difficulty, subject, taxonomy_path, tags,
+     source_file, source_chapter, source_section,
+     start_line, end_line, order_index, page_start, page_end,
+     quality_grade, content_hash)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+_Q_INSERT_SQL = """
+INSERT OR REPLACE INTO questions
+    (id, question_type, number, content, solution_content, solution_methods,
+     answer, difficulty, subject, taxonomy_path, tags,
+     source_file, source_chapter, exam_type, exam_year,
+     start_line, end_line, order_index, page_start, page_end,
+     quality_grade, content_hash, is_generated, parent_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
 def _content_hash(text: str) -> str:
-    """LaTeX 内容归一化后取 SHA-256"""
+    """LaTeX 内容归一化后取 SHA-256 前 32 位"""
     normalized = " ".join(text.split())
     return hashlib.sha256(normalized.encode()).hexdigest()[:32]
 
 
-class SQLiteStorageBackend:
-    """基于 SQLite 的存储后端"""
+def _safe_json_list(row: sqlite3.Row, col: str) -> list[str]:
+    """从 row 读 JSON 列；空或解析失败返回空 list"""
+    raw = row[col]
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return [str(x) for x in data] if isinstance(data, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
 
-    def __init__(self, db_path: Path | str) -> None:
+
+def _kp_to_tuple(kp: KnowledgePoint) -> tuple[Any, ...]:
+    """KP → executemany 参数元组（顺序与 _KP_INSERT_SQL 一致）"""
+    return (
+        kp.id,
+        str(kp.kp_type),
+        kp.number,
+        kp.content,
+        kp.proof_content,
+        json.dumps(kp.proof_methods, ensure_ascii=False),
+        kp.difficulty,
+        kp.subject,
+        kp.taxonomy_path,
+        json.dumps(kp.tags, ensure_ascii=False),
+        kp.source_file,
+        kp.source_chapter,
+        kp.source_section,
+        kp.start_line,
+        kp.end_line,
+        kp.order_index,
+        kp.page_start,
+        kp.page_end,
+        kp.quality_grade,
+        _content_hash(kp.content),
+    )
+
+
+def _question_to_tuple(q: Question) -> tuple[Any, ...]:
+    """Question → executemany 参数元组（顺序与 _Q_INSERT_SQL 一致）"""
+    return (
+        q.id,
+        str(q.question_type),
+        q.number,
+        q.content,
+        q.solution_content,
+        json.dumps(q.solution_methods, ensure_ascii=False),
+        q.answer,
+        q.difficulty,
+        q.subject,
+        q.taxonomy_path,
+        json.dumps(q.tags, ensure_ascii=False),
+        q.source_file,
+        q.source_chapter,
+        q.exam_type,
+        q.exam_year,
+        q.start_line,
+        q.end_line,
+        q.order_index,
+        q.page_start,
+        q.page_end,
+        q.quality_grade,
+        _content_hash(q.content),
+        int(q.is_generated),
+        q.parent_id,
+    )
+
+
+class SQLiteStorageBackend:
+    """基于 SQLite 的存储后端（单 connection，per-logical-document 实例）"""
+
+    def __init__(self, db_path: Path | str, busy_timeout_ms: int = 5000) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # WAL + busy_timeout 支持多进程/多实例并发写
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA synchronous = NORMAL")
         self._conn.execute("PRAGMA cache_size = -64000")  # 64MB
         self._conn.execute("PRAGMA temp_store = MEMORY")
+        self._conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+        # 防御锁：同一实例被 to_thread 并发调用时串行化
+        self._write_lock = threading.Lock()
         self._in_transaction = False
         self._init_schema()
 
     def _init_schema(self) -> None:
-        """初始化数据库 schema"""
         schema_path = Path(__file__).parent / "schema.sql"
         schema_sql = schema_path.read_text(encoding="utf-8")
         self._conn.executescript(schema_sql)
@@ -87,125 +180,43 @@ class SQLiteStorageBackend:
         finally:
             self._in_transaction = False
 
+    # ── 批量写入（主入口）─────────────────────────────
+
     def save_batch(
         self,
         kps: list[KnowledgePoint],
-        questions: list[Question] | list[tuple[Question, ...]] = (),
+        questions: list[Question],
     ) -> int:
-        """一次事务保存多个 KP + Question"""
-        saved = 0
-        with self.transaction():
-            for kp in kps:
-                self.save_knowledge_point(kp)
-                saved += 1
-            for q in questions:
-                if isinstance(q, tuple):
-                    self.save_question(q[0])
-                else:
-                    self.save_question(q)
-                saved += 1
-        logger.info("storage_batch_saved", kps=len(kps), questions=len(list(questions)))
-        return saved
+        """一次事务 + executemany 保存多个 KP + Question"""
+        with self._write_lock, self.transaction():
+            if kps:
+                self._conn.executemany(_KP_INSERT_SQL, [_kp_to_tuple(kp) for kp in kps])
+            if questions:
+                self._conn.executemany(
+                    _Q_INSERT_SQL, [_question_to_tuple(q) for q in questions]
+                )
+        logger.info("storage_batch_saved", kps=len(kps), questions=len(questions))
+        return len(kps) + len(questions)
 
-    def update_relations_batch(
-        self,
-        items: list[tuple[str, str, list[ItemRelation]]],
-    ) -> None:
-        """批量更新关系：[(item_id, item_type, relations), ...]"""
-        with self.transaction():
-            for item_id, item_type, relations in items:
-                self._save_relations(item_id, item_type, relations)
-
-    # ── KnowledgePoint ────────────────────────────────
+    # ── 单条写入（内部用 save_batch 统一路径）─────────
 
     def save_knowledge_point(self, kp: KnowledgePoint) -> str:
-        content_hash = _content_hash(kp.content)
-
-        self._conn.execute(
-            """INSERT OR REPLACE INTO knowledge_points
-            (id, kp_type, number, content, proof_content, proof_methods,
-             difficulty, subject, taxonomy_path, tags,
-             source_file, source_chapter, source_section,
-             quality_grade, content_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                kp.id,
-                kp.kp_type.value if hasattr(kp.kp_type, "value") else str(kp.kp_type),
-                kp.number,
-                kp.content,
-                kp.proof_content,
-                json.dumps(kp.proof_methods, ensure_ascii=False),
-                kp.difficulty,
-                kp.subject,
-                kp.taxonomy_path,
-                json.dumps(kp.tags, ensure_ascii=False),
-                kp.source_file,
-                kp.source_chapter,
-                kp.source_section,
-                kp.quality_grade,
-                content_hash,
-            ),
-        )
-
-        self._save_relations(kp.id, "kp", kp.relations)
-
-        if not self._in_transaction:
-            self._conn.commit()
+        self.save_batch([kp], [])
         return kp.id
 
+    def save_question(self, question: Question) -> str:
+        self.save_batch([], [question])
+        return question.id
+
+    # ── 读取 ──────────────────────────────────────────
+
     def load_knowledge_point(self, id: str) -> KnowledgePoint:
-        row = self._conn.execute("SELECT * FROM knowledge_points WHERE id = ?", (id,)).fetchone()
+        row = self._conn.execute(
+            "SELECT * FROM knowledge_points WHERE id = ?", (id,)
+        ).fetchone()
         if not row:
             raise FileNotFoundError(f"KnowledgePoint {id} not found")
         return self._row_to_kp(row)
-
-    def search_knowledge(self, filters: dict) -> list[str]:
-        return self._search("knowledge_points", filters)
-
-    def knowledge_count(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM knowledge_points").fetchone()
-        return row[0] if row else 0
-
-    # ── Question ──────────────────────────────────────
-
-    def save_question(self, question: Question, solution: Solution | None = None) -> str:
-        content_hash = _content_hash(question.content)
-
-        self._conn.execute(
-            """INSERT OR REPLACE INTO questions
-            (id, question_type, number, content, solution_content, solution_methods,
-             answer, difficulty, subject, taxonomy_path, tags,
-             source_file, source_chapter, exam_type, exam_year,
-             quality_grade, content_hash, is_generated, parent_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                question.id,
-                question.question_type.value if hasattr(question.question_type, "value") else str(question.question_type),
-                question.number,
-                question.content,
-                question.solution_content,
-                json.dumps(question.solution_methods, ensure_ascii=False),
-                question.answer,
-                question.difficulty,
-                question.subject,
-                question.taxonomy_path,
-                json.dumps(question.tags, ensure_ascii=False),
-                question.source_file,
-                question.source_chapter,
-                question.exam_type,
-                question.exam_year,
-                question.quality_grade,
-                content_hash,
-                int(question.is_generated),
-                question.parent_id,
-            ),
-        )
-
-        self._save_relations(question.id, "question", question.relations)
-
-        if not self._in_transaction:
-            self._conn.commit()
-        return question.id
 
     def load_question(self, id: str) -> Question:
         row = self._conn.execute("SELECT * FROM questions WHERE id = ?", (id,)).fetchone()
@@ -213,16 +224,47 @@ class SQLiteStorageBackend:
             raise FileNotFoundError(f"Question {id} not found")
         return self._row_to_question(row)
 
-    def search_questions(self, filters: dict) -> list[str]:
+    def load_questions_by_ids(self, ids: list[str]) -> list[Question]:
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT * FROM questions WHERE id IN ({placeholders})",  # noqa: S608
+            ids,
+        ).fetchall()
+        return [self._row_to_question(r) for r in rows]
+
+    def load_knowledge_by_ids(self, ids: list[str]) -> list[KnowledgePoint]:
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT * FROM knowledge_points WHERE id IN ({placeholders})",  # noqa: S608
+            ids,
+        ).fetchall()
+        return [self._row_to_kp(r) for r in rows]
+
+    # ── 搜索 / 统计 ───────────────────────────────────
+
+    def search_knowledge(self, filters: dict[str, object]) -> list[str]:
+        return self._search("knowledge_points", filters)
+
+    def search_questions(self, filters: dict[str, object]) -> list[str]:
         return self._search("questions", filters)
+
+    def knowledge_count(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) FROM knowledge_points").fetchone()
+        return row[0] if row else 0
 
     def question_count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM questions").fetchone()
         return row[0] if row else 0
 
-    # ── Solution ──────────────────────────────────────
-
-    # ── 全文检索 ──────────────────────────────────────
+    def stats(self) -> dict[str, int]:
+        return {
+            "knowledge_points": self.knowledge_count(),
+            "questions": self.question_count(),
+        }
 
     def search_fulltext(self, query: str, item_type: str = "all") -> list[str]:
         """FTS5 全文检索"""
@@ -250,8 +292,6 @@ class SQLiteStorageBackend:
 
         return results
 
-    # ── 去重 ──────────────────────────────────────────
-
     def find_duplicates(self, content: str, item_type: str = "all") -> list[str]:
         """按 content_hash 查找精确重复"""
         ch = _content_hash(content)
@@ -271,127 +311,19 @@ class SQLiteStorageBackend:
 
         return results
 
-    # ── 关系 ──────────────────────────────────────────
+    # ── 内部方法 ──────────────────────────────────────
 
-    def get_relations(self, item_id: str, direction: str = "both") -> list[ItemRelation]:
-        """获取条目的关系"""
-        results: list[ItemRelation] = []
+    _ALLOWED_SEARCH_TABLES = {"knowledge_points", "questions"}
 
-        if direction in ("both", "outgoing"):
-            rows = self._conn.execute(
-                "SELECT * FROM relations WHERE source_id = ?", (item_id,)
-            ).fetchall()
-            for r in rows:
-                results.append(
-                    ItemRelation(
-                        relation_type=r["relation_type"],
-                        target_id=r["target_id"],
-                        confidence=r["confidence"],
-                        source=r["source_method"],
-                        note=r["note"] or "",
-                    )
-                )
+    def _search(self, table: str, filters: dict[str, object]) -> list[str]:
+        """动态构建 WHERE 子句（table 必须是白名单内的表名）"""
+        assert table in self._ALLOWED_SEARCH_TABLES
 
-        if direction in ("both", "incoming"):
-            rows = self._conn.execute(
-                "SELECT * FROM relations WHERE target_id = ?", (item_id,)
-            ).fetchall()
-            for r in rows:
-                results.append(
-                    ItemRelation(
-                        relation_type=r["relation_type"],
-                        target_id=r["source_id"],
-                        confidence=r["confidence"],
-                        source=r["source_method"],
-                        note=r["note"] or "",
-                    )
-                )
-
-        return results
-
-    # ── 统计 ──────────────────────────────────────────
-
-    def stats(self) -> dict:
-        """数据库统计信息"""
-        kp_count = self.knowledge_count()
-        q_count = self.question_count()
-        rel_row = self._conn.execute("SELECT COUNT(*) FROM relations").fetchone()
-        tree_row = self._conn.execute("SELECT COUNT(*) FROM taxonomy_nodes").fetchone()
-        return {
-            "knowledge_points": kp_count,
-            "questions": q_count,
-            "relations": rel_row[0] if rel_row else 0,
-            "tree_nodes": tree_row[0] if tree_row else 0,
-        }
-
-    # ── 批量操作 ─────────────────────────────────────
-
-    def load_questions_by_ids(self, ids: list[str]) -> list[Question]:
-        results = []
-        for qid in ids:
-            try:
-                results.append(self.load_question(qid))
-            except FileNotFoundError:
-                pass
-        return results
-
-    def load_knowledge_by_ids(self, ids: list[str]) -> list[KnowledgePoint]:
-        results = []
-        for kp_id in ids:
-            try:
-                results.append(self.load_knowledge_point(kp_id))
-            except FileNotFoundError:
-                pass
-        return results
-
-    # ── 内部方法 ─────────────────────────────────────
-
-    def _save_relations(self, item_id: str, item_type: str, relations: list[ItemRelation]) -> None:
-        # 先清除旧关系
-        self._conn.execute(
-            "DELETE FROM relations WHERE source_id = ? AND source_type = ?",
-            (item_id, item_type),
-        )
-        for rel in relations:
-            # 从数据库推断 target_type
-            target_type = self._infer_item_type(rel.target_id)
-            self._conn.execute(
-                """INSERT INTO relations
-                (source_id, source_type, target_id, target_type,
-                 relation_type, confidence, source_method, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    item_id,
-                    item_type,
-                    rel.target_id,
-                    target_type,
-                    rel.relation_type.value
-                    if hasattr(rel.relation_type, "value")
-                    else str(rel.relation_type),
-                    rel.confidence,
-                    rel.source,
-                    rel.note,
-                ),
-            )
-
-    def _infer_item_type(self, item_id: str) -> str:
-        """从数据库推断条目类型"""
-        row = self._conn.execute("SELECT 1 FROM questions WHERE id = ?", (item_id,)).fetchone()
-        if row:
-            return "question"
-        return "kp"
-
-    def _search(self, table: str, filters: dict) -> list[str]:
-        """动态构建 WHERE 子句"""
         conditions: list[str] = []
-        params: list = []
+        params: list[object] = []
 
         for key, value in filters.items():
-            if key == "tags" and isinstance(value, list):
-                placeholders = ",".join("?" * len(value))
-                conditions.append(f"id IN (SELECT item_id FROM tags WHERE tag IN ({placeholders}))")
-                params.extend(value)
-            elif key == "difficulty_range" and isinstance(value, (list, tuple)):
+            if key == "difficulty_range" and isinstance(value, (list, tuple)):
                 conditions.append("difficulty BETWEEN ? AND ?")
                 params.extend(value[:2])
             elif key == "exclude_ids" and isinstance(value, (list, set)):
@@ -407,6 +339,7 @@ class SQLiteStorageBackend:
                 "exam_type",
                 "is_generated",
                 "quality_grade",
+                "source_file",
             ):
                 conditions.append(f"{key} = ?")
                 params.append(value)
@@ -416,14 +349,13 @@ class SQLiteStorageBackend:
 
         where = " AND ".join(conditions) if conditions else "1=1"
         rows = self._conn.execute(
-            f"SELECT id FROM {table} WHERE {where} LIMIT 500",  # noqa: S608
+            f"SELECT id FROM {table} WHERE {where} ORDER BY order_index LIMIT 500",  # noqa: S608
             params,
         ).fetchall()
         return [r["id"] for r in rows]
 
-    def _row_to_kp(self, row: sqlite3.Row) -> KnowledgePoint:
-        tags = json.loads(row["tags"]) if row["tags"] else []
-        relations = self.get_relations(row["id"], "outgoing")
+    @staticmethod
+    def _row_to_kp(row: sqlite3.Row) -> KnowledgePoint:
         try:
             kp_type = KPType(row["kp_type"])
         except ValueError:
@@ -435,22 +367,24 @@ class SQLiteStorageBackend:
             number=row["number"] or "",
             content=row["content"],
             proof_content=row["proof_content"],
-            proof_methods=json.loads(row["proof_methods"]) if row["proof_methods"] else [],
+            proof_methods=_safe_json_list(row, "proof_methods"),
             difficulty=row["difficulty"],
             subject=row["subject"] or "",
             taxonomy_path=row["taxonomy_path"] or "",
-            tags=tags,
-            relations=relations,
+            tags=_safe_json_list(row, "tags"),
             quality_grade=row["quality_grade"] or "B",
             source_file=row["source_file"] or "",
             source_chapter=row["source_chapter"] or "",
             source_section=row["source_section"] or "",
+            start_line=row["start_line"] or 0,
+            end_line=row["end_line"] or 0,
+            order_index=row["order_index"] or 0,
+            page_start=row["page_start"],
+            page_end=row["page_end"],
         )
 
-    def _row_to_question(self, row: sqlite3.Row) -> Question:
-        tags = json.loads(row["tags"]) if row["tags"] else []
-        relations = self.get_relations(row["id"], "outgoing")
-
+    @staticmethod
+    def _row_to_question(row: sqlite3.Row) -> Question:
         try:
             q_type = QuestionType(row["question_type"])
         except ValueError:
@@ -462,124 +396,22 @@ class SQLiteStorageBackend:
             number=row["number"] or "",
             content=row["content"],
             solution_content=row["solution_content"],
-            solution_methods=json.loads(row["solution_methods"]) if row["solution_methods"] else [],
+            solution_methods=_safe_json_list(row, "solution_methods"),
             answer=row["answer"] or "",
             difficulty=row["difficulty"],
             subject=row["subject"] or "",
             taxonomy_path=row["taxonomy_path"] or "",
-            tags=tags,
-            relations=relations,
+            tags=_safe_json_list(row, "tags"),
             quality_grade=row["quality_grade"] or "B",
             source_file=row["source_file"] or "",
             source_chapter=row["source_chapter"] or "",
             exam_type=row["exam_type"],
             exam_year=row["exam_year"],
+            start_line=row["start_line"] or 0,
+            end_line=row["end_line"] or 0,
+            order_index=row["order_index"] or 0,
+            page_start=row["page_start"],
+            page_end=row["page_end"],
             is_generated=bool(row["is_generated"]),
             parent_id=row["parent_id"],
         )
-
-    # ── 文档结构树持久化 ──
-
-    def save_tree_node(self, node: TaxonomyNode) -> None:
-        """增量保存单个树节点"""
-        self._conn.execute(
-            """INSERT OR REPLACE INTO taxonomy_nodes
-               (node_id, level, title, number, parent_id, source_file, position)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                node.node_id,
-                node.level,
-                node.title,
-                node.number,
-                node.parent_id,
-                node.source_file,
-                node.position,
-            ),
-        )
-        self._conn.commit()
-
-    def save_item_placement(
-        self, item_id: str, item_type: str, node_id: str, position: int
-    ) -> None:
-        """保存 item 在树中的挂载关系"""
-        self._conn.execute(
-            """INSERT OR REPLACE INTO item_tree_placement
-               (item_id, item_type, node_id, position_in_node)
-               VALUES (?, ?, ?, ?)""",
-            (item_id, item_type, node_id, position),
-        )
-        self._conn.commit()
-
-    def load_tree(self, source_file: str) -> DocumentTree:
-        """加载某个文件的完整文档结构树"""
-        from mathforge.core.models import DocumentTree, TaxonomyNode
-
-        rows = self._conn.execute(
-            "SELECT * FROM taxonomy_nodes WHERE source_file = ? ORDER BY position",
-            (source_file,),
-        ).fetchall()
-
-        tree = DocumentTree()
-        for row in rows:
-            node = TaxonomyNode(
-                node_id=row["node_id"],
-                level=row["level"],
-                title=row["title"],
-                number=row["number"] or "",
-                parent_id=row["parent_id"],
-                source_file=row["source_file"],
-                position=row["position"],
-            )
-            tree.nodes[node.node_id] = node
-            if node.level == "book":
-                tree.root_id = node.node_id
-
-        # 重建 children_ids
-        for node in tree.nodes.values():
-            if node.parent_id and node.parent_id in tree.nodes:
-                tree.nodes[node.parent_id].children_ids.append(node.node_id)
-
-        # 加载 item placements
-        placements = self._conn.execute(
-            """SELECT p.item_id, p.node_id
-               FROM item_tree_placement p
-               JOIN taxonomy_nodes n ON p.node_id = n.node_id
-               WHERE n.source_file = ?
-               ORDER BY p.position_in_node""",
-            (source_file,),
-        ).fetchall()
-
-        for p in placements:
-            item_id = p["item_id"]
-            node_id = p["node_id"]
-            tree.item_to_node[item_id] = node_id
-            if node_id in tree.nodes:
-                tree.nodes[node_id].item_ids.append(item_id)
-
-        return tree
-
-    def get_subtree_items(self, node_id: str) -> list[str]:
-        """获取某个节点及其所有子节点下的 item_id 列表"""
-        # 递归收集子节点
-        node_ids = [node_id]
-        queue = [node_id]
-        while queue:
-            current = queue.pop(0)
-            children = self._conn.execute(
-                "SELECT node_id FROM taxonomy_nodes WHERE parent_id = ?",
-                (current,),
-            ).fetchall()
-            for child in children:
-                cid = child["node_id"]
-                node_ids.append(cid)
-                queue.append(cid)
-
-        # 查询所有 item
-        placeholders = ",".join("?" * len(node_ids))
-        rows = self._conn.execute(
-            f"SELECT item_id FROM item_tree_placement WHERE node_id IN ({placeholders})"
-            " ORDER BY position_in_node",
-            node_ids,
-        ).fetchall()
-
-        return [r["item_id"] for r in rows]

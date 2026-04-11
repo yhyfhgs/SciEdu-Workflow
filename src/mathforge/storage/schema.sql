@@ -1,5 +1,7 @@
--- MathForge SQLite Schema v2
+-- MathForge SQLite Schema v3
 -- 精简字段、proof/solution 嵌入主表、统一 tag 格式
+-- 删除 taxonomy_nodes/item_tree_placement/relations 表（树/关系不再持久化）
+-- 新增 start_line/end_line/order_index/page_start/page_end 列
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -21,6 +23,12 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     source_file TEXT DEFAULT '',
     source_chapter TEXT DEFAULT '',
     source_section TEXT DEFAULT '',
+    -- 位置/顺序（pipeline 提取时填充）
+    start_line INTEGER NOT NULL DEFAULT 0,
+    end_line INTEGER NOT NULL DEFAULT 0,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    page_start INTEGER,
+    page_end INTEGER,
     -- 质量
     quality_grade TEXT DEFAULT 'B',
     content_hash TEXT DEFAULT '',
@@ -46,27 +54,18 @@ CREATE TABLE IF NOT EXISTS questions (
     source_chapter TEXT DEFAULT '',
     exam_type TEXT,
     exam_year INTEGER,
+    -- 位置/顺序
+    start_line INTEGER NOT NULL DEFAULT 0,
+    end_line INTEGER NOT NULL DEFAULT 0,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    page_start INTEGER,
+    page_end INTEGER,
     -- 质量
     quality_grade TEXT DEFAULT 'B',
     content_hash TEXT DEFAULT '',
     -- 生成
     is_generated INTEGER NOT NULL DEFAULT 0,
     parent_id TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- ── 关系 ──
-
-CREATE TABLE IF NOT EXISTS relations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_id TEXT NOT NULL,
-    source_type TEXT NOT NULL CHECK(source_type IN ('kp', 'question')),
-    target_id TEXT NOT NULL,
-    target_type TEXT NOT NULL CHECK(target_type IN ('kp', 'question')),
-    relation_type TEXT NOT NULL,
-    confidence REAL NOT NULL DEFAULT 0.7,
-    source_method TEXT NOT NULL DEFAULT 'structural',
-    note TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -84,47 +83,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS question_fts USING fts5(
     content_rowid='rowid'
 );
 
--- ── 文档结构树 ──
-
-CREATE TABLE IF NOT EXISTS taxonomy_nodes (
-    node_id TEXT PRIMARY KEY,
-    level TEXT NOT NULL CHECK(level IN ('book', 'chapter', 'section', 'subsection')),
-    title TEXT NOT NULL DEFAULT '',
-    number TEXT DEFAULT '',
-    parent_id TEXT REFERENCES taxonomy_nodes(node_id),
-    source_file TEXT NOT NULL DEFAULT '',
-    position INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS item_tree_placement (
-    item_id TEXT NOT NULL,
-    item_type TEXT NOT NULL CHECK(item_type IN ('kp', 'question')),
-    node_id TEXT NOT NULL REFERENCES taxonomy_nodes(node_id),
-    position_in_node INTEGER DEFAULT 0,
-    PRIMARY KEY (item_id, item_type)
-);
-
 -- ── 索引 ──
 
 CREATE INDEX IF NOT EXISTS idx_kp_type ON knowledge_points(kp_type);
 CREATE INDEX IF NOT EXISTS idx_kp_subject ON knowledge_points(subject);
 CREATE INDEX IF NOT EXISTS idx_kp_taxonomy ON knowledge_points(taxonomy_path);
 CREATE INDEX IF NOT EXISTS idx_kp_hash ON knowledge_points(content_hash);
+CREATE INDEX IF NOT EXISTS idx_kp_order ON knowledge_points(source_file, order_index);
+CREATE INDEX IF NOT EXISTS idx_kp_page ON knowledge_points(source_file, page_start);
 
 CREATE INDEX IF NOT EXISTS idx_q_type ON questions(question_type);
 CREATE INDEX IF NOT EXISTS idx_q_subject ON questions(subject);
 CREATE INDEX IF NOT EXISTS idx_q_taxonomy ON questions(taxonomy_path);
 CREATE INDEX IF NOT EXISTS idx_q_exam ON questions(exam_type, exam_year);
 CREATE INDEX IF NOT EXISTS idx_q_hash ON questions(content_hash);
-
-CREATE INDEX IF NOT EXISTS idx_rel_source ON relations(source_id, source_type);
-CREATE INDEX IF NOT EXISTS idx_rel_target ON relations(target_id, target_type);
-CREATE INDEX IF NOT EXISTS idx_rel_type ON relations(relation_type);
-
-CREATE INDEX IF NOT EXISTS idx_tree_parent ON taxonomy_nodes(parent_id);
-CREATE INDEX IF NOT EXISTS idx_tree_source ON taxonomy_nodes(source_file);
-CREATE INDEX IF NOT EXISTS idx_placement_node ON item_tree_placement(node_id);
+CREATE INDEX IF NOT EXISTS idx_q_order ON questions(source_file, order_index);
+CREATE INDEX IF NOT EXISTS idx_q_page ON questions(source_file, page_start);
 
 -- ── FTS 同步触发器 ──
 

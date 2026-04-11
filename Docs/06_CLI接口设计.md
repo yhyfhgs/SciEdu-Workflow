@@ -1,141 +1,185 @@
 # CLI 接口设计
 
-> 版本: v3.0 | 日期: 2026-04-01
+> 版本: v4.0 | 日期: 2026-04-11
 
 ## 1. 框架
 
-Typer (Click 兼容，基于类型注解) + Rich 终端输出。入口: `mathforge` 命令（`pyproject.toml` 配置）。
-
-> CLI 支持通过 `--subject` / `-s` 和 `--level` 全局参数指定学科和教育阶段。MVP 默认 `--subject 数学分析 --level undergraduate`。
+Typer (Click 兼容，基于类型注解) + Rich 终端输出。入口 `mathforge` 命令注册在 `pyproject.toml`。
 
 ---
 
-## 2. 命令结构
+## 2. 命令结构（当前 MVP）
 
 ```
 mathforge
-├── parse                    # 数据导入（统一流水线）
-│   └── run <path>           # 统一 Pipeline 处理（自动检测格式）
+├── parse                       # 数据处理 Pipeline
+│   ├── run <path>              # Producer-Consumer 流水线（核心）
+│   └── db-stats <db>           # SQLite 数据库统计
 │
-├── kb                       # 知识库管理
-│   ├── list                 # 列出知识点（--subject, --level 过滤）
-│   ├── search               # 搜索（支持跨学科语义搜索）
-│   ├── show <id>            # 详情（含关联知识点和题目）
-│   ├── tree                 # 知识树结构浏览
-│   └── repair               # OCR 修复
-│
-├── questions                # 题库管理
-│   ├── list                 # 列出（--subject, --level, --type 过滤）
-│   ├── show <id>            # 详情
-│   ├── search               # 搜索
-│   └── stats                # 统计（按学科/学段/难度分布）
-│
-├── generate                 # AI 生成
-│   ├── free                 # 自由模式（指定学科+学段+专题）
-│   ├── variant              # 变式模式
-│   ├── batch                # 批量生成
-│   ├── solve <id>           # 生成解答
-│   └── handout              # 生成讲义（Post-MVP）
-│
-├── subjects                 # 学科管理
-│   ├── list                 # 列出已注册学科
-│   └── stats                # 各学科数据统计
-│
-├── config                   # 配置管理
-│   ├── show                 # 显示配置
-│   ├── set                  # 设置配置项
-│   └── test-llm             # 测试 LLM 连接
-│
-└── version                  # 版本
+├── validate <data_dir>         # 已处理数据的内容验证（占位）
+└── generate                    # AI 题目生成（暂不在 MVP 主线，部分命令已破损）
+    └── ...
+```
+
+> 当前 MVP 主线只覆盖 `parse run` 与 `parse db-stats`。`generate` 子命令由于早期模型重构 (commit 7f2abb9) 中字段变更而部分破损，将在生成路径单独修复时恢复。`kb` / `questions` / `subjects` / `config` 命令组规划中暂未实现。
+
+---
+
+## 3. parse run 详细参数
+
+```bash
+uv run mathforge parse run <path> [OPTIONS]
+```
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `path` (positional) | Path | 必需 | 文件或目录 |
+| `--output, -o` | Path | `data` | 输出目录（assets / logs） |
+| `--db` | Path | `data/mathforge.db` | SQLite 数据库路径 |
+| `--backend, -b` | str | `vlm` | 文档识别后端：`vlm` / `pymupdf` |
+| `--pages-per-batch` | int | 5 | Phase A 每批页数 |
+| `--extract-window-lines` | int | 200 | Task1 滑动窗口行数 |
+| `--max-retries` | int | 3 | LLM/VLM 调用重试次数 |
+| `--max-files, -j` | int | 4 | 目录模式下最大并发 logical_document 数 |
+| `--skip-llm` | bool | False | 跳过 LLM 调用（仅做识别） |
+| `--dry-run` | bool | False | 仅处理不写入 DB |
+| `--restart` | bool | False | 忽略 checkpoint 从头开始 |
+| `--llm-provider` | str | None | LLM 提供者覆写（如 `openai_compatible`） |
+| `--llm-model` | str | None | LLM 模型覆写 |
+| `--llm-config` | Path | `config/mathforge.toml` | TOML 配置文件路径 |
+
+### 3.1 输出表格示例（单文件）
+
+```
+Pipeline 结果: textbook.pdf
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 指标         ┃ 值                       ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 文件 hash    │ 9c874b119bf22a68         │
+│ 识别页数 (max) │ 124                      │
+│ 推入 mdblock 数 │ 25                       │
+│ 入库条目数   │ 187                      │
+│ 失败 batch   │ 0                        │
+│ 失败 block   │ 0                        │
+│ 总耗时       │ 312.45s                  │
+└──────────────┴──────────────────────────┘
+```
+
+### 3.2 输出汇总（目录模式）
+
+```
+Pipeline 完成: 12 文件, 1843 条目入库, 0 失败 block, 0 错误, 1234.5s
 ```
 
 ---
 
-## 3. 关键命令参数
+## 4. parse db-stats 详细参数
 
-### 3.1 parse 命令组
+```bash
+uv run mathforge parse db-stats <db>
+```
 
-| 命令 | 关键参数 | 说明 |
-|------|---------|------|
-| `parse run <path>` | `-o`, `--dry-run`, `--skip-llm`, `--resume/--no-resume`, `--backend` (PDF), `--llm-provider`, `--llm-model`, `--llm-config` | 统一 Pipeline 处理任意格式 |
+输出：
 
-### 3.2 generate 命令组
-
-| 命令 | 关键参数 |
-|------|---------|
-| `generate free` | `-s` (科目), `--level` (学段), `-t` (专题), `-d` (难度), `--type`, `-n` (数量), `--format` (rich/json/latex) |
-| `generate variant <id>` | `--strategy` (A1-A6/B1-B2), `-d` |
-| `generate batch` | `-s`, `--level`, `-t`, `-d`, `-n`, `--concurrent` |
-| `generate solve <id>` | `--format` |
-| `generate handout` | `-s`, `--level`, `-t`, `--depth`, `--examples` (Post-MVP) |
-
-所有 generate 命令支持 LLM 覆写: `--llm-provider`, `--llm-model`, `--llm-base-url`, `--llm-temperature`。
-
----
-
-## 4. 输出格式
-
-| 格式 | 说明 | 用途 |
-|------|------|------|
-| `rich` | 终端美化输出（默认） | 人工查看 |
-| `json` | JSON 结构化 | 程序处理 |
-| `latex` | 纯 LaTeX | 直接编译 |
+```
+数据库统计: mathforge.db
+┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
+┃ 类型             ┃ 数量   ┃
+┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
+│ knowledge_points │ 487    │
+│ questions        │ 312    │
+└──────────────────┴────────┘
+```
 
 ---
 
 ## 5. 使用示例
 
 ```bash
-# === MVP: 大学数学 ===
+# 默认 VLM 后端，5 页/批，200 行/窗口
+uv run mathforge parse run "Raw Data/textbook.pdf"
 
-# 统一 Pipeline 解析（自动检测格式）
-mathforge parse run "Raw Data/新领军真题整理/"
+# 用 pymupdf 后端（无 LLM 识别，纯文本提取）
+uv run mathforge parse run "Raw Data/textbook.pdf" -b pymupdf
 
-# 解析 PDF（指定后端）
-mathforge parse run "Raw Data/抽代教材PPT习题/" --backend pymupdf
+# 调整 Phase A 批大小与 Task1 窗口
+uv run mathforge parse run book.pdf --pages-per-batch 10 --extract-window-lines 300
 
-# 自由生成（大学数学，默认学段）
-mathforge generate free -s 数学分析 -t 数列极限 -d 5 --type proof
+# 失败重试次数加大
+uv run mathforge parse run book.pdf --max-retries 5
 
-# 变式生成
-mathforge generate variant xlj-lingshi-2021-03-001 --strategy A4 -d 7
+# 目录模式，并发 8 个 logical_document
+uv run mathforge parse run "Raw Data/" -j 8
 
-# 批量生成
-mathforge generate batch -s 高等代数 -t 特征值 -d 6 -n 5
+# 跳过 LLM 调用，只识别保存为 page_NNN-NNN.md（用于离线检查）
+uv run mathforge parse run book.pdf --skip-llm
 
-# 使用自定义 LLM
-mathforge generate free -s 数学分析 -t 极限 -d 5 \
-  --llm-provider openai_compatible --llm-base-url https://relay.example.com/v1
+# Dry run：处理但不写 DB
+uv run mathforge parse run book.pdf --dry-run
 
-# === Post-MVP: 多学科 ===
+# 忽略 checkpoint 从头跑
+uv run mathforge parse run book.pdf --restart
 
-# 解析物理教材
-mathforge parse run "教材/大学物理.pdf"
+# 用自定义 LLM provider
+uv run mathforge parse run book.pdf \
+  --llm-provider openai_compatible \
+  --llm-model anthropic/claude-sonnet-4-20250514 \
+  --llm-config config/mathforge.toml
 
-# 生成高中数学题目
-mathforge generate free -s 函数 --level high_school -d 4 --type choice -n 5
-
-# 生成大学物理题目
-mathforge generate free -s 力学 --level undergraduate -t 牛顿定律 -d 5
-
-# 查看各学科数据统计
-mathforge subjects stats
-
-# 按学科浏览知识库
-mathforge kb list --subject 力学 --level undergraduate
+# 数据库统计
+uv run mathforge parse db-stats data/mathforge.db
 ```
 
 ---
 
-## 6. 实现文件
+## 6. TOML 配置文件
+
+`config/mathforge.toml` 至少需要两个任务段：
+
+```toml
+[llm]
+provider = "openai_compatible"
+model = "z-ai/glm-5.1"
+base_url = "https://openrouter.ai/api/v1"
+
+[llm.tasks.vlm_convert]
+# Phase A: 必须支持图像输入
+provider = "openai_compatible"
+model = "z-ai/glm-5v-turbo"
+base_url = "https://openrouter.ai/api/v1"
+
+[llm.tasks.extract_and_classify]
+# Task1: 单次调用做提取/校正/分类/打标签/难度
+provider = "openai_compatible"
+model = "z-ai/glm-5.1"
+base_url = "https://openrouter.ai/api/v1"
+max_tokens = 32768
+```
+
+环境变量覆写：`MATHFORGE_TASK_VLM_CONVERT_MODEL=...`、`MATHFORGE_TASK_EXTRACT_AND_CLASSIFY_PROVIDER=...` 等。
+
+API Key 通过环境变量或 `.env`：
+- `ANTHROPIC_API_KEY=...`
+- `OPENAI_API_KEY=...`（OpenRouter 也用这个）
+
+---
+
+## 7. 实现文件
 
 | 文件 | 职责 |
-|------|------|
-| `cli/main.py` | Typer 入口（含全局 --subject, --level 参数） |
-| `cli/parse.py` | parse 命令组 |
-| `cli/kb.py` | 知识库命令 |
-| `cli/questions.py` | 题库命令 |
-| `cli/generate.py` | 生成命令 |
-| `cli/subjects.py` | 学科管理命令 |
-| `cli/config.py` | 配置命令 |
-| `cli/display.py` | Rich 输出格式化 |
+|---|---|
+| `src/mathforge/cli/main.py` | Typer 入口 + `validate` 命令 + 全局 `--log-level` 等 |
+| `src/mathforge/cli/parse.py` | `parse run` / `parse db-stats` |
+| `src/mathforge/cli/generate.py` | `generate` 命令组（暂破损） |
+| `src/mathforge/cli/display.py` | Rich 输出格式化助手 |
+
+---
+
+## 8. 帮助查看
+
+```bash
+uv run mathforge --help
+uv run mathforge parse --help
+uv run mathforge parse run --help
+uv run mathforge parse db-stats --help
+```

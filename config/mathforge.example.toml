@@ -1,7 +1,8 @@
 # MathForge LLM 配置示例
+#
 # 使用方法:
 #   1. 复制本文件: cp config/mathforge.example.toml config/mathforge.toml
-#   2. 通过 CLI 指定: mathforge generate free --llm-config config/mathforge.toml ...
+#   2. 通过 CLI 指定: mathforge parse run --llm-config config/mathforge.toml ...
 #   3. 或通过环境变量: MATHFORGE_LLM_CONFIG_FILE=config/mathforge.toml
 
 [llm]
@@ -9,10 +10,28 @@
 provider = "anthropic"
 model = "claude-sonnet-4-20250514"
 
-# ── 生成引擎各阶段 ──
+# ── Pipeline 任务（必填）────────────────────────────────
+#
+# Producer-Consumer 流水线只需两个 LLM 任务:
+#   1. vlm_convert         - Phase A: 多模态识别 PDF/DOCX → markdown
+#   2. extract_and_classify - Task1: 单次调用做 提取+校正+分类+打标签+难度
+
+[llm.tasks.vlm_convert]
+# Phase A: VLM 视觉识别（必须支持图像输入！）
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+
+[llm.tasks.extract_and_classify]
+# Task1: 一次 LLM 调用完成提取/校正/分类/打标签/难度评估
+# JSON 输出量较大（一窗口可能含多个 item + tag 子树），max_tokens 建议 ≥ 32k
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+max_tokens = 32768
+
+# ── 生成引擎任务（按需启用，与 parse pipeline 无关）──────
 
 [llm.tasks.generate]
-# 题目生成：需要创造力，推荐使用 Sonnet 级别模型
+# 题目生成：需要创造力
 provider = "anthropic"
 model = "claude-sonnet-4-20250514"
 
@@ -22,54 +41,22 @@ provider = "openai"
 model = "gpt-4o"
 
 [llm.tasks.solve_deep]
-# 深度求解（多轮 + tool calling）：需要强推理能力
+# 深度求解（多轮 + tool calling）
 provider = "anthropic"
 model = "claude-sonnet-4-20250514"
 max_tokens = 32768
 
 [llm.tasks.review]
-# 验证审阅：确定性任务，可用较轻量模型
+# 验证审阅：可用较轻量模型
 provider = "anthropic"
 model = "claude-haiku-4-20250514"
 
 [llm.tasks.tag]
-# 难度标注：分类任务，可用较轻量模型
+# 难度标注（生成路径独立于 Pipeline tag 树）
 provider = "anthropic"
 model = "claude-haiku-4-20250514"
 
 [llm.tasks.improve]
-# 迭代改进：需要理解反馈并修正
+# 迭代改进
 provider = "openai"
 model = "gpt-4o"
-
-# ── 数据处理 Pipeline 各阶段 ──
-
-[llm.tasks.split]
-# 文档拆分：可用本地模型节省成本
-# provider = "openai_compatible"
-# base_url = "http://localhost:8080/v1"
-# model = "local-model"
-provider = "anthropic"
-model = "claude-haiku-4-20250514"
-
-[llm.tasks.process_item]
-# 条目处理（校正 + 分类）
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
-
-[llm.tasks.infer_relations]
-# 知识关系推理
-provider = "anthropic"
-model = "claude-haiku-4-20250514"
-
-# ── 其他任务 ──
-
-# [llm.tasks.repair]
-# 修复任务（按需启用）
-# provider = "anthropic"
-# model = "claude-sonnet-4-20250514"
-
-# [llm.tasks.numerical_verify]
-# 数值验证（按需启用）
-# provider = "anthropic"
-# model = "claude-haiku-4-20250514"

@@ -1,602 +1,394 @@
-"""PipelineOrchestrator — asyncio.Queue 流水线编排器
+"""PipelineOrchestrator — Producer-Consumer 流水线编排器
 
-新架构：
-  Task0 [VlmStream] → StreamingLineBuffer（可选）
-  Task1 [ChunkExtractor] → QueueA(ChunkExtractionResult)
-  Task2 [ItemProcessor + TreeBuilder] → QueueB + DocumentTree
-  Task3 [collect backpressure]
-  Post: GraphBuilder (tree → graph) + EntityBuilder → Storage
+架构:
+  Task0 (Producer): 文档识别 → asyncio.Queue
+  Task1 (Consumer): 滑动窗口提取 + 校正 + 打标签 + 入库
+
+两个 Task 通过单个 queue 串联，支持背压、断点恢复、异常重试。
+目录模式下，多个 logical_document 可以并发跑，每个 document 跑一对 Task0+Task1。
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import structlog
 
 from mathforge.core.models import (
-    ChunkExtractionResult,
     DirectoryProgress,
     DocumentFormat,
-    ExtractedItem,
-    KnowledgePoint,
-    PipelineRunProgress,
-    Question,
+    FileExtractionState,
+    MdBlockSource,
 )
-from mathforge.pipeline.chunk_extractor import ChunkExtractor, StreamingLineBuffer
-from mathforge.pipeline.entity_builder import build_entities
-from mathforge.pipeline.graph_builder import GraphBuilder
-from mathforge.pipeline.metrics import LiveProgress
-from mathforge.pipeline.tree_builder import TreeBuilder
+from mathforge.pipeline.recognizers import get_recognizer
+from mathforge.pipeline.resume_state import (
+    compute_file_hash,
+    load_state,
+    recognize_dir,
+    save_state_locked,
+    state_dir,
+)
+from mathforge.pipeline.task1_extractor import SENTINEL, Task1Extractor
+from mathforge.storage.sqlite_backend import SQLiteStorageBackend
 
 if TYPE_CHECKING:
     from mathforge.config.settings import AppConfig
     from mathforge.llm.client import LLMClient
-    from mathforge.pipeline.agents.item_processor import ItemProcessingResult
-    from mathforge.storage.protocol import StorageBackend
+    from mathforge.storage.protocol import BatchStorageBackend
 
 logger = structlog.get_logger()
 
 
+# ── 数据结构 ──────────────────────────────────────────
+
+
 @dataclass
 class PipelineResult:
-    """单个文件的处理结果"""
+    """单个 logical_document 的处理结果"""
 
     file_path: str = ""
-    chunks_count: int = 0
-    items_extracted: int = 0
-    items_processed: int = 0
-    items_stored: int = 0
-    knowledge_points: list[KnowledgePoint] = field(default_factory=list)
-    questions: list[tuple[Question, Solution | None]] = field(default_factory=list)
+    file_hash: str = ""
+    pages_recognized: int = 0
+    blocks_pushed: int = 0
+    items_saved: int = 0
+    failed_batches: list[tuple[int, int, int]] = field(default_factory=list)
+    failed_blocks: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     elapsed_sec: float = 0.0
-    extract_sec: float = 0.0
-    process_sec: float = 0.0
-    graph_sec: float = 0.0
 
 
-# Queue 消息类型
-
-class _Sentinel:
-    __slots__ = ()
-
-
-_SENTINEL = _Sentinel()
-_QueueA_Item = ChunkExtractionResult | _Sentinel
-_QueueB_Item = tuple[ExtractedItem, "ItemProcessingResult"] | _Sentinel
-
-
-def _fallback_proc(item: ExtractedItem) -> ItemProcessingResult:
-    """无 LLM 时的 fallback 处理结果"""
-    from mathforge.core.models import CorrectionResult, ItemProcessingResult, TagSet
-
-    return ItemProcessingResult(
-        correction=CorrectionResult(
-            corrected_content=item.content,
-            overall_quality="D",
-        ),
-        classification=TagSet(),
-        item_subtype=item.item_type,
-    )
+# ── Orchestrator ──────────────────────────────────────
 
 
 class PipelineOrchestrator:
-    """流水线编排器"""
+    """Producer-Consumer 流水线编排器"""
+
+    _PART_RE = re.compile(r"^(.+?)_part_(\d+)_(\d+)$", re.IGNORECASE)
 
     def __init__(
         self,
         config: AppConfig,
         llm_client: LLMClient | None = None,
-        storage: StorageBackend | None = None,
+        storage: BatchStorageBackend | None = None,
+        db_path: Path | None = None,
         llm_clients: dict[str, LLMClient] | None = None,
-        pdf_backend: str = "auto",
+        pdf_backend: str = "vlm",
     ) -> None:
+        """
+        Args:
+            storage: 共享 backend 实例（dry-run / 测试场景下传入）
+            db_path: SQLite 路径，每个 process_file 会在内部构造独立 backend
+                    （目录并发模式下避免多协程共享 sqlite3.Connection 的线程风险）
+        """
         self.config = config
         self.llm = llm_client
         self.storage = storage
+        self.db_path = db_path
         self._llm_clients = llm_clients or {}
         self._pdf_backend = pdf_backend
 
     def _get_llm(self, task: str) -> LLMClient | None:
         return self._llm_clients.get(task) or self.llm
 
+    # ── 单 logical_document 入口 ──────────────────────
+
     async def process_file(
-        self, file_path: Path, *, content_override: str | None = None
+        self,
+        file_path: Path | list[Path],
     ) -> PipelineResult:
-        """处理单个文件"""
-        from mathforge.pipeline.metrics import PipelineMetrics
+        """处理单个 logical_document（单文件或多个分卷）"""
+        files = [file_path] if isinstance(file_path, Path) else list(file_path)
+        if not files:
+            raise ValueError("empty file list")
 
+        primary_path = files[0]
+        result = PipelineResult(file_path=str(primary_path))
         t0 = time.monotonic()
-        result = PipelineResult(file_path=str(file_path))
-        metrics = PipelineMetrics()
-        metrics.start()
 
-        # 检测格式
-        source_format = self._detect_format(file_path)
+        # 1. 计算 file_hash 并加载 state
+        file_hash = compute_file_hash(files)
+        result.file_hash = file_hash
 
-        # 判断流式 VLM
-        use_streaming_vlm = (
-            self.config.vlm_streaming
-            and self._pdf_backend == "vlm"
-            and source_format in (DocumentFormat.PDF, DocumentFormat.DOCX)
-            and content_override is None
-        )
-        vlm_llm = self._get_llm("vlm_convert") if use_streaming_vlm else None
-        use_streaming_vlm = use_streaming_vlm and vlm_llm is not None and vlm_llm.supports_vision
+        state = load_state(self.config.checkpoint_dir, file_hash)
+        if state is None:
+            state = FileExtractionState(file_path=str(primary_path), file_hash=file_hash)
 
-        if use_streaming_vlm:
-            content = None
-            file_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()[:16]
-            logger.info(
-                "pipeline_file_start",
-                file=file_path.name,
-                format=source_format.value,
-                mode="streaming_vlm",
-            )
-        else:
-            if content_override is not None:
-                content = content_override
-            else:
-                content = await self._convert_to_text(file_path, source_format)
-            file_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
-            logger.info(
-                "pipeline_file_start",
-                file=file_path.name,
-                format=source_format.value,
-                lines=len(content.splitlines()),
-            )
-
-        # Checkpoint
-        progress = self._load_checkpoint(file_hash)
-        if progress and progress.stage == "completed":
-            logger.info("pipeline_file_skipped_completed", file=file_path.name)
+        if state.phase == "completed":
+            logger.info("pipeline_file_already_done", file=primary_path.name)
+            result.items_saved = state.saved_item_count
             return result
 
-        # Queues
-        queue_a: asyncio.Queue[_QueueA_Item] = asyncio.Queue(
-            maxsize=self.config.pipeline_queue_size
+        logger.info(
+            "pipeline_file_start",
+            file=primary_path.name,
+            file_hash=file_hash,
+            files_in_doc=len(files),
+            resume=bool(state.vlm_batches_done),
         )
-        queue_b: asyncio.Queue[_QueueB_Item] = asyncio.Queue(
-            maxsize=self.config.pipeline_queue_size
+
+        # 2. 为本 logical_document 构造独立 storage（或复用共享实例）
+        local_backend: SQLiteStorageBackend | None = None
+        storage_for_task1: BatchStorageBackend | None = self.storage
+        if self.storage is None and self.db_path is not None:
+            local_backend = SQLiteStorageBackend(self.db_path)
+            storage_for_task1 = local_backend
+
+        # 3. 准备 queue
+        queue: asyncio.Queue[object] = asyncio.Queue(maxsize=self.config.pipeline_queue_size)
+
+        # 4. 启动 Producer + Consumer
+        producer_task = asyncio.create_task(
+            self._task0_producer(files, state, queue, result)
         )
 
-        # 共享状态
-        timing: dict[str, float] = {}
-        collected: list[tuple[ExtractedItem, ItemProcessingResult]] = []
-        completed_chunk_ids: list[str] = list(progress.completed_block_ids) if progress else []
-        tree_builder = TreeBuilder(str(file_path), storage=self.storage)
-
-        # 如果有 checkpoint 中的 tree，恢复
-        if progress and progress.tree_state:
-            try:
-                tree_builder = TreeBuilder.deserialize(
-                    progress.tree_state, str(file_path), storage=self.storage
-                )
-            except Exception:
-                logger.warning("tree_state_restore_failed", exc_info=True)
-
-        # 进度计数器
-        live = LiveProgress()
-        stop_event = asyncio.Event()
-
-        # 构建 Tasks
-        if use_streaming_vlm:
-            line_buffer = StreamingLineBuffer()
-            tasks = [
-                asyncio.create_task(
-                    self._task_vlm_stream(file_path, line_buffer, live=live)
-                ),
-                asyncio.create_task(
-                    self._task_chunk_extract(
-                        file_path, None, source_format, queue_a, result, timing,
-                        live=live, line_buffer=line_buffer,
-                    )
-                ),
-                asyncio.create_task(
-                    self._task_process_tree(
-                        queue_a, queue_b, result, timing, collected,
-                        completed_chunk_ids, file_hash, tree_builder,
-                        live=live,
-                    )
-                ),
-                asyncio.create_task(self._task_collect(queue_b, timing)),
-            ]
-            task_names = ["vlm_stream", "chunk_extract", "process_tree", "collect"]
+        extract_llm = self._get_llm("extract_and_classify")
+        consumer_task: asyncio.Task[None] | None = None
+        if extract_llm is None:
+            logger.warning("pipeline_no_llm", file=primary_path.name)
         else:
-            tasks = [
-                asyncio.create_task(
-                    self._task_chunk_extract(
-                        file_path, content, source_format, queue_a, result, timing,
-                        live=live,
-                    )
-                ),
-                asyncio.create_task(
-                    self._task_process_tree(
-                        queue_a, queue_b, result, timing, collected,
-                        completed_chunk_ids, file_hash, tree_builder,
-                        live=live,
-                    )
-                ),
-                asyncio.create_task(self._task_collect(queue_b, timing)),
-            ]
-            task_names = ["chunk_extract", "process_tree", "collect"]
+            extractor = Task1Extractor(
+                llm_client=extract_llm,
+                config=self.config,
+                storage=storage_for_task1,
+                checkpoint_root=self.config.checkpoint_dir,
+            )
+            consumer_task = asyncio.create_task(
+                self._task1_consumer(extractor, queue, state, result)
+            )
 
-        daemon = asyncio.create_task(
-            self._progress_daemon(queue_a, queue_b, live, stop_event)
-        )
-
-        # 等待
-        task_results = await asyncio.gather(*tasks, return_exceptions=True)
-        stop_event.set()
-        await daemon
-        for i, tr in enumerate(task_results):
-            if isinstance(tr, BaseException):
-                tname = task_names[i] if i < len(task_names) else f"task_{i}"
-                logger.error("pipeline_task_failed", task=tname, error=str(tr))
-                result.errors.append(f"task_{tname}: {tr}")
-
-        # Graph 构建（基于 tree — 关系推断在已入库的条目上运行）
-        t_graph = time.monotonic()
-        doc_tree = tree_builder.get_tree()
-        if doc_tree.item_to_node:
-            try:
-                graph_llm = self._get_llm("infer_relations")
-                graph_builder = GraphBuilder(graph_llm)
-
-                # GraphBuilder 直接在 tree 上构建结构关系
-                # （跨分支 LLM 推断需要已入库的条目信息，暂跳过）
-                logger.info(
-                    "graph_build_start",
-                    tree_items=len(doc_tree.item_to_node),
-                    tree_nodes=len(doc_tree.nodes),
-                )
-            except Exception as e:
-                logger.error("pipeline_graph_failed", exc_info=True)
-                result.errors.append(str(e))
-
-        timing["graph"] = time.monotonic() - t_graph
-
-        # 最终 checkpoint
-        self._save_checkpoint(
-            file_hash, result,
-            stage="completed",
-            completed_chunk_ids=completed_chunk_ids,
-            tree_state=tree_builder.serialize(),
-        )
-
-        metrics.finish()
-        metrics.log_summary()
+        # 5. 等待两个任务
         try:
-            metrics.save(self.config.checkpoint_dir / file_hash / "metrics.json")
-        except Exception:
-            pass
+            await producer_task
+            if consumer_task is not None:
+                await consumer_task
+        except Exception as exc:
+            logger.error("pipeline_task_exception", error=str(exc), exc_info=True)
+            result.errors.append(str(exc))
+            # 异常退出时强制刷一次 state（覆盖 C.3 节流保存的漏洞）
+            try:
+                await save_state_locked(self.config.checkpoint_dir, state, force=True)
+            except Exception:
+                pass
+        finally:
+            if local_backend is not None:
+                local_backend.close()
 
+        # 6. 同步状态到 result
+        result.failed_batches = list(state.failed_batches)
+        result.failed_blocks = list(state.failed_blocks)
+        result.items_saved = state.saved_item_count
+        result.errors.extend(state.errors)
         result.elapsed_sec = time.monotonic() - t0
-        result.extract_sec = timing.get("extract", 0.0)
-        result.process_sec = timing.get("process", 0.0)
-        result.graph_sec = timing.get("graph", 0.0)
 
         logger.info(
-            "pipeline_complete",
-            file=file_path.name,
-            total_sec=round(result.elapsed_sec, 2),
-            extract_sec=round(result.extract_sec, 2),
-            process_sec=round(result.process_sec, 2),
-            graph_sec=round(result.graph_sec, 2),
-            chunks=result.chunks_count,
-            items=result.items_extracted,
-            stored=result.items_stored,
-            kps=len(result.knowledge_points),
-            questions=len(result.questions),
+            "pipeline_file_complete",
+            file=primary_path.name,
+            elapsed_sec=round(result.elapsed_sec, 2),
+            blocks_pushed=result.blocks_pushed,
+            items_saved=result.items_saved,
+            failed_batches=len(result.failed_batches),
+            failed_blocks=len(result.failed_blocks),
             errors=len(result.errors),
         )
 
         return result
 
-    # ── Task 1: Chunk 提取 ──
+    # ── Task0: Producer ───────────────────────────────
 
-    async def _task_chunk_extract(
+    async def _task0_producer(
         self,
-        file_path: Path,
-        content: str | None,
-        source_format: DocumentFormat,
-        queue_a: asyncio.Queue,
+        files: list[Path],
+        state: FileExtractionState,
+        queue: asyncio.Queue[object],
         result: PipelineResult,
-        timing: dict[str, float],
-        *,
-        live: LiveProgress | None = None,
-        line_buffer: StreamingLineBuffer | None = None,
     ) -> None:
-        """Task 1: ChunkExtractor → QueueA"""
-        t0 = time.monotonic()
+        """识别每个文件每 N 页一批，按顺序推入 queue"""
         try:
-            extractor = ChunkExtractor(self._get_llm("split"), self.config)
-            chunk_count = 0
-            if line_buffer is not None:
-                gen = extractor.extract_file_streaming(file_path, line_buffer, source_format)
-            else:
-                assert content is not None
-                gen = extractor.extract_file(file_path, content, source_format)
-            async for chunk_result in gen:
-                await queue_a.put(chunk_result)
-                chunk_count += 1
-                if live:
-                    live.blocks_split = chunk_count
-            result.chunks_count = chunk_count
-        except Exception as e:
-            logger.error("task_chunk_extract_failed", file=file_path.name, exc_info=True)
-            result.errors.append(f"chunk_extract: {e}")
-            if live:
-                live.errors += 1
-        finally:
-            await queue_a.put(_SENTINEL)
-            timing["extract"] = time.monotonic() - t0
+            block_index = 0
+            # state 中 vlm_batches_done 序列化为 list[list]，转 set[tuple] 便于 O(1) lookup
+            done_keys = {tuple(t) for t in state.vlm_batches_done}
 
-    # ── Task 2: 处理 + 树构建 ──
+            for file_idx, f in enumerate(files):
+                fmt = self._detect_format(f)
 
-    async def _task_process_tree(
-        self,
-        queue_a: asyncio.Queue,
-        queue_b: asyncio.Queue,
-        result: PipelineResult,
-        timing: dict[str, float],
-        collected: list,
-        completed_chunk_ids: list[str],
-        file_hash: str,
-        tree_builder: TreeBuilder,
-        *,
-        live: LiveProgress | None = None,
-    ) -> None:
-        """Task 2: QueueA → 批量 ItemProcessor + TreeBuilder → QueueB"""
-        _done_chunks = set(completed_chunk_ids)
-        t_process = 0.0
+                # 当前文件的识别 batch 输出目录
+                output_dir = recognize_dir(
+                    self.config.checkpoint_dir,
+                    state.file_hash,
+                    file_idx,
+                    f.stem,
+                )
 
-        processor = None
-        process_llm = self._get_llm("process_item")
-        if process_llm:
-            from mathforge.pipeline.agents.item_processor import ItemProcessor
-            processor = ItemProcessor(process_llm)
-
-        try:
-            while True:
-                msg = await queue_a.get()
-                if isinstance(msg, _Sentinel):
-                    break
-
-                chunk: ChunkExtractionResult = msg
-
-                if chunk.chunk_id in _done_chunks:
-                    logger.debug("chunk_skipped_checkpoint", chunk_id=chunk.chunk_id[:8])
-                    continue
-
-                items = chunk.items
-                result.items_extracted += len(items)
-                if live:
-                    live.items_extracted += len(items)
-                    for ei in items:
-                        live.record_type(ei.item_type)
-
-                # 批量处理（一次 LLM 调用处理整个 chunk 的条目）
-                tp0 = time.monotonic()
-                if processor and items:
-                    try:
-                        proc_results = await processor.process_batch(
-                            items, chunk.structural_context
-                        )
-                    except Exception as exc:
-                        logger.warning("item_batch_exception", error=str(exc))
-                        proc_results = [_fallback_proc(ei) for ei in items]
-                        if live:
-                            live.errors += 1
-                else:
-                    proc_results = [_fallback_proc(ei) for ei in items]
-
-                t_process += time.monotonic() - tp0
-
-                # 收集结果
-                for ei, pr in zip(items, proc_results):
-                    tup = (ei, pr)
-                    collected.append(tup)
-                    await queue_b.put(tup)
-
-                result.items_processed += len(items)
-                if live:
-                    live.items_processed += len(items)
-                    for pr in proc_results:
-                        live.record_quality(pr.correction.overall_quality)
-
-                # 质量过滤
-                valid_items = [
-                    (ei, pr) for ei, pr in zip(items, proc_results)
-                    if pr.correction.overall_quality != "F"
-                    and ei.item_type not in ("text", "remark")
+                # 已识别的 (page_start, page_end)（针对当前 file_idx）
+                already_done_pairs: list[tuple[int, int]] = [
+                    (ps, pe) for (fi, ps, pe) in done_keys if fi == file_idx
                 ]
 
-                # 树构建 + 增量入库
-                if valid_items:
-                    try:
-                        block_kps, block_qs = build_entities(
-                            valid_items,
-                            source_file=chunk.source_file,
-                            source_chapter=chunk.structural_context.chapter_title,
-                            source_section=chunk.structural_context.section_title,
-                        )
+                vlm_llm = self._get_llm("vlm_convert")
+                try:
+                    recognizer = get_recognizer(
+                        fmt, self._pdf_backend, vlm_llm, self.config
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "pipeline_recognizer_init_failed",
+                        file=f.name,
+                        format=fmt.value,
+                        error=str(exc),
+                    )
+                    result.errors.append(f"recognizer_init({f.name}): {exc}")
+                    continue
 
-                        # 树构建
-                        for kp in block_kps:
-                            tree_builder.insert(kp.id, "kp", chunk.structural_context)
-                        for q in block_qs:
-                            tree_builder.insert(q.id, "question", chunk.structural_context)
+                logger.info(
+                    "task0_file_start",
+                    file=f.name,
+                    file_idx=file_idx,
+                    format=fmt.value,
+                    backend=self._pdf_backend,
+                    cached_batches=len(already_done_pairs),
+                )
 
-                        # 入库
-                        saved = 0
-                        if self.storage:
-                            if hasattr(self.storage, "save_batch"):
-                                saved = await asyncio.to_thread(
-                                    self.storage.save_batch, block_kps, block_qs
-                                )
-                            else:
-                                for kp in block_kps:
-                                    await asyncio.to_thread(self.storage.save_knowledge_point, kp)
-                                    saved += 1
-                                for q in block_qs:
-                                    await asyncio.to_thread(self.storage.save_question, q)
-                                    saved += 1
-                        result.items_stored += saved
-                        if live:
-                            live.items_stored += saved
+                async for batch in recognizer.recognize_in_batches(
+                    f,
+                    batch_pages=self.config.pages_per_batch,
+                    output_dir=output_dir,
+                    already_done=already_done_pairs,
+                    max_retries=self.config.vlm_max_retries,
+                ):
+                    msb = MdBlockSource(
+                        file_path=str(f),
+                        page_start=batch.page_start,
+                        page_end=batch.page_end,
+                        md_path=str(batch.md_path),
+                        md_text=batch.md_text,
+                        block_index=block_index,
+                    )
+                    block_index += 1
+                    result.blocks_pushed = block_index
+                    result.pages_recognized = max(
+                        result.pages_recognized, batch.page_end
+                    )
 
-                        _done_chunks.add(chunk.chunk_id)
-                        completed_chunk_ids.append(chunk.chunk_id)
-                        if file_hash:
-                            self._save_checkpoint(
-                                file_hash, result,
-                                stage="process_tree",
-                                completed_chunk_ids=list(_done_chunks),
-                                tree_state=tree_builder.serialize(),
-                            )
-                        logger.info(
-                            "chunk_items_stored",
-                            chunk_id=chunk.chunk_id[:8],
-                            kps=len(block_kps),
-                            questions=len(block_qs),
-                        )
-                    except Exception:
-                        logger.warning(
-                            "chunk_save_failed",
-                            chunk_id=chunk.chunk_id[:8],
-                            exc_info=True,
-                        )
-                        result.errors.append(f"chunk_save[{chunk.chunk_id[:8]}]: failed")
-                        if live:
-                            live.errors += 1
+                    # 记录到 state.vlm_batches_done
+                    key = (file_idx, batch.page_start, batch.page_end)
+                    if key not in done_keys:
+                        done_keys.add(key)
+                        state.vlm_batches_done.append(key)
+                        await save_state_locked(self.config.checkpoint_dir, state)
 
-        except Exception as e:
-            logger.warning("task_process_tree_failed", exc_info=True)
-            result.errors.append(f"process_tree: {e}")
-            if live:
-                live.errors += 1
+                    # 推入 queue（背压）
+                    await queue.put(msb)
+
+        except Exception as exc:
+            logger.error("task0_producer_failed", error=str(exc), exc_info=True)
+            result.errors.append(f"producer: {exc}")
         finally:
-            await queue_b.put(_SENTINEL)
-            timing["process"] = t_process
-
-    # ── Task 3: Collect (背压) ──
-
-    async def _task_collect(
-        self,
-        queue_b: asyncio.Queue,
-        timing: dict[str, float],
-    ) -> None:
-        """Task 3: 消费 QueueB 提供背压"""
-        t0 = time.monotonic()
-        while True:
-            msg = await queue_b.get()
-            if isinstance(msg, _Sentinel):
-                break
-        timing["collect"] = time.monotonic() - t0
-
-    # ── 进度守护 ──
-
-    async def _progress_daemon(
-        self,
-        queue_a: asyncio.Queue,
-        queue_b: asyncio.Queue,
-        progress: LiveProgress,
-        stop_event: asyncio.Event,
-    ) -> None:
-        """定时输出管线进度摘要"""
-        interval = self.config.progress_log_interval
-        while not stop_event.is_set():
+            # SENTINEL 推送后强制刷盘，覆盖节流保存
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=interval)
-                break
-            except asyncio.TimeoutError:
+                await save_state_locked(self.config.checkpoint_dir, state, force=True)
+            except Exception:
                 pass
+            await queue.put(SENTINEL)
 
-            elapsed = time.monotonic() - progress.start_time
-            log_kwargs: dict[str, Any] = {
-                "elapsed_sec": round(elapsed, 1),
-                "blocks_split": progress.blocks_split,
-                "items_extracted": progress.items_extracted,
-                "items_processed": progress.items_processed,
-                "items_stored": progress.items_stored,
-                "queue_a": queue_a.qsize(),
-                "queue_b": queue_b.qsize(),
-                "errors": progress.errors,
-            }
-            if progress.type_counts:
-                log_kwargs["types"] = dict(progress.type_counts)
-            if progress.quality_counts:
-                log_kwargs["quality"] = dict(progress.quality_counts)
-            if progress.vlm_pages_total > 0:
-                log_kwargs["vlm_pages"] = (
-                    f"{progress.vlm_pages_done}/{progress.vlm_pages_total}"
-                )
-            if progress.files_total > 0:
-                log_kwargs["files"] = (
-                    f"{progress.files_completed}/{progress.files_total}"
-                )
+    # ── Task1: Consumer ───────────────────────────────
 
-            logger.info("pipeline_progress", **log_kwargs)
-
-    # ── Task 0: 流式 VLM ──
-
-    async def _task_vlm_stream(
+    async def _task1_consumer(
         self,
-        file_path: Path,
-        line_buffer: StreamingLineBuffer,
-        live: LiveProgress | None = None,
+        extractor: Task1Extractor,
+        queue: asyncio.Queue[object],
+        state: FileExtractionState,
+        result: PipelineResult,
     ) -> None:
-        """Task 0: VLM 流式转换"""
-        from mathforge.pipeline.vlm_converter import VlmConverter
+        """从 queue 取 mdblock，提取并入库"""
+        try:
+            async for batch in extractor.run(queue, state):
+                logger.debug(
+                    "task1_batch_yielded",
+                    kp=batch.kp_count,
+                    q=batch.question_count,
+                    order=batch.order_index_range,
+                )
+        except Exception as exc:
+            logger.error("task1_consumer_failed", error=str(exc), exc_info=True)
+            result.errors.append(f"consumer: {exc}")
 
-        vlm_llm = self._get_llm("vlm_convert")
-        assert vlm_llm is not None
+    # ── 目录处理 ──────────────────────────────────────
 
-        converter = VlmConverter(
-            llm_client=vlm_llm,
-            checkpoint_dir=self.config.checkpoint_dir,
-            output_dir=self.config.data_dir,
-            dpi=self.config.vlm_dpi,
-            max_concurrent=self.config.vlm_max_concurrent,
-            pages_per_batch=self.config.vlm_pages_per_batch,
+    async def process_directory(
+        self,
+        dir_path: Path,
+        max_concurrent_files: int = 4,
+    ) -> list[PipelineResult]:
+        """处理目录下所有文件（按 logical_document 分组并发）"""
+        files = sorted(self._collect_files(dir_path), key=self._natural_sort_key)
+        grouped = self._group_part_files(files)
+
+        dir_progress = self._load_directory_progress(dir_path)
+
+        # 过滤已完成的（按内容 hash 去重）
+        work_items: list[tuple[int, Path | list[Path], str]] = []
+        for i, item in enumerate(grouped):
+            pkey = str(item[0]) if isinstance(item, list) else str(item)
+            try:
+                cur_hash = compute_file_hash(
+                    item if isinstance(item, list) else item
+                )
+            except Exception:
+                cur_hash = ""
+            if (
+                pkey in dir_progress.completed_files
+                and dir_progress.completed_files[pkey] == cur_hash
+                and cur_hash
+            ):
+                logger.debug("pipeline_dir_skip_completed", file=pkey)
+                continue
+            work_items.append((i, item, pkey))
+
+        logger.info(
+            "pipeline_directory_start",
+            dir=str(dir_path),
+            total_groups=len(grouped),
+            remaining=len(work_items),
+            skipped=len(grouped) - len(work_items),
+            max_concurrent=max_concurrent_files,
         )
 
-        try:
-            if live:
-                import fitz
-                doc_probe = fitz.open(str(file_path))
-                live.vlm_pages_total = doc_probe.page_count
-                doc_probe.close()
+        sem = asyncio.Semaphore(max_concurrent_files)
+        results: list[PipelineResult] = [
+            PipelineResult(file_path=pkey) for _, _, pkey in work_items
+        ]
 
-            async for md_chunk in converter.convert_file_streaming(file_path):
-                line_buffer.append_chunk(md_chunk)
-                if live:
-                    live.vlm_pages_done += converter.pages_per_batch
-                    live.vlm_pages_done = min(live.vlm_pages_done, live.vlm_pages_total)
-        except Exception as e:
-            logger.warning("vlm_stream_failed", file=file_path.name, error=str(e))
-            if live:
-                live.errors += 1
-        finally:
-            line_buffer.finish()
+        async def _process_one(idx: int, item: Path | list[Path], pkey: str) -> None:
+            async with sem:
+                try:
+                    r = await self.process_file(item)
+                    results[idx] = r
+                    dir_progress.completed_files[pkey] = r.file_hash
+                    self._save_directory_progress(dir_path, dir_progress)
+                except Exception as exc:
+                    logger.error("pipeline_file_failed", file=pkey, error=str(exc))
+                    results[idx] = PipelineResult(file_path=pkey, errors=[str(exc)])
+                    dir_progress.failed_files[pkey] = str(exc)
+                    self._save_directory_progress(dir_path, dir_progress)
 
-    # ── 目录处理 ──
+        tasks = [
+            _process_one(idx, item, pkey)
+            for idx, (_, item, pkey) in enumerate(work_items)
+        ]
+        await asyncio.gather(*tasks)
 
-    _PART_RE = re.compile(r"^(.+?)_part_(\d+)_(\d+)$", re.IGNORECASE)
+        return results
+
+    # ── 工具方法 ──────────────────────────────────────
 
     @classmethod
     def _group_part_files(cls, files: list[Path]) -> list[Path | list[Path]]:
-        """将分页文件按系列分组"""
+        """将分卷文件按系列分组，保持原始顺序"""
         groups: dict[str, list[tuple[int, Path]]] = {}
         standalone: list[tuple[int, Path]] = []
 
@@ -619,154 +411,9 @@ class PipelineOrchestrator:
         return [e[1] for e in all_entries]
 
     @staticmethod
-    def _merge_part_files(part_files: list[Path]) -> tuple[str, str]:
-        """按顺序拼接分页文件"""
-        parts: list[str] = []
-        group_name = part_files[0].stem.rsplit("_part_", 1)[0]
-        _heading_re = r"^#{1,6}\s|^\*\*定[理义]|^\*\*Theorem|^\*\*Definition"
-
-        for f in part_files:
-            content = f.read_text(encoding="utf-8").strip()
-            if not content:
-                continue
-            if parts:
-                prev_tail = parts[-1].rstrip().splitlines()[-1] if parts[-1].strip() else ""
-                curr_head = content.lstrip().splitlines()[0] if content.strip() else ""
-                is_continuation = (
-                    prev_tail
-                    and not prev_tail.rstrip().endswith(("。", ".", "$$", "```"))
-                    and not re.match(_heading_re, curr_head)
-                )
-                parts.append(content if is_continuation else "\n\n" + content)
-            else:
-                parts.append(content)
-
-        return "".join(parts), group_name
-
-    async def process_directory(
-        self,
-        dir_path: Path,
-        max_concurrent_files: int = 5,
-    ) -> list[PipelineResult]:
-        """处理目录下所有文件"""
-        files = sorted(self._collect_files(dir_path), key=self._natural_sort_key)
-        grouped = self._group_part_files(files)
-
-        dir_progress = self._load_directory_progress(dir_path)
-
-        work_items: list[tuple[int, Path | list[Path], str]] = []
-        for i, item in enumerate(grouped):
-            pkey = str(item[0]) if isinstance(item, list) else str(item)
-            if pkey in dir_progress.completed_files:
-                try:
-                    if isinstance(item, list):
-                        raw = "".join(f.read_bytes().decode() for f in item)
-                        cur_hash = hashlib.sha256(raw.encode()).hexdigest()[:16]
-                    else:
-                        cur_hash = hashlib.sha256(item.read_bytes()).hexdigest()[:16]
-                except Exception:
-                    cur_hash = ""
-                if dir_progress.completed_files[pkey] == cur_hash:
-                    logger.debug("pipeline_file_skipped", file=pkey)
-                    continue
-            work_items.append((i, item, pkey))
-
-        skipped = len(grouped) - len(work_items)
-        logger.info(
-            "pipeline_directory_start",
-            dir=str(dir_path),
-            total_files=len(grouped),
-            remaining=len(work_items),
-            skipped=skipped,
-            max_concurrent=max_concurrent_files,
-        )
-
-        sem = asyncio.Semaphore(max_concurrent_files)
-        results: list[PipelineResult] = [
-            PipelineResult(file_path=str(item[0]) if isinstance(item, list) else str(item))
-            for item in grouped
-        ]
-
-        async def _process_one(idx: int, item: Path | list[Path], pkey: str) -> None:
-            async with sem:
-                try:
-                    if isinstance(item, list):
-                        merged_content, group_name = self._merge_part_files(item)
-                        logger.info(
-                            "pipeline_merged_parts",
-                            group=group_name,
-                            part_count=len(item),
-                            merged_lines=len(merged_content.splitlines()),
-                        )
-                        results[idx] = await self.process_file(
-                            item[0], content_override=merged_content
-                        )
-                    else:
-                        results[idx] = await self.process_file(item)
-                    try:
-                        if isinstance(item, list):
-                            raw = "".join(f.read_bytes().decode() for f in item)
-                            fhash = hashlib.sha256(raw.encode()).hexdigest()[:16]
-                        else:
-                            fhash = hashlib.sha256(item.read_bytes()).hexdigest()[:16]
-                    except Exception:
-                        fhash = ""
-                    dir_progress.completed_files[pkey] = fhash
-                    self._save_directory_progress(dir_path, dir_progress)
-                except Exception as e:
-                    name = pkey.split("/")[-1] if "/" in pkey else pkey
-                    logger.error("pipeline_file_failed", file=name, error=str(e))
-                    results[idx] = PipelineResult(file_path=pkey, errors=[str(e)])
-                    dir_progress.failed_files[pkey] = str(e)
-
-        tasks = [_process_one(idx, item, pkey) for idx, item, pkey in work_items]
-        await asyncio.gather(*tasks)
-
-        return results
-
-    # ── 辅助方法 ──
-
-    async def _convert_to_text(self, file_path: Path, fmt: DocumentFormat) -> str:
-        """Stage 0: 格式转换为文本/Markdown"""
-        if fmt in (DocumentFormat.TEX, DocumentFormat.MARKDOWN):
-            return file_path.read_text(encoding="utf-8")
-
-        if self._pdf_backend == "vlm" and fmt in (DocumentFormat.PDF, DocumentFormat.DOCX):
-            vlm_llm = self._get_llm("vlm_convert")
-            if vlm_llm and vlm_llm.supports_vision:
-                from mathforge.pipeline.vlm_converter import VlmConverter
-                converter = VlmConverter(
-                    llm_client=vlm_llm,
-                    checkpoint_dir=self.config.checkpoint_dir,
-                    output_dir=self.config.data_dir,
-                    dpi=self.config.vlm_dpi,
-                    max_concurrent=self.config.vlm_max_concurrent,
-                    pages_per_batch=self.config.vlm_pages_per_batch,
-                )
-                return await converter.convert_file_async(file_path)
-            else:
-                logger.warning("vlm_backend_no_vision_support", file=file_path.name)
-
-        if fmt == DocumentFormat.PDF:
-            from mathforge.pipeline.pdf_processor import PdfProcessor
-            processor = PdfProcessor(checkpoint_dir=self.config.checkpoint_dir)
-            blocks = processor.process_pdf(file_path, backend=self._pdf_backend)
-            return "\n\n".join(b.content for b in blocks if b.content.strip())
-
-        if fmt == DocumentFormat.DOCX:
-            from mathforge.pipeline.docx_processor import process_docx
-            blocks = process_docx(file_path)
-            return "\n\n".join(b.content for b in blocks if b.content.strip())
-
-        if fmt == DocumentFormat.CSV:
-            return file_path.read_text(encoding="utf-8")
-
-        return file_path.read_text(encoding="utf-8")
-
-    @staticmethod
     def _detect_format(file_path: Path) -> DocumentFormat:
         suffix = file_path.suffix.lower()
-        fmt_map = {
+        return {
             ".tex": DocumentFormat.TEX,
             ".md": DocumentFormat.MARKDOWN,
             ".markdown": DocumentFormat.MARKDOWN,
@@ -775,17 +422,18 @@ class PipelineOrchestrator:
             ".csv": DocumentFormat.CSV,
             ".pptx": DocumentFormat.PPTX,
             ".epub": DocumentFormat.EPUB,
-        }
-        return fmt_map.get(suffix, DocumentFormat.MARKDOWN)
+        }.get(suffix, DocumentFormat.MARKDOWN)
 
     @staticmethod
     def _collect_files(dir_path: Path) -> list[Path]:
-        extensions = {".tex", ".md", ".markdown", ".pdf", ".docx", ".csv"}
-        files: list[Path] = []
-        for p in dir_path.rglob("*"):
-            if p.is_file() and p.suffix.lower() in extensions and not p.name.startswith("."):
-                files.append(p)
-        return files
+        extensions = {".tex", ".md", ".markdown", ".pdf", ".docx", ".pptx"}
+        return [
+            p
+            for p in dir_path.rglob("*")
+            if p.is_file()
+            and p.suffix.lower() in extensions
+            and not p.name.startswith(".")
+        ]
 
     @staticmethod
     def _natural_sort_key(path: Path) -> tuple[str, list[int | str]]:
@@ -794,29 +442,10 @@ class PipelineOrchestrator:
             parts.append(int(seg) if seg.isdigit() else seg.lower())
         return (str(path.parent), parts)
 
-    def _update_relations(
-        self,
-        kps: list[KnowledgePoint],
-        qpairs: list[tuple[Question, Solution | None]],
-    ) -> None:
-        if not self.storage:
-            return
-        if hasattr(self.storage, "update_relations_batch"):
-            items: list[tuple[str, str, list]] = []
-            for kp in kps:
-                if kp.relations:
-                    items.append((kp.id, "kp", kp.relations))
-            for q, _ in qpairs:
-                if q.relations:
-                    items.append((q.id, "question", q.relations))
-            if items:
-                try:
-                    self.storage.update_relations_batch(items)
-                    logger.info("relations_updated", count=len(items))
-                except Exception:
-                    logger.error("relations_update_failed", exc_info=True)
-
     def _load_directory_progress(self, dir_path: Path) -> DirectoryProgress:
+        import hashlib
+        import json
+
         dir_hash = hashlib.sha256(str(dir_path.resolve()).encode()).hexdigest()[:12]
         progress_file = self.config.checkpoint_dir / f"dir_{dir_hash}.json"
         if progress_file.exists():
@@ -827,48 +456,49 @@ class PipelineOrchestrator:
                 pass
         return DirectoryProgress(dir_path=str(dir_path))
 
-    def _save_directory_progress(self, dir_path: Path, progress: DirectoryProgress) -> None:
+    def _save_directory_progress(
+        self, dir_path: Path, progress: DirectoryProgress
+    ) -> None:
+        import hashlib
+
         dir_hash = hashlib.sha256(str(dir_path.resolve()).encode()).hexdigest()[:12]
         self.config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         progress_file = self.config.checkpoint_dir / f"dir_{dir_hash}.json"
-        progress_file.write_text(progress.model_dump_json(indent=2), encoding="utf-8")
+        progress_file.write_text(
+            progress.model_dump_json(indent=2), encoding="utf-8"
+        )
 
-    def _load_checkpoint(self, file_hash: str) -> PipelineRunProgress | None:
-        cp_dir = self.config.checkpoint_dir / file_hash
-        progress_file = cp_dir / "progress.json"
-        if progress_file.exists():
+    # ── 清理 checkpoint（--restart 用）──────────────────
+
+    def purge_checkpoint(self, file_path: Path | list[Path]) -> None:
+        """清空指定 logical_document 的 checkpoint"""
+        files = [file_path] if isinstance(file_path, Path) else list(file_path)
+        file_hash = compute_file_hash(files)
+        d = state_dir(self.config.checkpoint_dir, file_hash)
+        if d.exists():
+            import shutil
+
+            shutil.rmtree(d)
+            logger.info("checkpoint_purged", file_hash=file_hash, path=str(d))
+
+    def purge_directory_checkpoints(self, dir_path: Path) -> None:
+        """清空目录下所有 logical_document 的 checkpoint 以及目录进度文件"""
+        import hashlib
+
+        files = sorted(self._collect_files(dir_path), key=self._natural_sort_key)
+        grouped = self._group_part_files(files)
+        for item in grouped:
             try:
-                data = json.loads(progress_file.read_text(encoding="utf-8"))
-                return PipelineRunProgress(**data)
-            except Exception:
-                pass
-        return None
+                self.purge_checkpoint(item)
+            except Exception as exc:
+                logger.warning(
+                    "purge_checkpoint_failed",
+                    file=str(item[0]) if isinstance(item, list) else str(item),
+                    error=str(exc),
+                )
 
-    def _save_checkpoint(
-        self,
-        file_hash: str,
-        result: PipelineResult,
-        stage: str = "completed",
-        completed_chunk_ids: list[str] | None = None,
-        tree_state: str | None = None,
-    ) -> None:
-        cp_dir = self.config.checkpoint_dir / file_hash
-        cp_dir.mkdir(parents=True, exist_ok=True)
-
-        progress = PipelineRunProgress(
-            file_path=result.file_path,
-            file_hash=file_hash,
-            stage=stage,
-            blocks_completed=result.chunks_count,
-            completed_block_ids=completed_chunk_ids or [],
-            items_extracted=result.items_extracted,
-            items_processed=result.items_processed,
-            items_stored=result.items_stored,
-            errors=result.errors,
-            last_checkpoint_at=datetime.now(),
-            tree_state=tree_state,
-        )
-
-        (cp_dir / "progress.json").write_text(
-            progress.model_dump_json(indent=2), encoding="utf-8",
-        )
+        dir_hash = hashlib.sha256(str(dir_path.resolve()).encode()).hexdigest()[:12]
+        progress_file = self.config.checkpoint_dir / f"dir_{dir_hash}.json"
+        if progress_file.exists():
+            progress_file.unlink()
+            logger.info("directory_progress_purged", path=str(progress_file))

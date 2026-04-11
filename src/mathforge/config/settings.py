@@ -23,9 +23,7 @@ KNOWN_TASKS: list[str] = [
     "review",
     "tag",
     "repair",
-    "split",
-    "process_item",
-    "infer_relations",
+    "extract_and_classify",  # Pipeline Task1: 一次 LLM 调用做提取+校正+分类+打标签
     "improve",
     "numerical_verify",
     "vlm_convert",
@@ -48,11 +46,13 @@ def _coerce_field(field_name: str, value: str) -> Any:
 class AppConfig(BaseSettings):
     """应用全局配置，支持环境变量和 .env 文件"""
 
-    # 存储路径
+    # ── 存储路径 ────────────────────────────────────────
     data_dir: Path = Path("data")
     raw_data_dir: Path = Path("Raw Data")
+    sqlite_db_path: Path = Path("data/mathforge.db")
+    checkpoint_dir: Path = Path("data/checkpoint")
 
-    # LLM 配置
+    # ── LLM 全局默认配置 ────────────────────────────────
     llm_provider: str = "anthropic"
     llm_model: str = "claude-sonnet-4-20250514"
     llm_temperature: float = 0.7
@@ -65,52 +65,45 @@ class AppConfig(BaseSettings):
     openai_api_key: str | None = None
     google_api_key: str | None = None
 
-    # Per-task LLM 配置
+    # Per-task LLM 配置（vlm_convert / extract_and_classify / ...）
     task_llm: dict[str, TaskLLMConfig] = {}
     llm_config_file: Path | None = None
 
-    # Pipeline 配置
-    max_concurrent_llm_calls: int = 5
-    generation_max_rounds: int = 3
-    generation_candidates_per_round: int = 3
+    # ── Pipeline: Producer (Task0) — 文档识别 ───────────
+    pages_per_batch: int = 5  # Phase A 每批页数
+    vlm_dpi: int = 200  # PDF → image 渲染 DPI
+    vlm_max_concurrent: int = 3  # VLM 同时调用并发数
+    vlm_max_retries: int = 3  # Phase A batch 失败重试次数
 
-    # PDF 批量处理
-    pdf_batch_size: int = 20
-    pdf_overlap_pages: int = 3
-    pdf_max_span_pages: int = 5
+    # ── Pipeline: Consumer (Task1) — 滑动窗口提取 ───────
+    extract_window_lines: int = 200  # Task1 滑动窗口大小
+    max_extract_retries: int = 3  # Task1 LLM 调用重试次数
+    extract_retry_base_delay: float = 2.0  # 指数退避基础秒数
 
-    # VLM 转换配置
-    vlm_dpi: int = 200
-    vlm_max_concurrent: int = 3
-    vlm_pages_per_batch: int = 8
-    vlm_streaming: bool = True  # 流式 VLM→BlockSplitter 管线
+    # Tag 树注入到 prompt 的限制
+    tag_tree_max_depth: int = 4
+    tag_tree_max_nodes: int = 200
 
-    # 多文件并发
-    max_concurrent_files: int = 8
+    # ── Pipeline: Producer-Consumer 通信 ────────────────
+    pipeline_queue_size: int = 4  # asyncio.Queue 大小（背压）
+    checkpoint_flush_interval: float = 3.0  # C.3 state.json 节流保存间隔（秒）
 
-    # MinerU 配置
-    mineru_backend: str = "pipeline"  # pipeline | vlm-auto-engine | hybrid-auto-engine
-    mineru_parse_method: str = "auto"  # auto | txt | ocr
-    mineru_language: str = "ch"  # OCR 语言
-    mineru_formula_enable: bool = True  # 公式提取
-    mineru_table_enable: bool = True  # 表格提取
+    # ── Pipeline: 目录模式 ─────────────────────────────
+    max_concurrent_files: int = 4  # 同时处理多少个 logical_document
+    max_concurrent_llm_calls: int = 5  # 全局 LLM 并发上限
 
-    # 存储
-    storage_backend: str = "json"  # "json" | "sqlite"
-    sqlite_db_path: Path = Path("data/mathforge.db")
+    # ── 进度守护 ────────────────────────────────────────
+    progress_log_interval: int = 15  # 守护进程日志间隔（秒）
 
-    # 流水线 Pipeline
-    pipeline_queue_size: int = 16
-    pipeline_split_batch_lines: int = 200
-
-    # LLM 日志
+    # ── 日志 ────────────────────────────────────────────
+    log_level: str = "INFO"
+    log_format: str = "console"  # console | json
     llm_log_interval: int = 10
     llm_log_dir: Path = Path("data/llm_logs")
 
-    # Checkpoint
-    checkpoint_dir: Path = Path("data/checkpoint")
-
-    # 生成流水线增强
+    # ── 生成引擎参数（暂不在 MVP 主线上）─────────────────
+    generation_max_rounds: int = 3
+    generation_candidates_per_round: int = 3
     pipeline_parallel: bool = False
     evolution_enabled: bool = False
     evolution_max_improvement_rounds: int = 2
@@ -118,13 +111,6 @@ class AppConfig(BaseSettings):
     solver_enable_tools: bool = True
     sandbox_timeout: int = 10
     enable_numerical_verification: bool = True
-
-    # 进度守护
-    progress_log_interval: int = 15  # 守护进程日志间隔（秒）
-
-    # 日志
-    log_level: str = "INFO"
-    log_format: str = "console"  # console | json
 
     model_config = SettingsConfigDict(
         env_prefix="MATHFORGE_",

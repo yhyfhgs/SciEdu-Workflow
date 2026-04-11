@@ -1,24 +1,27 @@
 """VLM (Vision Language Model) 文档转 Markdown 转换器
 
 逐页渲染文档为图像，送入多模态 LLM 识别，输出高精度 Markdown+LaTeX。
-支持 PDF 和 DOCX（通过 LibreOffice 转 PDF），带 checkpoint/resume。
+支持 PDF 和 DOCX（通过 LibreOffice 转 PDF）。
 
-图片裁剪：VLM 标注插图百分比坐标 → 从 PDF 页面重新渲染裁剪区域 → 保存到 assets/。
-多页批量：可配置每次发送多页图片给 VLM，减少调用次数。
+核心接口: `recognize_in_batches` — 异步生成器，每 N 页为一个 batch yield
+`(page_start, page_end, md_text, md_path)` 给上游 Producer 使用。
+
+图片裁剪: VLM 按 `{{FIGURE:top,left,bottom,right}}` 的百分比坐标标注插图，
+本模块从原 PDF 页面用 fitz 重新渲染裁剪区域并保存到 assets/，最后把占位符
+替换成 `![alt](rel_path)` 的 Markdown 图片语法。
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import re
 import shutil
 import subprocess
 import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -43,7 +46,7 @@ _FIGURE_RE = re.compile(r"!\[([^\]]*)\]\(\{\{FIGURE:(\d+),(\d+),(\d+),(\d+)\}\}\
 
 
 class VlmConverter:
-    """多模态 LLM 文档转 Markdown 转换器"""
+    """多模态 LLM 文档转 Markdown 转换器（仅保留 recognize_in_batches 入口）"""
 
     def __init__(
         self,
@@ -61,269 +64,16 @@ class VlmConverter:
         self.max_concurrent = max_concurrent
         self.pages_per_batch = pages_per_batch
 
-    async def convert_file_async(self, file_path: Path) -> str:
-        """异步转换文件为 Markdown"""
-        file_hash = self._compute_file_hash(file_path)
-        vlm_dir = self._vlm_dir(file_hash)
-
-        # 检查已完成的缓存
-        merged_path = vlm_dir / "merged.md" if vlm_dir else None
-        if merged_path and merged_path.exists():
-            cached = merged_path.read_text(encoding="utf-8")
-            if cached.strip():
-                logger.info("vlm_cache_hit", file=file_path.name, hash=file_hash)
-                return cached
-
-        # 打开文档（PDF / DOCX→PDF）
-        doc, tmp_pdf = self._open_document(file_path)
-
-        try:
-            total_pages = doc.page_count
-            logger.info(
-                "vlm_convert_start",
-                file=file_path.name,
-                total_pages=total_pages,
-                dpi=self.dpi,
-                pages_per_batch=self.pages_per_batch,
-            )
-
-            assets_dir = self._assets_dir(file_path)
-            completed = self._load_completed_pages(vlm_dir) if vlm_dir else {}
-
-            sem = asyncio.Semaphore(self.max_concurrent)
-            page_results: dict[int, str] = dict(completed)
-            prev_context = ""
-
-            if completed:
-                max_done = max(completed.keys())
-                prev_context = self._tail_lines(completed[max_done])
-
-            # 按 batch 处理
-            batch_start = 0
-            # 跳过已完成的连续页
-            while batch_start < total_pages and batch_start in page_results:
-                prev_context = self._tail_lines(page_results[batch_start])
-                batch_start += 1
-
-            while batch_start < total_pages:
-                batch_end = min(batch_start + self.pages_per_batch, total_pages)
-
-                # 收集本批次需要处理的页
-                batch_page_nums: list[int] = []
-                batch_images: list[bytes] = []
-                for pn in range(batch_start, batch_end):
-                    if pn in page_results:
-                        prev_context = self._tail_lines(page_results[pn])
-                        continue
-                    batch_page_nums.append(pn)
-                    page = doc[pn]
-                    pix = page.get_pixmap(dpi=self.dpi)
-                    batch_images.append(pix.tobytes("png"))
-
-                if not batch_page_nums:
-                    batch_start = batch_end
-                    continue
-
-                async with sem:
-                    raw_md = await self._convert_batch(
-                        page_nums=batch_page_nums,
-                        images=batch_images,
-                        total_pages=total_pages,
-                        prev_context=prev_context,
-                    )
-
-                # 裁剪插图并替换占位符
-                md = self._crop_figures_from_md(
-                    raw_md, doc, batch_page_nums, file_path.stem, assets_dir
-                )
-
-                # 将整个 batch 结果存入每页（用于 checkpoint 和合并）
-                # 整个 batch 产出一个连贯的 md block
-                for pn in batch_page_nums:
-                    page_results[pn] = md if pn == batch_page_nums[0] else ""
-
-                prev_context = self._tail_lines(md)
-
-                # 保存 checkpoint
-                if vlm_dir:
-                    self._save_batch_checkpoint(vlm_dir, batch_page_nums, md, total_pages)
-
-                logger.debug(
-                    "vlm_batch_done",
-                    file=file_path.name,
-                    pages=f"{batch_page_nums[0] + 1}-{batch_page_nums[-1] + 1}",
-                    total=total_pages,
-                    md_length=len(md),
-                )
-
-                batch_start = batch_end
-
-        finally:
-            doc.close()
-            if tmp_pdf:
-                tmp_pdf.cleanup()
-
-        # 合并各页结果
-        merged = self._merge_results(page_results, total_pages)
-
-        if vlm_dir:
-            vlm_dir.mkdir(parents=True, exist_ok=True)
-            (vlm_dir / "merged.md").write_text(merged, encoding="utf-8")
-
-        logger.info(
-            "vlm_convert_done",
-            file=file_path.name,
-            total_pages=total_pages,
-            md_length=len(merged),
-        )
-        return merged
-
-    def convert_file(self, file_path: Path) -> str:
-        """同步入口"""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, self.convert_file_async(file_path)).result()
-        else:
-            return asyncio.run(self.convert_file_async(file_path))
-
-    async def convert_file_streaming(
-        self, file_path: Path
-    ) -> AsyncGenerator[str, None]:
-        """流式转换：每完成一个 batch 即 yield 对应 Markdown 文本。
-
-        与 convert_file_async 共享全部内部方法，但不等所有页面完成才返回。
-        用于 Task0[VlmStream] → StreamingLineBuffer → Task1[BlockSplitter] 管线。
-        """
-        file_hash = self._compute_file_hash(file_path)
-        vlm_dir = self._vlm_dir(file_hash)
-
-        # 检查已完成的缓存
-        merged_path = vlm_dir / "merged.md" if vlm_dir else None
-        if merged_path and merged_path.exists():
-            cached = merged_path.read_text(encoding="utf-8")
-            if cached.strip():
-                logger.info("vlm_cache_hit", file=file_path.name, hash=file_hash)
-                yield cached
-                return
-
-        doc, tmp_pdf = self._open_document(file_path)
-        prev_md_tail = ""
-        all_page_results: dict[int, str] = {}
-
-        try:
-            total_pages = doc.page_count
-            logger.info(
-                "vlm_stream_start",
-                file=file_path.name,
-                total_pages=total_pages,
-                pages_per_batch=self.pages_per_batch,
-            )
-
-            assets_dir = self._assets_dir(file_path)
-            completed = self._load_completed_pages(vlm_dir) if vlm_dir else {}
-            all_page_results.update(completed)
-
-            sem = asyncio.Semaphore(self.max_concurrent)
-
-            if completed:
-                max_done = max(completed.keys())
-                prev_md_tail = completed[max_done]
-
-            batch_start = 0
-            while batch_start < total_pages and batch_start in all_page_results:
-                # 已完成的 batch：yield 缓存内容
-                cached_md = all_page_results[batch_start]
-                if cached_md.strip():
-                    yield cached_md
-                    prev_md_tail = cached_md
-                batch_start += 1
-
-            while batch_start < total_pages:
-                batch_end = min(batch_start + self.pages_per_batch, total_pages)
-
-                batch_page_nums: list[int] = []
-                batch_images: list[bytes] = []
-                for pn in range(batch_start, batch_end):
-                    if pn in all_page_results:
-                        # 已有该页结果（checkpoint 恢复）
-                        cached_md = all_page_results[pn]
-                        if cached_md.strip():
-                            yield cached_md
-                            prev_md_tail = cached_md
-                        continue
-                    batch_page_nums.append(pn)
-                    page = doc[pn]
-                    pix = page.get_pixmap(dpi=self.dpi)
-                    batch_images.append(pix.tobytes("png"))
-
-                if not batch_page_nums:
-                    batch_start = batch_end
-                    continue
-
-                async with sem:
-                    raw_md = await self._convert_batch(
-                        page_nums=batch_page_nums,
-                        images=batch_images,
-                        total_pages=total_pages,
-                        prev_context=self._tail_lines(prev_md_tail),
-                    )
-
-                md = self._crop_figures_from_md(
-                    raw_md, doc, batch_page_nums, file_path.stem, assets_dir
-                )
-
-                # 去重边界
-                if prev_md_tail.strip():
-                    md = self._deduplicate_boundary(prev_md_tail, md)
-
-                for pn in batch_page_nums:
-                    all_page_results[pn] = md if pn == batch_page_nums[0] else ""
-
-                if vlm_dir:
-                    self._save_batch_checkpoint(vlm_dir, batch_page_nums, md, total_pages)
-
-                logger.debug(
-                    "vlm_stream_batch_done",
-                    file=file_path.name,
-                    pages=f"{batch_page_nums[0] + 1}-{batch_page_nums[-1] + 1}",
-                    total=total_pages,
-                    md_length=len(md),
-                )
-
-                prev_md_tail = md
-                yield md
-
-                batch_start = batch_end
-
-        finally:
-            _total = doc.page_count
-            doc.close()
-            if tmp_pdf:
-                tmp_pdf.cleanup()
-
-        # 写入 merged.md 缓存（流结束后）
-        if vlm_dir:
-            merged = self._merge_results(all_page_results, _total)
-            vlm_dir.mkdir(parents=True, exist_ok=True)
-            (vlm_dir / "merged.md").write_text(merged, encoding="utf-8")
-
-        logger.info(
-            "vlm_stream_done",
-            file=file_path.name,
-            total_pages=_total,
-        )
-
     # ── 文档打开 ──────────────────────────────────────────
 
-    def _open_document(self, file_path: Path):
-        """打开 PDF 或 DOCX（转为 PDF），返回 (fitz.Document, tmp_dir_or_None)"""
+    def _open_document(
+        self, file_path: Path
+    ) -> tuple[Any, tempfile.TemporaryDirectory[str] | None]:
+        """打开 PDF 或 DOCX（自动转为 PDF）
+
+        Returns:
+            (fitz.Document, tmp_dir_or_None) — tmp_dir 仅 DOCX 路径非空
+        """
         import fitz
 
         suffix = file_path.suffix.lower()
@@ -400,7 +150,6 @@ class VlmConverter:
                 max_tokens=16384,
             )
 
-        # 多图批量调用，通过 LLMClient 标准接口
         return await self.llm.generate_with_images(
             prompt=prompt,
             images=images,
@@ -421,12 +170,12 @@ class VlmConverter:
     def _crop_figures_from_md(
         self,
         md: str,
-        doc,
+        doc: Any,
         page_nums: list[int],
         file_stem: str,
         assets_dir: Path,
     ) -> str:
-        """解析 FIGURE 坐标，从 PDF page 重新渲染裁剪区域并替换路径。
+        """解析 FIGURE 坐标，从 PDF page 重新渲染裁剪区域并替换路径
 
         页面归属策略：按 FIGURE 在 md 文本中的位置比例，映射到 batch 内的
         对应页面。单页 batch 时所有 FIGURE 都属于该页。
@@ -440,8 +189,7 @@ class VlmConverter:
         md_len = len(md) or 1
         n_pages = len(page_nums)
 
-        # 正序处理，收集 (match, replacement) 对
-        replacements: list[tuple[re.Match, str]] = []  # type: ignore[type-arg]
+        replacements: list[tuple[re.Match[str], str]] = []
         fig_idx = 0
 
         for match in matches:
@@ -451,7 +199,6 @@ class VlmConverter:
             bottom_pct = max(0, min(100, int(match.group(4))))
             right_pct = max(0, min(100, int(match.group(5))))
 
-            # 坐标合理性校验
             if top_pct >= bottom_pct or left_pct >= right_pct:
                 replacements.append((match, f"[图：{alt}]"))
                 continue
@@ -515,142 +262,6 @@ class VlmConverter:
 
         return result
 
-    # ── 结果合并 ─────────────────────────────────────────
-
-    def _merge_results(self, page_results: dict[int, str], total_pages: int) -> str:
-        """合并各 batch 的 MD 结果"""
-        parts: list[str] = []
-
-        for i in range(total_pages):
-            md = page_results.get(i, "")
-            if not md.strip():
-                continue
-
-            if parts:
-                md = self._deduplicate_boundary(parts[-1], md)
-                parts.append(f"\n\n{md}")
-            else:
-                parts.append(md)
-
-        return "".join(parts).strip() + "\n"
-
-    @staticmethod
-    def _deduplicate_boundary(prev_md: str, curr_md: str, overlap_lines: int = 3) -> str:
-        prev_lines = prev_md.strip().splitlines()
-        curr_lines = curr_md.strip().splitlines()
-
-        if len(prev_lines) < overlap_lines or len(curr_lines) < overlap_lines:
-            return curr_md
-
-        prev_tail = [ln.strip() for ln in prev_lines[-overlap_lines:]]
-
-        best_skip = 0
-        for start in range(min(overlap_lines + 2, len(curr_lines))):
-            curr_head = [ln.strip() for ln in curr_lines[start : start + overlap_lines]]
-            if curr_head == prev_tail:
-                best_skip = start + overlap_lines
-                break
-
-        return "\n".join(curr_lines[best_skip:]) if best_skip > 0 else curr_md
-
-    # ── Checkpoint ────────────────────────────────────────
-
-    def _vlm_dir(self, file_hash: str) -> Path | None:
-        if not self.checkpoint_dir:
-            return None
-        return self.checkpoint_dir / file_hash / "vlm"
-
-    def _load_completed_pages(self, vlm_dir: Path | None) -> dict[int, str]:
-        if not vlm_dir or not vlm_dir.exists():
-            return {}
-
-        progress_file = vlm_dir / "progress.json"
-        if not progress_file.exists():
-            return {}
-
-        try:
-            progress = json.loads(progress_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-
-        completed_pages: list[int] = progress.get("completed_pages", [])
-        if not completed_pages:
-            return {}
-
-        # 按 batch 首页分组
-        batches: dict[int, list[int]] = {}
-        sorted_pages = sorted(completed_pages)
-        batch_first = sorted_pages[0]
-        batch_list = [batch_first]
-        for pn in sorted_pages[1:]:
-            if pn == batch_list[-1] + 1:
-                batch_list.append(pn)
-            else:
-                batches[batch_list[0]] = batch_list
-                batch_list = [pn]
-        batches[batch_list[0]] = batch_list
-
-        completed: dict[int, str] = {}
-        for first, pages in batches.items():
-            last = pages[-1]
-            # 新格式：page_000-004.md
-            batch_file = vlm_dir / f"page_{first:03d}-{last:03d}.md"
-            if batch_file.exists():
-                md = batch_file.read_text(encoding="utf-8")
-                completed[first] = md
-                for pn in pages[1:]:
-                    completed[pn] = ""
-                continue
-            # 兼容旧格式：page_000.md
-            old_file = vlm_dir / f"page_{first:03d}.md"
-            if old_file.exists():
-                completed[first] = old_file.read_text(encoding="utf-8")
-                for pn in pages[1:]:
-                    old_pn = vlm_dir / f"page_{pn:03d}.md"
-                    completed[pn] = old_pn.read_text(encoding="utf-8") if old_pn.exists() else ""
-
-        if completed:
-            logger.info(
-                "vlm_checkpoint_loaded",
-                completed_pages=len(completed),
-                total_pages=progress.get("total_pages", "?"),
-            )
-        return completed
-
-    def _save_batch_checkpoint(
-        self,
-        vlm_dir: Path,
-        page_nums: list[int],
-        md: str,
-        total_pages: int,
-    ) -> None:
-        """保存 batch 的 checkpoint
-
-        文件名格式：page_000-004.md（表示第 0-4 页的批次结果）
-        """
-        vlm_dir.mkdir(parents=True, exist_ok=True)
-
-        # 整个 batch 的 MD 存入一个以范围命名的文件
-        first = page_nums[0]
-        last = page_nums[-1]
-        (vlm_dir / f"page_{first:03d}-{last:03d}.md").write_text(md, encoding="utf-8")
-
-        progress_file = vlm_dir / "progress.json"
-        try:
-            progress = json.loads(progress_file.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            progress = {"total_pages": total_pages, "completed_pages": []}
-
-        for pn in page_nums:
-            if pn not in progress["completed_pages"]:
-                progress["completed_pages"].append(pn)
-        progress["completed_pages"].sort()
-        progress["total_pages"] = total_pages
-
-        progress_file.write_text(
-            json.dumps(progress, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
     # ── 工具 ─────────────────────────────────────────────
 
     @staticmethod
@@ -665,3 +276,136 @@ class VlmConverter:
     def _tail_lines(text: str, n: int = _CONTEXT_TAIL_LINES) -> str:
         lines = text.strip().splitlines()
         return "\n".join(lines[-n:]) if lines else ""
+
+    # ── 主入口: recognize_in_batches ─────────────────────
+
+    async def recognize_in_batches(
+        self,
+        file_path: Path,
+        *,
+        batch_pages: int,
+        output_dir: Path,
+        already_done: list[tuple[int, int]],
+        max_retries: int = 3,
+    ) -> AsyncGenerator[tuple[int, int, str, Path], None]:
+        """把文档按 batch_pages 一批识别为 markdown 并 yield
+
+        Args:
+            file_path: 源文件 (PDF / DOCX, DOCX 自动转 PDF)
+            batch_pages: 每批多少页 (默认 5)
+            output_dir: 该文件的 batch 落盘目录，文件名 page_NNN-NNN.md (1-based)
+            already_done: 已完成的 (page_start, page_end) 1-based 元组列表，跳过这些 batch
+            max_retries: 单 batch 调用 LLM 失败时的重试次数
+
+        Yields:
+            (page_start_1based, page_end_1based, md_text, md_path)
+        """
+        from mathforge.pipeline.retry import RetryExhausted, with_retry
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        done_set = {tuple(p) for p in already_done}
+
+        doc, tmp_pdf = self._open_document(file_path)
+        prev_md_tail = ""
+
+        try:
+            total_pages = doc.page_count
+            assets_dir = self._assets_dir(file_path)
+
+            logger.info(
+                "recognize_start",
+                file=file_path.name,
+                total_pages=total_pages,
+                batch_pages=batch_pages,
+            )
+
+            page_idx = 0
+            while page_idx < total_pages:
+                batch_end_excl = min(page_idx + batch_pages, total_pages)
+                page_start_1based = page_idx + 1
+                page_end_1based = batch_end_excl
+
+                # checkpoint 快速路径
+                cache_path = output_dir / f"page_{page_start_1based:03d}-{page_end_1based:03d}.md"
+                if (page_start_1based, page_end_1based) in done_set or cache_path.exists():
+                    md_text = cache_path.read_text(encoding="utf-8") if cache_path.exists() else ""
+                    if md_text.strip():
+                        logger.info(
+                            "recognize_cached",
+                            file=file_path.name,
+                            pages=f"{page_start_1based}-{page_end_1based}",
+                        )
+                        prev_md_tail = self._tail_lines(md_text)
+                        yield (page_start_1based, page_end_1based, md_text, cache_path)
+                    page_idx = batch_end_excl
+                    continue
+
+                # 收集本批次图像 — get_pixmap 放后台线程避免阻塞主协程
+                batch_page_nums_0based: list[int] = list(range(page_idx, batch_end_excl))
+                batch_images: list[bytes] = await asyncio.to_thread(
+                    self._render_batch_images, doc, batch_page_nums_0based
+                )
+
+                # 调用 VLM (含 retry)
+                async def _call() -> str:
+                    return await self._convert_batch(
+                        page_nums=batch_page_nums_0based,
+                        images=batch_images,
+                        total_pages=total_pages,
+                        prev_context=prev_md_tail,
+                    )
+
+                try:
+                    raw_md = await with_retry(
+                        _call,
+                        max_attempts=max_retries,
+                        base_delay=2.0,
+                        on_retry=lambda i, e: logger.warning(
+                            "vlm_batch_retry",
+                            file=file_path.name,
+                            pages=f"{page_start_1based}-{page_end_1based}",
+                            attempt=i,
+                            error=str(e)[:200],
+                        ),
+                    )
+                except RetryExhausted as exc:
+                    logger.error(
+                        "vlm_batch_failed",
+                        file=file_path.name,
+                        pages=f"{page_start_1based}-{page_end_1based}",
+                        attempts=exc.attempts,
+                    )
+                    page_idx = batch_end_excl
+                    continue
+
+                md_text = self._crop_figures_from_md(
+                    raw_md, doc, batch_page_nums_0based, file_path.stem, assets_dir
+                )
+
+                cache_path.write_text(md_text, encoding="utf-8")
+                prev_md_tail = self._tail_lines(md_text)
+
+                logger.info(
+                    "recognize_batch_done",
+                    file=file_path.name,
+                    pages=f"{page_start_1based}-{page_end_1based}",
+                    total=total_pages,
+                    md_length=len(md_text),
+                )
+
+                yield (page_start_1based, page_end_1based, md_text, cache_path)
+                page_idx = batch_end_excl
+
+        finally:
+            doc.close()
+            if tmp_pdf:
+                tmp_pdf.cleanup()
+
+    def _render_batch_images(self, doc: Any, page_nums_0based: list[int]) -> list[bytes]:
+        """把一批页面渲染为 PNG bytes，供 asyncio.to_thread 调用"""
+        images: list[bytes] = []
+        for pn in page_nums_0based:
+            page = doc[pn]
+            pix = page.get_pixmap(dpi=self.dpi)
+            images.append(pix.tobytes("png"))
+        return images

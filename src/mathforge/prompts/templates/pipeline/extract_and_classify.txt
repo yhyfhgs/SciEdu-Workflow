@@ -1,0 +1,215 @@
+你是数学文档结构化提取专家。给定带有**全局行号**的数学文档片段（每行格式 "全局行号 | 正文"），你需要在一次输出中完成：
+(1) 截断点判断
+(2) 提取正式数学条目（**定理+证明 / 题目+解答 作为单个条目**）
+(3) 校正 OCR 错字与 LaTeX 格式
+(4) 复用已有 tag 子树，按 english:中文 格式打层级标签
+(5) 评估难度、给出 quality 等级
+(6) 识别每个条目所在的章节结构
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 当前内容（每行格式 "全局行号 | 正文"）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{current_block}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 已有 tag 子树（必须优先复用，避免同义异名）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{tag_subtree}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 任务 1：截断点判断
+
+`truncation_line` 字段:
+- **整数 N**：1 ~ N 行（按全局行号）形成完整的语义单元，N+1 起仍未闭合，留给下一窗口
+- **null**：当前所有行都形成完整的语义单元
+- **"incomplete"**：当前内容不足以提取任何完整的条目（例如证明只展示了开头），请求扩展窗口；此时 `items` 必须为 `[]`
+
+## 任务 2：条目提取规则
+
+### 只提取有显式标记的正式条目
+
+类型 (`item_type`)：
+- `definition` — 定义
+- `theorem` — 定理（含 `proof` 字段）
+- `lemma` — 引理（含 `proof` 字段）
+- `corollary` — 推论（含 `proof` 字段）
+- `proposition` — 命题（含 `proof` 字段）
+- `property` — 性质
+- `formula` — 公式
+- `example` — 例题（含 `solution` 字段）
+- `exercise` — 练习/习题（含 `solution` 字段）
+- `problem` — 题目（含 `solution` 字段）
+
+### proof / solution 嵌入父条目
+
+- 定理后紧跟的"证明"段落 → 写入该定理的 `corrected_proof` 字段
+- 例题后紧跟的"解答"段落 → 写入该例题的 `corrected_solution` 字段
+- **不要把 proof / solution 拆为独立 item**
+
+### 类别 (`category`)
+
+- `knowledge` — definition / theorem / lemma / corollary / proposition / property / formula
+- `question` — example / exercise / problem
+
+### 题目类型精确判断（仅当 category=question 时填 question_type）
+
+- `proof` — "证明..."、"试证..."
+- `calculation` — "计算..."、"求..."、"求值..."
+- `fill_blank` — 含 `\underline`、空格待填
+- `choice` — 有 A/B/C/D 选项
+- `true_false` — "判断正误"、"是否成立"
+- `construction` — "构造..."、"给出一个..."
+
+### 不要提取
+
+- 叙述性段落、过渡语、注记
+- 章节标题、目录、页眉页脚
+- 参考文献、习题答案速查表
+
+### 行号
+
+每个 item 输出 `start_line` 和 `end_line`，**直接使用输入中显示的全局行号**（不要做任何换算）。如果一个条目中间被一段叙述打断，可只保留主体部分的行号范围。
+
+## 任务 3：内容校正
+
+对每个 item 的 `corrected_content` / `corrected_proof` / `corrected_solution`：
+1. 修正 OCR 常见错字（盐德金 → 戴德金、特征植 → 特征值）
+2. 修正未闭合的 LaTeX（`$...$` 配对、`\begin/\end` 配对）
+3. 修正错误符号（`\ln` vs `\in`）
+4. 保持原文的数学陈述不变，**不要补充或删减实质内容**
+
+## 任务 4：分级标签 (tags)
+
+每个 item 输出 `tags` 字段：**一条有序的段列表**，从领域到关键词。
+
+格式约束:
+- 每段独立 `english:中文` 格式
+- english 部分：小写英文标识符 `[a-z][a-z0-9_]*`
+- 中文部分：非空，不含空白/冒号/斜杠
+- 段长度建议 3-5 段（领域→大类→主题→子主题→关键词）
+- 例如:
+  ```
+  ["math:数学", "algebra:代数", "group_theory:群论", "normal_subgroup:正规子群"]
+  ```
+
+**必须优先复用上方已有 tag 子树中的段**：如果子树里已有 `math:数学 → algebra:代数`，新条目就用相同的开头段，不要写 `mathematics:数学` 或 `algebra:代数学`。只有遇到全新概念才创建新叶子段。
+
+不要把段拼成字符串（不要 `"math:数学/algebra:代数"`），保持有序列表形式。
+
+## 任务 5：方法标签 (methods)
+
+可选字段，格式同 tags 但通常 1-2 个段，描述使用的核心方法：
+- `["epsilon_delta:ε-δ语言"]`
+- `["lagrange:拉格朗日定理", "first_isomorphism:第一同构定理"]`
+
+## 任务 6：学科与 taxonomy_path
+
+- `subject`: `english:中文` 单段格式，如 `"abstract_algebra:抽象代数"`、`"real_analysis:实分析"`
+- `taxonomy_path`: dot 分隔英文路径，如 `"math.algebra.group_theory"`、`"math.analysis.continuity"`
+
+## 任务 7：难度评估 (1-10)
+
+综合考量：概念深度、推理步骤数、抽象程度、所需前置知识。
+- 1-3: 基础概念回忆 / 直接套用
+- 4-6: 多步推理 / 中等综合
+- 7-9: 复杂综合 / 跨章节联系
+- 10: 极难 / 竞赛级
+
+## 任务 8：质量评级 (overall_quality)
+
+- `A` — 完美，无需修改
+- `B` — 小瑕疵已修正
+- `C` — 有实质问题但已尽力修复
+- `D` — 严重问题，勉强可用
+- `F` — 无效内容（标题/目录/页码/被严重截断），应丢弃，不入库
+
+## 任务 9：章节结构
+
+每个 item 在 `structural_context` 字段中标注其所属章节（从当前内容推断**最近**的章节信息）：
+- `chapter_title` / `chapter_number`
+- `section_title` / `section_number`
+- `subsection_title` / `subsection_number`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 输出 JSON（不要 markdown 代码块，不要任何解释文字）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{
+  "truncation_line": null,
+  "items": [
+    {{
+      "category": "knowledge",
+      "item_type": "theorem",
+      "question_type": null,
+      "number": "3.1",
+      "structural_context": {{
+        "chapter_title": "连续函数",
+        "chapter_number": "3",
+        "section_title": "一致连续",
+        "section_number": "3.2",
+        "subsection_title": "",
+        "subsection_number": ""
+      }},
+      "corrected_content": "设 $f$ 在 $[a,b]$ 上连续，则 $f$ 在 $[a,b]$ 上一致连续。",
+      "corrected_proof": "由 Borel 有限覆盖定理 ... 故 $f$ 一致连续。",
+      "corrected_solution": null,
+      "subject": "real_analysis:实分析",
+      "taxonomy_path": "math.analysis.continuity",
+      "difficulty": 6,
+      "tags": [
+        "math:数学",
+        "analysis:数学分析",
+        "continuity:连续性",
+        "uniform_continuity:一致连续"
+      ],
+      "methods": ["borel_covering:Borel覆盖"],
+      "overall_quality": "A",
+      "start_line": 12,
+      "end_line": 28
+    }},
+    {{
+      "category": "question",
+      "item_type": "example",
+      "question_type": "calculation",
+      "number": "2.5",
+      "structural_context": {{
+        "chapter_title": "定积分",
+        "chapter_number": "2",
+        "section_title": "基本积分",
+        "section_number": "2.3",
+        "subsection_title": "",
+        "subsection_number": ""
+      }},
+      "corrected_content": "计算 $\\int_0^1 x^2 dx$。",
+      "corrected_proof": null,
+      "corrected_solution": "由幂函数积分公式 $\\int_0^1 x^2 dx = \\frac{{1}}{{3}}$。",
+      "subject": "calculus:微积分",
+      "taxonomy_path": "math.calculus.definite_integral",
+      "difficulty": 2,
+      "tags": [
+        "math:数学",
+        "calculus:微积分",
+        "integration:积分",
+        "power_function:幂函数"
+      ],
+      "methods": ["antiderivative:原函数法"],
+      "overall_quality": "A",
+      "start_line": 30,
+      "end_line": 35
+    }}
+  ]
+}}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+注意:
+- `truncation_line` / `start_line` / `end_line` 都使用输入中显示的**全局行号**
+- 如果 `truncation_line == "incomplete"` 则 `items` 必须为 `[]`
+- 完全没有正式条目时 `items` 为 `[]`
+- `corrected_proof` / `corrected_solution` 无配套时为 `null`
+- `question_type` 仅 question 类条目需要，knowledge 为 `null`
+- 每个 tag 段必须 `english:中文` 格式
+- 优先复用已有 tag 子树中的段
