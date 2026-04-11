@@ -1,16 +1,38 @@
 # SciForge
 
-AI 驱动的大学数学智能教育平台。从教材、讲义、试卷中自动提取结构化知识，并为后续题目生成与个性化推荐打基础。
+AI 驱动的**理工科知识处理与生成平台**。从教材、讲义、试卷中自动提取结构化知识，构建可查询的跨学科知识库，并通过多 Agent 协作引擎生成新题目、详细解答和教学讲义。
+
+**支持学科**：数学、物理（MVP）；化学、生物等其他理工科通过 `DisciplineRegistry` 按配置接入（见 [`Docs/15_学科扩展指南.md`](Docs/15_学科扩展指南.md)）。
 
 ## 核心能力
 
-- **数据处理 Pipeline** — Producer-Consumer 单管道，支持 PDF / DOCX / MD / TeX 等格式：
-  - **Phase A**: 多模态视觉识别（VLM）每 5 页一批转 markdown
-  - **Phase B**: 200 行滑动窗口提取，单次 LLM 调用完成"提取 + 校正 + 分类 + 打标签 + 难度评估"
-  - 行级断点恢复，跨调用 tag 树注入避免同义异名
-  - 异常隔离 + 自动重试，单 batch / 单窗口失败不阻断整体
-- **SQLite 存储** — FTS5 全文检索 + 内容哈希去重，每个条目带 `order_index` 用于后续构建知识图谱
-- **CLI 接口** — 单一入口 `sciforge parse run`，Rich 终端表格
+### 1. 数据处理 Pipeline
+
+Producer-Consumer 单管道，支持 PDF / DOCX / MD / TeX 等格式，按学科参数化：
+
+- **Phase A**: 多模态视觉识别（VLM）每 5 页一批转 markdown，system prompt 按学科注入
+- **Phase B**: 200 行滑动窗口提取，单次 LLM 调用完成"提取 + 校正 + 分类 + 打标签 + 难度评估"；允许的 `kp_type` / `question_type` 由当前学科 spec 约束
+- **直通缓存重放**: Task0 已完成时直接从 `recognize/file_*/` 读取，跳过原始文件
+- **动态窗口扩展**: LLM 返回 incomplete 时窗口从 200 行逐步扩展到 `extract_max_window_lines` (默认 1000)
+- 行级断点恢复，跨调用 tag 树注入避免同义异名
+- 异常隔离 + 自动重试，单 batch / 单窗口失败不阻断整体
+
+### 2. 多 Agent 生成引擎
+
+基于 `BaseAgent` + 极简 `StateGraph` 构建的多 Agent 协作系统（不依赖 LangGraph）：
+
+- **QGenAgent** — 5 阶段闭环（检索 → 生成 → 求解 → 验证 → 难度标注）
+- **SolveAgent** — 对已有题目独立生成详细解答
+- **TagAgent** — 10 维难度评分
+- **DocAssemblyAgent (lite)** — 按 tag 组装 markdown 讲义
+- 6 个骨架 Agent (KB / Recommend / FormatAnalyzer / ContentExtractor / OcrCorrector / ContentTagger) 预留扩展
+
+Agent 全部按 `Discipline` 参数化，可单独运行也可通过 StateGraph 编排。详见 [`Docs/16_Agent系统MVP.md`](Docs/16_Agent系统MVP.md)。
+
+### 3. 存储与 CLI
+
+- **SQLite 存储** — FTS5 全文检索 + 内容哈希去重 + `discipline` 列按学科过滤；每个条目带 `order_index` 用于后续知识图谱构建
+- **CLI 接口** — 统一入口 `sciforge`（含 `sf` 短别名），Typer + Rich，支持 `parse run / run-book / audit / migrate-legacy / db-stats` 和 `generate free / solve / batch / lecture`
 
 ## 快速开始
 
@@ -38,48 +60,82 @@ cp .env.example .env
 
 ### 使用
 
+#### 数据处理
+
 ```bash
-# 解析单个 PDF（默认 VLM 后端 + 5 页/批 + 200 行/窗口）
+# 解析数学材料（默认学科 math）
 uv run sciforge parse run path/to/textbook.pdf --db data/sciforge.db
 
-# 解析整个目录（4 个 logical_document 并发）
-uv run sciforge parse run "Raw Data/" -j 4
+# 解析物理材料
+uv run sciforge parse run physics.pdf --db data/sciforge.db -D physics
 
-# 切换为纯文本 pymupdf 后端（不调用 LLM 识别）
-uv run sciforge parse run book.pdf -b pymupdf
+# 多章节作为一本书处理（共享 order_index 和 tag_tree）
+uv run sciforge parse run-book chap1.md chap2.md chap3.md --db data/sciforge.db
 
-# 调整 Phase A / Task1 参数
-uv run sciforge parse run book.pdf --pages-per-batch 10 --extract-window-lines 300
+# 或用 manifest 指定章节顺序
+uv run sciforge parse run-book --manifest book.yaml --db data/sciforge.db
 
-# 仅识别不入库（用于离线检查 page_NNN-NNN.md）
-uv run sciforge parse run book.pdf --skip-llm
+# 解析整个目录（并发）
+uv run sciforge parse run "Raw Data/" -j 4 -D math
 
-# 忽略 checkpoint 重新开始
-uv run sciforge parse run book.pdf --restart
+# 盘点 Raw Data 下所有 logical_document 的处理进度
+uv run sciforge parse audit "Raw Data" --db data/sciforge.db -o data/report.md
 
 # 数据库统计
 uv run sciforge parse db-stats data/sciforge.db
+```
 
-# 完整帮助
-uv run sciforge parse run --help
+#### 内容生成
+
+```bash
+# 生成新数学题（QGenAgent 5 阶段闭环）
+uv run sciforge generate free \
+  -D math -s "real_analysis:实分析" \
+  -t "math:数学,analysis:数学分析" \
+  -d 6 --type proof -n 1 \
+  --db data/sciforge.db
+
+# 生成新物理题
+uv run sciforge generate free \
+  -D physics -s "classical_mechanics:经典力学" \
+  -t "physics:物理,mechanics:力学" \
+  -d 5 --type calculation
+
+# 对已有题目生成详细解答
+uv run sciforge generate solve <question_id> --db data/sciforge.db
+
+# 生成 markdown 讲义（按 tag 聚合知识点+例题+练习）
+uv run sciforge generate lecture \
+  -D math \
+  -t "math:数学,analysis:数学分析" \
+  --title "连续函数专题" \
+  -o data/lectures/
 ```
 
 ## 项目结构
 
 ```
 src/sciforge/
-├── core/        # 核心 Pydantic 模型 (models.py) + 异常 (exceptions.py)
+├── core/        # 核心 Pydantic 模型 (models.py 含 Discipline/Lecture) + 异常
 ├── llm/         # LLM 客户端层（Anthropic / OpenAI / Gemini / OpenAI 兼容）
+├── disciplines/ # 学科库：DisciplineSpec + DisciplineRegistry + specs/{math,physics}
 ├── pipeline/    # Producer-Consumer 两阶段数据流水线
-│                #   orchestrator / recognizers / vlm_converter
-│                #   task1_extractor / tag_tree / resume_state / retry
-├── prompts/     # 提示词模板（必须为 .txt 文件）
-├── storage/     # SQLite + FTS5 + 内容去重（批量 executemany + per-task connection）
-├── cli/         # Typer CLI（parse run / parse db-stats；generate 子命令占位待重建）
+│                #   orchestrator（含缓存直通重放）/ recognizers / vlm_converter
+│                #   task1_extractor（含动态扩窗）/ tag_tree / resume_state / retry
+│                #   audit（进度盘点）/ migrate（legacy 迁移）
+├── agents/      # 多 Agent 系统
+│                #   base/state/graph: BaseAgent + AgentState + StateGraph
+│                #   qgen/: 5 阶段闭环（retriever/generator/solver/verifier/annotator）
+│                #   solve_agent / tag_agent / doc_agent: 独立 Agent
+│                #   stub_agents: 6 个 Post-MVP 骨架
+├── prompts/     # 提示词模板（必须为 .txt 文件），两阶段学科参数化注入
+├── storage/     # SQLite + FTS5 + 内容去重 + discipline 列索引
+├── cli/         # Typer CLI（parse run/run-book/audit/migrate-legacy/db-stats +
+│                #   generate free/solve/batch/lecture/variant/evolve/solve-deep）
 └── config/      # AppConfig + structlog
 ```
 
-详细架构见 [`Docs/01_数据处理Pipeline.md`](Docs/01_数据处理Pipeline.md) 与 [`CLAUDE.md`](CLAUDE.md)。
+详细架构见 [`Docs/01_数据处理Pipeline.md`](Docs/01_数据处理Pipeline.md)、[`Docs/15_学科扩展指南.md`](Docs/15_学科扩展指南.md)、[`Docs/16_Agent系统MVP.md`](Docs/16_Agent系统MVP.md) 与 [`CLAUDE.md`](CLAUDE.md)。
 
 ## 技术栈
 

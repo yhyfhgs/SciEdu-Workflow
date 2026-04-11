@@ -4,7 +4,11 @@
 
 ## 项目概述
 
-SciForge 是 AI 驱动的大学数学教育平台，当前阶段为 CLI MVP。核心功能：数据处理 Pipeline + 题目生成引擎。
+SciForge 是 AI 驱动的**理工科知识处理与生成平台**，当前阶段为 CLI MVP。核心功能：
+
+1. **数据处理 Pipeline** — 通用格式（PDF/DOCX/MD/TeX）→ 结构化知识点和题目 → SQLite + FTS5 知识库，按学科参数化
+2. **多 Agent 生成引擎** — QGen / Solve / Tag / DocAssembly-lite 四个完整 Agent + 6 个 Post-MVP 骨架，基于 BaseAgent + 极简 StateGraph（不依赖 LangGraph）
+3. **学科参数化** — 顶层 `Discipline` 枚举（math/physics/chemistry/biology/other）+ `DisciplineSpec` 配置每个学科的允许类型、tag 根、prompt 变量。MVP 阶段完整支持数学和物理
 
 ## 技术栈
 
@@ -36,22 +40,36 @@ uv run ruff format src/ tests/
 uv run mypy
 
 # 运行 CLI
-uv run sciforge --help
+uv run sciforge --help   # 或 `uv run sf --help`
 
-# Pipeline（默认 VLM 后端 + 5 页/批 + 200 行/窗口）
+# Pipeline（默认 VLM 后端 + 5 页/批 + 200 行/窗口，学科默认 math）
 uv run sciforge parse run path/to/file --db data/sciforge.db
 
-# Pipeline（pymupdf 纯文本后端）
-uv run sciforge parse run path/to/file -b pymupdf
+# 处理物理材料
+uv run sciforge parse run physics.pdf --db data/sciforge.db -D physics
 
-# 调整 Phase A / Task1 参数
-uv run sciforge parse run path/to/file --pages-per-batch 5 --extract-window-lines 200
+# 多章节作为一本书（共享 order_index 和 tag_tree）
+uv run sciforge parse run-book chap1.md chap2.md --db data/sciforge.db
 
-# 忽略 checkpoint 重新开始
-uv run sciforge parse run path/to/file --restart
+# 进度盘点
+uv run sciforge parse audit "Raw Data" --db data/sciforge.db
 
 # 数据库统计
 uv run sciforge parse db-stats data/sciforge.db
+
+# 生成新题目（QGenAgent 5 阶段闭环）
+uv run sciforge generate free -D math \
+  -s "real_analysis:实分析" \
+  -t "math:数学,analysis:数学分析" \
+  -d 6 --type proof --db data/sciforge.db
+
+# 对已有题目生成详细解答
+uv run sciforge generate solve <question_id> --db data/sciforge.db
+
+# 生成 markdown 讲义
+uv run sciforge generate lecture -D math \
+  -t "math:数学,analysis:数学分析" \
+  --title "连续函数专题" -o data/lectures/
 ```
 
 ## 项目结构
@@ -59,23 +77,30 @@ uv run sciforge parse db-stats data/sciforge.db
 ```
 src/sciforge/
 ├── core/        # 核心领域模型与异常定义
-│                #   models.py (KnowledgePoint/Question/MdBlockSource/FileExtractionState/...)
-│                #   exceptions.py (VlmConversionError / LLMError / ... 全仓库共用)
+│                #   models.py (Discipline/KnowledgePoint/Question/Lecture/
+│                #     FileExtractionState/...), exceptions.py (SciForgeError ...)
+├── disciplines/ # 学科库
+│                #   registry.py: DisciplineSpec + DisciplineRegistry 单例
+│                #   specs/math.py + specs/physics.py
 ├── llm/         # LLM 统一客户端：client.py, config.py, parser.py, backends/
 ├── pipeline/    # 数据处理流水线 (Producer-Consumer 两阶段)
-│                #   orchestrator(2 Task + 单 queue + per-logical_document DB 实例),
-│                #   recognizers(VlmRecognizer / PyMuPdfRecognizer / MarkdownRecognizer),
-│                #   vlm_converter(VLM 多模态识别, recognize_in_batches 入口),
-│                #   task1_extractor(Consumer: 行号累加滑动窗口 + 单次 LLM 提取入库),
-│                #   tag_tree(英中段层级 tag 树, prompt 注入用),
-│                #   resume_state(checkpoint 加载/保存, asyncio lock + 节流刷盘),
-│                #   retry(异步重试 + LLM JSON 重试)
-├── prompts/     # 提示词模板：templates.py + templates/pipeline/ 下的 .txt 文件
-├── storage/     # 存储：protocol.py(StorageBackend 协议),
-│                #   sqlite_backend.py(SQLite+FTS5, executemany 批量写入),
-│                #   schema.sql
-├── cli/         # CLI 命令：main.py, parse.py, generate.py (占位待重建), display.py
-└── config/      # 配置：settings.py(pydantic-settings), logging.py(structlog)
+│                #   orchestrator(2 Task + 单 queue + 缓存直通重放 + drain consumer),
+│                #   recognizers / vlm_converter（system+user prompt 双路径学科化）,
+│                #   task1_extractor(动态窗口扩展 + DisciplineSpec 类型校验),
+│                #   tag_tree / resume_state / retry / audit / migrate
+├── agents/      # 多 Agent 协作系统
+│                #   base.py + state.py + graph.py (BaseAgent + 极简 StateGraph)
+│                #   qgen/: 5 阶段闭环 agent + retriever/generator/solver/verifier/annotator
+│                #   solve_agent / tag_agent / doc_agent: 独立 Agent 封装
+│                #   stub_agents: 6 个 Post-MVP 骨架 (KB/Recommend/...)
+├── prompts/     # 提示词模板：templates.py 做两阶段学科注入 +
+│                #   templates/pipeline|generation|solving|verification/*.txt
+├── storage/     # 存储：protocol.py(StorageBackend),
+│                #   sqlite_backend.py(含 discipline 列 + filter),
+│                #   schema.sql (v4)
+├── cli/         # CLI: main.py + parse.py (run/run-book/audit/migrate-legacy/db-stats)
+│                #   + generate.py (free/solve/batch/lecture + variant/evolve/solve-deep 占位)
+└── config/      # 配置：settings.py (env_prefix=SCIFORGE_), logging.py
 ```
 
 ## Pipeline 架构（Producer-Consumer 单管道）
@@ -109,10 +134,29 @@ logical_document  (单文件 or 多个分卷)
 - 多文件分卷：`*_part_N_M.ext` 自动按页码分组，作为单个 logical_document 顺序识别
 - 目录并发：`process_directory` 为每个 logical_document 构造独立 `SQLiteStorageBackend` 实例（WAL + busy_timeout），避免共享 connection 的线程风险
 
-**生成引擎（暂未对接）**: `cli/generate.py` 的所有子命令当前为 NotImplementedError
-占位。破损的 `core/engine.py / generator.py / retriever.py / solver.py / verifier.py /
-evolution_engine.py / pipeline_orchestrator.py / sandbox.py` 已在 2026-04 清理周期
-中移除，等 parse 主线稳定后按新 models + SQLiteStorageBackend 重建。
+**生成引擎（Agent 系统）**: `cli/generate.py` 的 `free/solve/batch/lecture` 子命令
+已接入多 Agent 系统：
+- `generate free` → QGenAgent 5 阶段闭环（retriever → generator → solver → verifier → annotator）
+- `generate solve` → SolveAgent（内部复用 qgen/solver.py）
+- `generate batch` → 批量循环 QGenAgent.run
+- `generate lecture` → DocAssemblyAgent lite（按 tag 组装 markdown 讲义）
+
+`generate variant/evolve/solve-deep` 保留为 Post-MVP 占位。架构见 `src/sciforge/agents/`
+和 [`Docs/16_Agent系统MVP.md`](Docs/16_Agent系统MVP.md)。
+
+## 学科参数化（Discipline）
+
+- **顶层枚举**：`Discipline` (math/physics/chemistry/biology/other)，定义在 `core/models.py`
+- **学科 spec**：`DisciplineSpec` 配置 `allowed_kp_types` / `allowed_question_types` /
+  `tag_root` / `prompt_vars`，集中在 `src/sciforge/disciplines/specs/`
+- **Pipeline 贯通**：`PipelineOrchestrator(discipline=...)` → `Task1Extractor(discipline=...)`
+  → `VlmConverter(discipline=...)`；所有 prompt 通过 `get_extract_prompt_template(discipline)` /
+  `get_vlm_prompt_template(discipline)` / `get_generation_prompt_template(path, discipline)`
+  按学科参数化
+- **两阶段注入**：第一阶段 `str.replace` 注入 `discipline_*` 变量（不触发 `.format()`，
+  保留 JSON 示例 `{{}}` 转义），第二阶段调用方 `.format()` 注入 runtime 占位符
+- **CLI 参数**：`parse run` / `parse run-book` / `generate *` 全部支持 `--discipline / -D`
+- **新增学科**：见 [`Docs/15_学科扩展指南.md`](Docs/15_学科扩展指南.md)
 
 ## 代码规范
 

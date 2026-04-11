@@ -56,25 +56,51 @@
 - 一个条目的 `tags` 是有序段列表（`["math:数学","algebra:代数",...]`），不要拼成 `/` 字符串
 - prompt **必须**存为 `.txt` 文件
 
-### 3. Generation Agent (生成引擎)
+### 3. Generation Agents (多 Agent 生成系统)
 
-**职责**: 题目生成的 5 阶段闭环（暂不在 MVP 主线，整体未对接）
+**架构**: `BaseAgent[TIn, TOut]` 抽象基类 + 极简 `StateGraph`（不依赖 LangGraph）
+构成的多 Agent 协作系统。所有 Agent 按 `Discipline` 参数化，可单独运行也可通过
+状态图编排。详见 [`Docs/16_Agent系统MVP.md`](Docs/16_Agent系统MVP.md)。
 
-**阶段设计**（未来重建目标）:
-1. ContextRetriever — 从知识库检索相关上下文
-2. QuestionGenerator — 基于上下文和策略生成题目
-3. SolveEngine — 为生成的题目求解
-4. VerificationPipeline — 验证题目和解答的正确性
-5. DifficultyAnnotator — 标注难度等级
+**十大 Agent 实现状态**:
 
-**当前状态**: 由于 commit 7f2abb9 重构了 `KnowledgePoint` / `Question` 字段
-（移除 `content_latex`/`difficulty_ai`/`title` 等），加上 `FileStorageBackend` /
-`EnhancedIndexManager` 被 SQLite 替代，整个生成路径的代码在 2026-04 清理周期
-中已被删除：`core/engine.py / generator.py / retriever.py / solver.py /
-verifier.py / evolution_engine.py / pipeline_orchestrator.py / sandbox.py`。
-`cli/generate.py` 的所有子命令保留了 Typer 签名但函数体统一为
-`raise NotImplementedError`，等 parse 主线稳定后按新 models + `SQLiteStorageBackend`
-重建。所需的 .txt prompt 模板仍保留在 `src/sciforge/prompts/templates/` 下。
+| # | Agent | 状态 | 文件 |
+|---|---|---|---|
+| 1 | KB Agent | 🔶 骨架 | `agents/stub_agents.py::KBAgent` |
+| 2 | **QGen Agent** | ✅ 完整 | `agents/qgen/agent.py` + 5 子组件 |
+| 3 | **Solve Agent** | ✅ 完整 | `agents/solve_agent.py` (复用 qgen/solver.py) |
+| 4 | **Tag Agent** | ✅ 完整 | `agents/tag_agent.py` (复用 qgen/annotator.py) |
+| 5 | **DocAssembly Agent** | ✅ Lite | `agents/doc_agent.py` (markdown 输出) |
+| 6 | Recommend Agent | 🔶 骨架 | `agents/stub_agents.py::RecommendAgent` |
+| 7 | FormatAnalyzer Agent | 🔶 骨架 | `agents/stub_agents.py::FormatAnalyzerAgent` |
+| 8 | ContentExtractor Agent | 🔶 骨架 | `agents/stub_agents.py::ContentExtractorAgent` |
+| 9 | OcrCorrector Agent | 🔶 骨架 | `agents/stub_agents.py::OcrCorrectorAgent` |
+| 10 | ContentTagger Agent | 🔶 骨架 | `agents/stub_agents.py::ContentTaggerAgent` |
+
+**QGen Agent 5 阶段闭环** (`src/sciforge/agents/qgen/`):
+1. **ContextRetriever** (`retriever.py`) — 从 `SQLiteStorageBackend` 按 discipline +
+   subject + difficulty_range 检索知识点和参考题，含难度锚点 + 变式负样本
+2. **QuestionGenerator** (`generator.py`) — 加载按学科参数化的 prompt
+   (`generation/free_generation.txt` 或 `variant_generation.txt`)，温度递增调 LLM 生成 N 个候选
+3. **SolveEngine** (`solver.py`) — 对候选独立求解，带 confidence 标注
+4. **VerificationPipeline** (`verifier.py`) — 独立 review LLM 避免确认偏差，3 个检查
+   (solve_confidence / review_passed / non_trivial)；失败时把建议写回 context 用于下一轮
+5. **DifficultyAnnotator** (`annotator.py`) — 10 维评分 + 加权聚合
+
+**CLI 入口**:
+- `sciforge generate free` — QGenAgent 完整 5 阶段闭环
+- `sciforge generate solve <question_id>` — SolveAgent
+- `sciforge generate batch` — 批量循环 QGenAgent
+- `sciforge generate lecture` — DocAssemblyAgent lite（生成 markdown 讲义）
+- `sciforge generate variant/evolve/solve-deep` — Post-MVP 占位
+
+**关键 prompt** (按学科参数化):
+- `prompts/templates/generation/free_generation.txt` / `variant_generation.txt`
+- `prompts/templates/solving/solve.txt` / `solve_deep_*.txt`
+- `prompts/templates/verification/review.txt` / `difficulty_scoring.txt`
+
+参数化由 `prompts/templates.py` 的 `get_generation_prompt_template(path, discipline)`
+完成，使用 `_GENERATION_PROMPT_SUBSTITUTIONS` 词语替换表按学科做 str.replace。
 
 ## Agent 间通信
 
@@ -85,10 +111,14 @@ verifier.py / evolution_engine.py / pipeline_orchestrator.py / sandbox.py`。
 
 ## 新增 Agent 检查清单
 
-1. 在 `core/models.py` 定义输入/输出 Pydantic 模型
-2. 在 `prompts/templates/<group>/` 下创建对应的 `.txt` 提示词模板
-3. 在 `prompts/templates.py` 注册加载点
-4. 实现 Agent 逻辑，通过 `LLMClient` 调用 LLM，并用 `call_llm_json_with_retry` 包装
-5. 在 `core/exceptions.py` 添加特定异常类型（如需）
-6. 编写单元测试（mock LLM 响应）
-7. 更新本文件 + `CLAUDE.md` + `Docs/01_数据处理Pipeline.md` 的相关说明
+1. 在 Agent 文件顶部定义 Input/Output Pydantic 模型（不必进 `core/models.py`）
+2. 继承 `BaseAgent[TIn, TOut]`，设置类属性 `name`（必填）和 `prompt_file`（可选）
+3. 在 `prompts/templates/<group>/` 下创建对应的 `.txt` 提示词模板
+4. 实现 `async def run(self, input: TIn) -> TOut`，使用 `self._call_llm_json()` 带重试调用 LLM
+5. 在 `src/sciforge/agents/__init__.py` 导出新 Agent + 其 Input/Output
+6. 若需新异常：在 `core/exceptions.py` 继承 `SciForgeError`
+7. 编写单元测试（mock LLM 响应），参考 `tests/test_agents/test_qgen_agent.py`
+8. 更新本文件 + `CLAUDE.md` + `Docs/16_Agent系统MVP.md` 的 Agent 状态表
+
+参考示例：`src/sciforge/agents/solve_agent.py` (最简单的完整 Agent)
+和 `src/sciforge/agents/doc_agent.py` (含存储访问的 Agent)。
