@@ -113,7 +113,7 @@ class LLMConfig(BaseModel):
         """
         preset = cls.PRESETS.get(task, cls.PRESETS["generate"])
 
-        # 获取 per-task 覆写（来自 TOML 文件或 MATHFORGE_TASK_* 环境变量）
+        # 获取 per-task 覆写（来自 TOML 文件或 SCIFORGE_TASK_* 环境变量）
         task_ovr = app.task_llm.get(task)
 
         # 解析 provider（优先级：CLI > task_override > global）

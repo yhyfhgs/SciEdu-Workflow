@@ -143,11 +143,11 @@ analysis = await llm.generate_structured(
 | `ANTHROPIC_API_KEY` | Anthropic API Key | - |
 | `OPENAI_API_KEY` | OpenAI API Key | - |
 | `GOOGLE_API_KEY` | Google API Key | - |
-| `MATHFORGE_LLM_PROVIDER` | 默认提供者 | anthropic |
-| `MATHFORGE_LLM_MODEL` | 默认模型 | claude-sonnet-4-20250514 |
-| `MATHFORGE_LLM_BASE_URL` | 自定义 API URL | - |
-| `MATHFORGE_LLM_TEMPERATURE` | 默认温度 | 0.7 |
-| `MATHFORGE_LLM_MAX_TOKENS` | 默认 max_tokens | 4096 |
+| `SCIFORGE_LLM_PROVIDER` | 默认提供者 | anthropic |
+| `SCIFORGE_LLM_MODEL` | 默认模型 | claude-sonnet-4-20250514 |
+| `SCIFORGE_LLM_BASE_URL` | 自定义 API URL | - |
+| `SCIFORGE_LLM_TEMPERATURE` | 默认温度 | 0.7 |
+| `SCIFORGE_LLM_MAX_TOKENS` | 默认 max_tokens | 4096 |
 
 ### 5.2 YAML 配置文件
 
@@ -169,11 +169,11 @@ analysis = await llm.generate_structured(
 
 | 文件 | 职责 |
 |------|------|
-| `src/mathforge/llm/__init__.py` | 导出 LLMClient, LLMConfig |
-| `src/mathforge/llm/client.py` | LLMClient 统一接口 |
-| `src/mathforge/llm/config.py` | LLMConfig, LLMProvider |
-| `src/mathforge/llm/parser.py` | JSON 响应解析 |
-| `src/mathforge/llm/backends/anthropic.py` | Anthropic 后端 |
-| `src/mathforge/llm/backends/openai.py` | OpenAI 后端 |
-| `src/mathforge/llm/backends/gemini.py` | Gemini 后端 |
-| `src/mathforge/llm/backends/compatible.py` | OpenAI 兼容后端 |
+| `src/sciforge/llm/__init__.py` | 导出 LLMClient, LLMConfig |
+| `src/sciforge/llm/client.py` | LLMClient 统一接口 |
+| `src/sciforge/llm/config.py` | LLMConfig, LLMProvider |
+| `src/sciforge/llm/parser.py` | JSON 响应解析 |
+| `src/sciforge/llm/backends/anthropic.py` | Anthropic 后端 |
+| `src/sciforge/llm/backends/openai.py` | OpenAI 后端 |
+| `src/sciforge/llm/backends/gemini.py` | Gemini 后端 |
+| `src/sciforge/llm/backends/compatible.py` | OpenAI 兼容后端 |

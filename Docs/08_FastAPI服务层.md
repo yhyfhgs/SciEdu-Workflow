@@ -107,7 +107,7 @@ Client (浏览器 / 移动端 / 第三方)
 
 ## 5. 数据库连接
 
-使用 SQLite（`sqlite3` 标准库或 `aiosqlite` 异步版），数据库文件位于 `data/mathforge.db`。无需外部数据库服务。
+使用 SQLite（`sqlite3` 标准库或 `aiosqlite` 异步版），数据库文件位于 `data/sciforge.db`。无需外部数据库服务。
 
 ---
 

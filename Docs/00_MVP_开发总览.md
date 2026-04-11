@@ -1,10 +1,10 @@
-# MathForge 完整开发总览
+# SciForge 完整开发总览
 
 > 版本: v3.0 | 日期: 2026-03-31
 
 ## 0. 系统愿景
 
-**MathForge** 是一个 AI 驱动的多学科知识库与智能教育系统。核心使命：
+**SciForge** 是一个 AI 驱动的多学科知识库与智能教育系统。核心使命：
 
 - **记录知识**: 从教材、讲义、试卷等资料中自动提取并结构化管理各学科知识点
 - **学习知识**: 提供语义检索、知识图谱、前置知识链路等辅助系统化学习
@@ -54,7 +54,7 @@ MVP 以 CLI 工具形式交付三项核心能力，聚焦**大学数学**场景�
 - Pydantic v2 模型层（核心实体 + Pipeline 中间模型 + Agent 通信模型）
 - 配置管理（pydantic-settings）+ 结构化日志（structlog）
 
-**交付物**: `mathforge --version` 正常输出
+**交付物**: `sciforge --version` 正常输出
 
 ### Phase 1: TeX 解析与题库构建 (Day 3-7)
 
@@ -62,7 +62,7 @@ MVP 以 CLI 工具形式交付三项核心能力，聚焦**大学数学**场景�
 - 元数据提取：年份、考试类型、题号
 - 难度分配 + 结构化 JSON/LaTeX 输出
 - 数据模型预留 `subject`、`education_level` 字段（MVP 默认大学数学）
-- CLI: `mathforge parse tex`
+- CLI: `sciforge parse tex`
 
 **交付物**: 23 个 TeX 文件 → ~150-200 道结构化大学数学题目
 
@@ -71,7 +71,7 @@ MVP 以 CLI 工具形式交付三项核心能力，聚焦**大学数学**场景�
 - MD 解析器：按学科结构分块（定义/定理/引理/例题/习题/公式/概念等）
 - OCR 错误检测与修复（确定性 + LLM 辅助）
 - 知识点自动归类（学科/专题/教育阶段）
-- CLI: `mathforge parse md`, `mathforge kb list/search`
+- CLI: `sciforge parse md`, `sciforge kb list/search`
 
 **交付物**: 100+ 讲义知识点，200+ 教材知识点（大学数学）
 
@@ -79,7 +79,7 @@ MVP 以 CLI 工具形式交付三项核心能力，聚焦**大学数学**场景�
 
 - 多 Provider LLM 客户端（含多模态和结构化输出支持）
 - 5 阶段生成引擎（Context → Generate → Solve → Verify → Annotate）
-- CLI: `mathforge generate free/variant/batch/solve`
+- CLI: `sciforge generate free/variant/batch/solve`
 
 **交付物**: 端到端生成流水线，可产出经验证的数学题目
 
@@ -88,7 +88,7 @@ MVP 以 CLI 工具形式交付三项核心能力，聚焦**大学数学**场景�
 - 通用 Pipeline: FormatAnalyzer / ContentExtractor / OcrCorrector / ContentTagger 四个 Agent
 - PDF 多模态处理、DOCX/PPTX/EPUB 支持
 - 异步批量处理、错误处理和重试
-- CLI: `mathforge parse auto/pdf/docx/pptx`
+- CLI: `sciforge parse auto/pdf/docx/pptx`
 
 **交付物**: 完整 MVP，支持任意格式数据导入
 

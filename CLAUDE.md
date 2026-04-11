@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-MathForge 是 AI 驱动的大学数学教育平台，当前阶段为 CLI MVP。核心功能：数据处理 Pipeline + 题目生成引擎。
+SciForge 是 AI 驱动的大学数学教育平台，当前阶段为 CLI MVP。核心功能：数据处理 Pipeline + 题目生成引擎。
 
 ## 技术栈
 
@@ -36,28 +36,28 @@ uv run ruff format src/ tests/
 uv run mypy
 
 # 运行 CLI
-uv run mathforge --help
+uv run sciforge --help
 
 # Pipeline（默认 VLM 后端 + 5 页/批 + 200 行/窗口）
-uv run mathforge parse run path/to/file --db data/mathforge.db
+uv run sciforge parse run path/to/file --db data/sciforge.db
 
 # Pipeline（pymupdf 纯文本后端）
-uv run mathforge parse run path/to/file -b pymupdf
+uv run sciforge parse run path/to/file -b pymupdf
 
 # 调整 Phase A / Task1 参数
-uv run mathforge parse run path/to/file --pages-per-batch 5 --extract-window-lines 200
+uv run sciforge parse run path/to/file --pages-per-batch 5 --extract-window-lines 200
 
 # 忽略 checkpoint 重新开始
-uv run mathforge parse run path/to/file --restart
+uv run sciforge parse run path/to/file --restart
 
 # 数据库统计
-uv run mathforge parse db-stats data/mathforge.db
+uv run sciforge parse db-stats data/sciforge.db
 ```
 
 ## 项目结构
 
 ```
-src/mathforge/
+src/sciforge/
 ├── core/        # 核心领域模型与异常定义
 │                #   models.py (KnowledgePoint/Question/MdBlockSource/FileExtractionState/...)
 │                #   exceptions.py (VlmConversionError / LLMError / ... 全仓库共用)
@@ -121,7 +121,7 @@ evolution_engine.py / pipeline_orchestrator.py / sandbox.py` 已在 2026-04 清�
 - 所有新代码必须通过 ruff 和 mypy 检查
 - 异步函数使用 async/await，LLM 调用均为异步
 - Pydantic 模型定义在 `core/models.py`，不要分散到其他模块
-- 配置通过 pydantic-settings 管理，环境变量前缀 `MATHFORGE_`
+- 配置通过 pydantic-settings 管理，环境变量前缀 `SCIFORGE_`
 - 日志使用 structlog，不要使用 print 或 logging 模块
 - 优先使用枚举判别而非子类继承：KnowledgePoint(kp_type=KPType.LEMMA)，不要创建 LemmaItem 子类
 - StorageBackend 通过 Protocol 抽象，新增后端只需实现统一接口
@@ -133,6 +133,6 @@ evolution_engine.py / pipeline_orchestrator.py / sandbox.py` 已在 2026-04 清�
 - `Raw Data/` 和 `data/` 不纳入版本控制，包含原始教材和运行时生成数据
 - `.env` 包含 API Key，绝不提交
 - LLM 后端通过 `llm/backends/` 下的适配器实现，新增后端只需实现统一接口
-- Pipeline 统一入口为 `mathforge parse run`，默认 VLM 多模态识别 PDF/DOCX
-- 存储默认 SQLite（`--db data/mathforge.db`）
+- Pipeline 统一入口为 `sciforge parse run`，默认 VLM 多模态识别 PDF/DOCX
+- 存储默认 SQLite（`--db data/sciforge.db`）
 - Pipeline checkpoint 在 `data/checkpoint/<file_hash>/`，含 `state.json` 与 `recognize/file_NNN_<stem>/page_NNN-NNN.md`

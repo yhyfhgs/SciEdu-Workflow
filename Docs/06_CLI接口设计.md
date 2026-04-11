@@ -4,14 +4,14 @@
 
 ## 1. 框架
 
-Typer (Click 兼容，基于类型注解) + Rich 终端输出。入口 `mathforge` 命令注册在 `pyproject.toml`。
+Typer (Click 兼容，基于类型注解) + Rich 终端输出。入口 `sciforge` 命令注册在 `pyproject.toml`。
 
 ---
 
 ## 2. 命令结构（当前 MVP）
 
 ```
-mathforge
+sciforge
 ├── parse                       # 数据处理 Pipeline
 │   ├── run <path>              # Producer-Consumer 流水线（核心）
 │   └── db-stats <db>           # SQLite 数据库统计
@@ -28,14 +28,14 @@ mathforge
 ## 3. parse run 详细参数
 
 ```bash
-uv run mathforge parse run <path> [OPTIONS]
+uv run sciforge parse run <path> [OPTIONS]
 ```
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `path` (positional) | Path | 必需 | 文件或目录 |
 | `--output, -o` | Path | `data` | 输出目录（assets / logs） |
-| `--db` | Path | `data/mathforge.db` | SQLite 数据库路径 |
+| `--db` | Path | `data/sciforge.db` | SQLite 数据库路径 |
 | `--backend, -b` | str | `vlm` | 文档识别后端：`vlm` / `pymupdf` |
 | `--pages-per-batch` | int | 5 | Phase A 每批页数 |
 | `--extract-window-lines` | int | 200 | Task1 滑动窗口行数 |
@@ -46,7 +46,7 @@ uv run mathforge parse run <path> [OPTIONS]
 | `--restart` | bool | False | 忽略 checkpoint 从头开始 |
 | `--llm-provider` | str | None | LLM 提供者覆写（如 `openai_compatible`） |
 | `--llm-model` | str | None | LLM 模型覆写 |
-| `--llm-config` | Path | `config/mathforge.toml` | TOML 配置文件路径 |
+| `--llm-config` | Path | `config/sciforge.toml` | TOML 配置文件路径 |
 
 ### 3.1 输出表格示例（单文件）
 
@@ -76,13 +76,13 @@ Pipeline 完成: 12 文件, 1843 条目入库, 0 失败 block, 0 错误, 1234.5s
 ## 4. parse db-stats 详细参数
 
 ```bash
-uv run mathforge parse db-stats <db>
+uv run sciforge parse db-stats <db>
 ```
 
 输出：
 
 ```
-数据库统计: mathforge.db
+数据库统计: sciforge.db
 ┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
 ┃ 类型             ┃ 数量   ┃
 ┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
@@ -97,44 +97,44 @@ uv run mathforge parse db-stats <db>
 
 ```bash
 # 默认 VLM 后端，5 页/批，200 行/窗口
-uv run mathforge parse run "Raw Data/textbook.pdf"
+uv run sciforge parse run "Raw Data/textbook.pdf"
 
 # 用 pymupdf 后端（无 LLM 识别，纯文本提取）
-uv run mathforge parse run "Raw Data/textbook.pdf" -b pymupdf
+uv run sciforge parse run "Raw Data/textbook.pdf" -b pymupdf
 
 # 调整 Phase A 批大小与 Task1 窗口
-uv run mathforge parse run book.pdf --pages-per-batch 10 --extract-window-lines 300
+uv run sciforge parse run book.pdf --pages-per-batch 10 --extract-window-lines 300
 
 # 失败重试次数加大
-uv run mathforge parse run book.pdf --max-retries 5
+uv run sciforge parse run book.pdf --max-retries 5
 
 # 目录模式，并发 8 个 logical_document
-uv run mathforge parse run "Raw Data/" -j 8
+uv run sciforge parse run "Raw Data/" -j 8
 
 # 跳过 LLM 调用，只识别保存为 page_NNN-NNN.md（用于离线检查）
-uv run mathforge parse run book.pdf --skip-llm
+uv run sciforge parse run book.pdf --skip-llm
 
 # Dry run：处理但不写 DB
-uv run mathforge parse run book.pdf --dry-run
+uv run sciforge parse run book.pdf --dry-run
 
 # 忽略 checkpoint 从头跑
-uv run mathforge parse run book.pdf --restart
+uv run sciforge parse run book.pdf --restart
 
 # 用自定义 LLM provider
-uv run mathforge parse run book.pdf \
+uv run sciforge parse run book.pdf \
   --llm-provider openai_compatible \
   --llm-model anthropic/claude-sonnet-4-20250514 \
-  --llm-config config/mathforge.toml
+  --llm-config config/sciforge.toml
 
 # 数据库统计
-uv run mathforge parse db-stats data/mathforge.db
+uv run sciforge parse db-stats data/sciforge.db
 ```
 
 ---
 
 ## 6. TOML 配置文件
 
-`config/mathforge.toml` 至少需要两个任务段：
+`config/sciforge.toml` 至少需要两个任务段：
 
 ```toml
 [llm]
@@ -156,7 +156,7 @@ base_url = "https://openrouter.ai/api/v1"
 max_tokens = 32768
 ```
 
-环境变量覆写：`MATHFORGE_TASK_VLM_CONVERT_MODEL=...`、`MATHFORGE_TASK_EXTRACT_AND_CLASSIFY_PROVIDER=...` 等。
+环境变量覆写：`SCIFORGE_TASK_VLM_CONVERT_MODEL=...`、`SCIFORGE_TASK_EXTRACT_AND_CLASSIFY_PROVIDER=...` 等。
 
 API Key 通过环境变量或 `.env`：
 - `ANTHROPIC_API_KEY=...`
@@ -168,18 +168,18 @@ API Key 通过环境变量或 `.env`：
 
 | 文件 | 职责 |
 |---|---|
-| `src/mathforge/cli/main.py` | Typer 入口 + `validate` 命令 + 全局 `--log-level` 等 |
-| `src/mathforge/cli/parse.py` | `parse run` / `parse db-stats` |
-| `src/mathforge/cli/generate.py` | `generate` 命令组（暂破损） |
-| `src/mathforge/cli/display.py` | Rich 输出格式化助手 |
+| `src/sciforge/cli/main.py` | Typer 入口 + `validate` 命令 + 全局 `--log-level` 等 |
+| `src/sciforge/cli/parse.py` | `parse run` / `parse db-stats` |
+| `src/sciforge/cli/generate.py` | `generate` 命令组（暂破损） |
+| `src/sciforge/cli/display.py` | Rich 输出格式化助手 |
 
 ---
 
 ## 8. 帮助查看
 
 ```bash
-uv run mathforge --help
-uv run mathforge parse --help
-uv run mathforge parse run --help
-uv run mathforge parse db-stats --help
+uv run sciforge --help
+uv run sciforge parse --help
+uv run sciforge parse run --help
+uv run sciforge parse db-stats --help
 ```

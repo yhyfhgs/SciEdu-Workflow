@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件定义 MathForge 项目中 AI Agent 的协作规范。
+本文件定义 SciForge 项目中 AI Agent 的协作规范。
 
 ## Agent 角色定义
 
@@ -24,12 +24,12 @@
 
 **职责**: 数据处理流水线中的 LLM 调用环节
 
-**架构**: Producer-Consumer 单管道，由 `PipelineOrchestrator`（`src/mathforge/pipeline/orchestrator.py`）编排两个并发 Task：
+**架构**: Producer-Consumer 单管道，由 `PipelineOrchestrator`（`src/sciforge/pipeline/orchestrator.py`）编排两个并发 Task：
 
 - **Task0 (Producer)**：`Recognizer` 协议的具体实现（`VlmRecognizer` / `PyMuPdfRecognizer` / `MarkdownRecognizer`）按 5 页一批识别为 markdown，每个 batch 立即推入 `asyncio.Queue`。落盘 `data/checkpoint/<file_hash>/recognize/file_NNN_<stem>/page_NNN-NNN.md`。
 - **Task1 (Consumer)**：`Task1Extractor`（`pipeline/task1_extractor.py`）按 FIFO 取出 `MdBlockSource`，给每行注入全局行号，按 200 行滑动窗口送 LLM 完成"提取 + 校正 + 分类 + 打标签 + 难度评估"五合一调用，结果直接入库。
 
-入口命令：`uv run mathforge parse run <path>`。
+入口命令：`uv run sciforge parse run <path>`。
 
 **Pipeline 主线只用两个 LLM 任务**:
 
@@ -39,8 +39,8 @@
 | `extract_and_classify` | Task1: 一次调用完成 提取/校正/分类/打标签/难度 | JSON 结构化输出 + 较大 max_tokens（≥32k） |
 
 **关键 prompt**:
-- `src/mathforge/prompts/templates/pipeline/extract_and_classify.txt` (Task1 主 prompt)
-- `src/mathforge/prompts/templates/pipeline/vlm_convert.txt` (Phase A VLM prompt)
+- `src/sciforge/prompts/templates/pipeline/extract_and_classify.txt` (Task1 主 prompt)
+- `src/sciforge/prompts/templates/pipeline/vlm_convert.txt` (Phase A VLM prompt)
 
 **可靠性机制**:
 - **行级断点恢复**：`FileExtractionState` 持久化到 `state.json`，记录 `vlm_batches_done` / `current_block_idx` / `line_offset` / `line_buffer_carry` / `tag_tree_json` / `order_index_next`。重启可无缝恢复。
@@ -74,7 +74,7 @@
 verifier.py / evolution_engine.py / pipeline_orchestrator.py / sandbox.py`。
 `cli/generate.py` 的所有子命令保留了 Typer 签名但函数体统一为
 `raise NotImplementedError`，等 parse 主线稳定后按新 models + `SQLiteStorageBackend`
-重建。所需的 .txt prompt 模板仍保留在 `src/mathforge/prompts/templates/` 下。
+重建。所需的 .txt prompt 模板仍保留在 `src/sciforge/prompts/templates/` 下。
 
 ## Agent 间通信
 

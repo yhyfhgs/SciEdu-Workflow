@@ -1,4 +1,4 @@
-# MathForge
+# SciForge
 
 AI 驱动的大学数学智能教育平台。从教材、讲义、试卷中自动提取结构化知识，并为后续题目生成与个性化推荐打基础。
 
@@ -10,7 +10,7 @@ AI 驱动的大学数学智能教育平台。从教材、讲义、试卷中自�
   - 行级断点恢复，跨调用 tag 树注入避免同义异名
   - 异常隔离 + 自动重试，单 batch / 单窗口失败不阻断整体
 - **SQLite 存储** — FTS5 全文检索 + 内容哈希去重，每个条目带 `order_index` 用于后续构建知识图谱
-- **CLI 接口** — 单一入口 `mathforge parse run`，Rich 终端表格
+- **CLI 接口** — 单一入口 `sciforge parse run`，Rich 终端表格
 
 ## 快速开始
 
@@ -23,13 +23,13 @@ AI 驱动的大学数学智能教育平台。从教材、讲义、试卷中自�
 ### 安装
 
 ```bash
-git clone https://github.com/ZyphingFHGS/MathForge.git
-cd MathForge
+git clone https://github.com/ZyphingFHGS/SciForge.git
+cd SciForge
 uv sync --all-extras
 
 # 配置 LLM
-cp config/mathforge.example.toml config/mathforge.toml
-# 编辑 config/mathforge.toml 修改 provider/model 与 base_url
+cp config/sciforge.example.toml config/sciforge.toml
+# 编辑 config/sciforge.toml 修改 provider/model 与 base_url
 
 # 配置 API Key
 cp .env.example .env
@@ -40,34 +40,34 @@ cp .env.example .env
 
 ```bash
 # 解析单个 PDF（默认 VLM 后端 + 5 页/批 + 200 行/窗口）
-uv run mathforge parse run path/to/textbook.pdf --db data/mathforge.db
+uv run sciforge parse run path/to/textbook.pdf --db data/sciforge.db
 
 # 解析整个目录（4 个 logical_document 并发）
-uv run mathforge parse run "Raw Data/" -j 4
+uv run sciforge parse run "Raw Data/" -j 4
 
 # 切换为纯文本 pymupdf 后端（不调用 LLM 识别）
-uv run mathforge parse run book.pdf -b pymupdf
+uv run sciforge parse run book.pdf -b pymupdf
 
 # 调整 Phase A / Task1 参数
-uv run mathforge parse run book.pdf --pages-per-batch 10 --extract-window-lines 300
+uv run sciforge parse run book.pdf --pages-per-batch 10 --extract-window-lines 300
 
 # 仅识别不入库（用于离线检查 page_NNN-NNN.md）
-uv run mathforge parse run book.pdf --skip-llm
+uv run sciforge parse run book.pdf --skip-llm
 
 # 忽略 checkpoint 重新开始
-uv run mathforge parse run book.pdf --restart
+uv run sciforge parse run book.pdf --restart
 
 # 数据库统计
-uv run mathforge parse db-stats data/mathforge.db
+uv run sciforge parse db-stats data/sciforge.db
 
 # 完整帮助
-uv run mathforge parse run --help
+uv run sciforge parse run --help
 ```
 
 ## 项目结构
 
 ```
-src/mathforge/
+src/sciforge/
 ├── core/        # 核心 Pydantic 模型 (models.py) + 异常 (exceptions.py)
 ├── llm/         # LLM 客户端层（Anthropic / OpenAI / Gemini / OpenAI 兼容）
 ├── pipeline/    # Producer-Consumer 两阶段数据流水线
@@ -96,7 +96,7 @@ uv run --extra dev ruff check src/
 uv run --extra dev ruff format src/
 
 # 类型检查
-uv run --extra dev mypy src/mathforge/core src/mathforge/pipeline src/mathforge/storage src/mathforge/cli
+uv run --extra dev mypy src/sciforge/core src/sciforge/pipeline src/sciforge/storage src/sciforge/cli
 ```
 
 提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。

@@ -400,7 +400,7 @@ class Question(BaseModel):
 ### 9.1 入口
 
 ```bash
-uv run mathforge parse run <path> [options]
+uv run sciforge parse run <path> [options]
 ```
 
 ### 9.2 常用参数
@@ -408,7 +408,7 @@ uv run mathforge parse run <path> [options]
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `path` | — | 文件或目录 |
-| `--db` | `data/mathforge.db` | SQLite 路径 |
+| `--db` | `data/sciforge.db` | SQLite 路径 |
 | `--backend, -b` | `vlm` | `vlm` / `pymupdf` |
 | `--pages-per-batch` | 5 | Phase A 每批页数 |
 | `--extract-window-lines` | 200 | Task1 滑动窗口行数 |
@@ -417,12 +417,12 @@ uv run mathforge parse run <path> [options]
 | `--restart` | False | 忽略 checkpoint 从头开始 |
 | `--dry-run` | False | 不写 DB |
 | `--skip-llm` | False | 跳过 LLM 调用（仅识别） |
-| `--llm-config` | `config/mathforge.toml` | TOML 配置 |
+| `--llm-config` | `config/sciforge.toml` | TOML 配置 |
 | `--llm-provider` / `--llm-model` | None | CLI 覆写 |
 
 ### 9.3 配置文件
 
-`config/mathforge.toml` 至少需要两个任务段：
+`config/sciforge.toml` 至少需要两个任务段：
 
 ```toml
 [llm.tasks.vlm_convert]
@@ -443,13 +443,13 @@ max_tokens = 32768            # JSON 输出量较大
 
 ```bash
 # 端到端
-uv run mathforge parse run "Raw Data/sample.pdf" --db data/test.db -b vlm
+uv run sciforge parse run "Raw Data/sample.pdf" --db data/test.db -b vlm
 
 # 检查 batch 文件
 ls data/checkpoint/<file_hash>/recognize/file_000_*/
 
 # DB 统计
-uv run mathforge parse db-stats data/test.db
+uv run sciforge parse db-stats data/test.db
 
 # 检查 order_index 单调
 sqlite3 data/test.db "SELECT order_index, kp_type, number FROM knowledge_points ORDER BY order_index LIMIT 20"
@@ -464,7 +464,7 @@ sqlite3 data/test.db "SELECT tags FROM knowledge_points LIMIT 5"
 
 ### 10.2 多文件分卷
 
-把 `book_part_1_3.pdf` / `book_part_2_3.pdf` / `book_part_3_3.pdf` 放在同一目录，跑 `mathforge parse run <dir>`，三个文件应被合并为单个 logical_document，page_start 跨文件全局连续。
+把 `book_part_1_3.pdf` / `book_part_2_3.pdf` / `book_part_3_3.pdf` 放在同一目录，跑 `sciforge parse run <dir>`，三个文件应被合并为单个 logical_document，page_start 跨文件全局连续。
 
 ---
 
@@ -472,17 +472,17 @@ sqlite3 data/test.db "SELECT tags FROM knowledge_points LIMIT 5"
 
 | 路径 | 作用 |
 |---|---|
-| `src/mathforge/pipeline/orchestrator.py` | Producer-Consumer 编排器 |
-| `src/mathforge/pipeline/recognizers.py` | Recognizer 协议 + 三种实现 |
-| `src/mathforge/pipeline/vlm_converter.py` | VLM 多模态识别 + recognize_in_batches |
-| `src/mathforge/pipeline/task1_extractor.py` | Consumer：滑动窗口 + LLM 提取 + 入库 |
-| `src/mathforge/pipeline/tag_tree.py` | 层级 tag 树 + prompt 序列化 |
-| `src/mathforge/pipeline/resume_state.py` | state.json 加载 / 保存 / 锁 |
-| `src/mathforge/pipeline/retry.py` | 异步重试 + LLM JSON 重试 |
-| `src/mathforge/prompts/templates/pipeline/extract_and_classify.txt` | Task1 主 prompt |
-| `src/mathforge/prompts/templates/pipeline/vlm_convert.txt` | Phase A VLM prompt |
-| `src/mathforge/storage/sqlite_backend.py` | SQLite 存储 |
-| `src/mathforge/storage/schema.sql` | DB schema |
-| `src/mathforge/core/models.py` | 所有 Pydantic 模型 |
-| `src/mathforge/cli/parse.py` | CLI 入口 |
-| `config/mathforge.toml` | LLM TOML 配置 |
+| `src/sciforge/pipeline/orchestrator.py` | Producer-Consumer 编排器 |
+| `src/sciforge/pipeline/recognizers.py` | Recognizer 协议 + 三种实现 |
+| `src/sciforge/pipeline/vlm_converter.py` | VLM 多模态识别 + recognize_in_batches |
+| `src/sciforge/pipeline/task1_extractor.py` | Consumer：滑动窗口 + LLM 提取 + 入库 |
+| `src/sciforge/pipeline/tag_tree.py` | 层级 tag 树 + prompt 序列化 |
+| `src/sciforge/pipeline/resume_state.py` | state.json 加载 / 保存 / 锁 |
+| `src/sciforge/pipeline/retry.py` | 异步重试 + LLM JSON 重试 |
+| `src/sciforge/prompts/templates/pipeline/extract_and_classify.txt` | Task1 主 prompt |
+| `src/sciforge/prompts/templates/pipeline/vlm_convert.txt` | Phase A VLM prompt |
+| `src/sciforge/storage/sqlite_backend.py` | SQLite 存储 |
+| `src/sciforge/storage/schema.sql` | DB schema |
+| `src/sciforge/core/models.py` | 所有 Pydantic 模型 |
+| `src/sciforge/cli/parse.py` | CLI 入口 |
+| `config/sciforge.toml` | LLM TOML 配置 |

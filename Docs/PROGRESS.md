@@ -1,4 +1,4 @@
-# MathForge 开发进度总览
+# SciForge 开发进度总览
 
 > 更新日期: 2026-04-08 | 代码总量: ~13,350 LOC (Python+SQL) + ~1,455 行 prompt 模板
 
@@ -20,7 +20,7 @@
 
 ## 2. 模块实现明细
 
-### 2.1 数据处理 Pipeline (`src/mathforge/pipeline/` — 5,600 LOC)
+### 2.1 数据处理 Pipeline (`src/sciforge/pipeline/` — 5,600 LOC)
 
 | 文件 | 行数 | 职责 | 状态 | 是否调用 LLM |
 |------|------|------|------|-------------|
@@ -46,7 +46,7 @@
 | `content_validator.py` | 278 | 内容验证（括号匹配、语义警告、悬挂引用） | ✅ | ❌ |
 | `cross_page_detector.py` | 164 | PDF 跨页内容检测与缓冲合并 | ✅ | ❌ |
 
-### 2.2 核心领域 (`src/mathforge/core/` — 3,613 LOC)
+### 2.2 核心领域 (`src/sciforge/core/` — 3,613 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
@@ -62,7 +62,7 @@
 | `sandbox.py` | 162 | Python 代码沙箱（10s 超时） | ✅ |
 | `exceptions.py` | 110 | 自定义异常体系 | ✅ |
 
-### 2.3 LLM 客户端 (`src/mathforge/llm/` — 1,253 LOC)
+### 2.3 LLM 客户端 (`src/sciforge/llm/` — 1,253 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
@@ -75,7 +75,7 @@
 | `backends/gemini.py` | 65 | Google Gemini 适配器 | ⚠️ 基础实现 |
 | `backends/compatible.py` | 21 | OpenAI 兼容 API（本地模型） | ⚠️ 最小 stub |
 
-### 2.4 Prompt 模板 (`src/mathforge/prompts/` — 140 LOC py + 1,455 行 txt)
+### 2.4 Prompt 模板 (`src/sciforge/prompts/` — 140 LOC py + 1,455 行 txt)
 
 | 分类 | 文件数 | 状态 | 说明 |
 |------|--------|------|------|
@@ -87,7 +87,7 @@
 | 进化迭代 | 4 txt | ✅ | improve_from_solver/verification, evolution_system, iteration_summary |
 | 分类标注 | 1 txt | ✅ | tag_classification |
 
-### 2.5 CLI (`src/mathforge/cli/` — 898 LOC)
+### 2.5 CLI (`src/sciforge/cli/` — 898 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
@@ -96,7 +96,7 @@
 | `generate.py` | 466 | `generate free/variant/batch/solve/evolve/solve-deep` | ✅ |
 | `display.py` | 147 | Rich 终端格式化输出 | ✅ |
 
-### 2.6 存储 (`src/mathforge/storage/` — 1,598 LOC)
+### 2.6 存储 (`src/sciforge/storage/` — 1,598 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
@@ -109,7 +109,7 @@
 | `index.py` | 75 | 基础 JSON 索引 | ✅ |
 | `tag_trie.py` | 215 | 前缀树标签检索/自动补全 | ✅ |
 
-### 2.7 配置 (`src/mathforge/config/` — 243 LOC)
+### 2.7 配置 (`src/sciforge/config/` — 243 LOC)
 
 | 文件 | 行数 | 职责 | 状态 |
 |------|------|------|------|
