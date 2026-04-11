@@ -26,41 +26,9 @@ class Discipline(StrEnum):
     OTHER = "other"
 
 
-class Subject(StrEnum):
-    ANALYSIS = "数学分析"
-    LINEAR_ALGEBRA = "高等代数"
-    GROUP_THEORY = "群论"
-    COMBINATORICS = "组合数学"
-    NUMBER_THEORY = "数论"
-    TOPOLOGY = "拓扑学"
-    COMPLEX_ANALYSIS = "复分析"
-    PROBABILITY = "概率论"
-    REAL_ANALYSIS = "实分析"
-    FUNCTIONAL_ANALYSIS = "泛函分析"
-    DIFFERENTIAL_EQUATIONS = "常微分方程"
-    OTHER = "其他"
-
-
-class QuestionType(StrEnum):
-    CALCULATION = "calculation"
-    PROOF = "proof"
-    CONSTRUCTION = "construction"
-    TRUE_FALSE = "true_false"
-    CHOICE = "choice"
-    FILL_BLANK = "fill_blank"
-
-
-class KPType(StrEnum):
-    DEFINITION = "definition"
-    THEOREM = "theorem"
-    LEMMA = "lemma"
-    COROLLARY = "corollary"
-    PROPOSITION = "proposition"
-    EXAMPLE = "example"
-    REMARK = "remark"
-    PROOF_TECHNIQUE = "proof_technique"
-    FORMULA = "formula"
-    METHOD = "method"
+# 注意：二级 subject、kp_type、question_type、exam_type 都改为 str 字段。
+# 合法值由 DisciplineSpec 在运行时约束（见 sciforge/disciplines/）。
+# 历史枚举 Subject/KPType/QuestionType/ExamType 已删除。
 
 
 class VariantStrategy(StrEnum):
@@ -72,12 +40,6 @@ class VariantStrategy(StrEnum):
     REVERSE = "A6_reverse"
     TOPIC_GENERATION = "B1_topic_generation"
     CROSS_TOPIC = "B2_cross_topic"
-
-
-class ExamType(StrEnum):
-    LINGSHI = "零试"
-    YISHI = "一试"
-    NVZI = "女子"
 
 
 class VerifyStatus(StrEnum):
@@ -140,7 +102,7 @@ class QuestionSource(BaseModel):
     """题目结构化来源信息"""
 
     exam_name: str | None = None
-    exam_type: ExamType | None = None
+    exam_type: str | None = None  # 形如 "零试" / "一试" / "奥赛" 等，不限 enum
     year: int | None = None
     month: int | None = None
     problem_number: int | None = None
@@ -169,7 +131,7 @@ class KnowledgePoint(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH  # 顶层学科（math/physics/...）
-    kp_type: KPType = KPType.THEOREM
+    kp_type: str = "theorem"  # 由 DisciplineSpec.allowed_kp_types 约束
     number: str = ""
     content: str = ""  # LaTeX+文本混排，唯一内容字段
     proof_content: str | None = None  # 证明文本（定理/引理/命题）
@@ -211,7 +173,7 @@ class Question(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH  # 顶层学科
-    question_type: QuestionType = QuestionType.PROOF
+    question_type: str = "proof"  # 由 DisciplineSpec.allowed_question_types 约束
     number: str = ""
     content: str = ""  # 题目内容
     solution_content: str | None = None  # 解答文本
@@ -388,10 +350,11 @@ class EvolutionSession(BaseModel):
 
 
 class GenerationRequest(BaseModel):
-    subject: Subject
+    discipline: Discipline = Discipline.MATH
+    subject: str = ""  # 形如 "real_analysis:实分析"
     topics: list[str]
     difficulty_target: int = Field(ge=1, le=10)
-    question_type: QuestionType
+    question_type: str = "proof"
     strategy: VariantStrategy
     source_question: Question | None = None
     exclusion_ids: set[str] = Field(default_factory=set)
@@ -413,7 +376,7 @@ class ContextBundle(BaseModel):
             sections.append("## 相关知识点\n")
             for i, kp in enumerate(self.knowledge_points, 1):
                 sections.append(
-                    f"### 知识点 {i}: {kp.number} [{kp.kp_type.value}] "
+                    f"### 知识点 {i}: {kp.number} [{kp.kp_type}] "
                     f"(难度 {kp.difficulty}/10)\n{kp.content}\n"
                 )
         if self.reference_questions:
@@ -459,7 +422,7 @@ class ParsedProblem(BaseModel):
     solution_latex: str = ""
     has_solution: bool = True
     source_file: str = ""
-    exam_type: ExamType = ExamType.LINGSHI
+    exam_type: str = ""  # 形如 "零试" / "一试" / "奥赛" 等
     year: int = 0
     month: int | None = None
     difficulty_estimate: int = 5
@@ -472,7 +435,7 @@ class TexExamMetadata(BaseModel):
     """TeX 文件的考试级元数据"""
 
     year: int
-    exam_type: ExamType
+    exam_type: str = ""
     month: int | None = None
     source_file: str = ""
     section_title: str = ""

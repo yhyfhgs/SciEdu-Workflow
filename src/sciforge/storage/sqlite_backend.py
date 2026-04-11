@@ -25,9 +25,7 @@ import structlog
 
 from sciforge.core.models import (
     KnowledgePoint,
-    KPType,
     Question,
-    QuestionType,
 )
 
 logger = structlog.get_logger()
@@ -356,14 +354,9 @@ class SQLiteStorageBackend:
 
     @staticmethod
     def _row_to_kp(row: sqlite3.Row) -> KnowledgePoint:
-        try:
-            kp_type = KPType(row["kp_type"])
-        except ValueError:
-            kp_type = KPType.THEOREM
-
         return KnowledgePoint(
             id=row["id"],
-            kp_type=kp_type,
+            kp_type=row["kp_type"] or "theorem",
             number=row["number"] or "",
             content=row["content"],
             proof_content=row["proof_content"],
@@ -385,14 +378,9 @@ class SQLiteStorageBackend:
 
     @staticmethod
     def _row_to_question(row: sqlite3.Row) -> Question:
-        try:
-            q_type = QuestionType(row["question_type"])
-        except ValueError:
-            q_type = QuestionType.PROOF
-
         return Question(
             id=row["id"],
-            question_type=q_type,
+            question_type=row["question_type"] or "proof",
             number=row["number"] or "",
             content=row["content"],
             solution_content=row["solution_content"],

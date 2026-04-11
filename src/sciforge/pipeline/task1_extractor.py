@@ -26,10 +26,8 @@ import structlog
 from sciforge.core.models import (
     FileExtractionState,
     KnowledgePoint,
-    KPType,
     MdBlockSource,
     Question,
-    QuestionType,
     StoredItemBatch,
 )
 from sciforge.pipeline.resume_state import save_state_locked
@@ -57,31 +55,9 @@ class _Sentinel:
 SENTINEL = _Sentinel()
 
 
-# ── 知识/题目类型映射 ──────────────────────────────
-
-
-_KP_TYPE_MAP: dict[str, KPType] = {
-    "definition": KPType.DEFINITION,
-    "theorem": KPType.THEOREM,
-    "lemma": KPType.LEMMA,
-    "corollary": KPType.COROLLARY,
-    "proposition": KPType.PROPOSITION,
-    "property": KPType.PROPOSITION,
-    "formula": KPType.FORMULA,
-}
-
-
-_Q_TYPE_MAP: dict[str, QuestionType] = {
-    "proof": QuestionType.PROOF,
-    "calculation": QuestionType.CALCULATION,
-    "choice": QuestionType.CHOICE,
-    "fill_blank": QuestionType.FILL_BLANK,
-    "true_false": QuestionType.TRUE_FALSE,
-    "construction": QuestionType.PROOF,
-}
-
-
 # ── Task1Extractor ──────────────────────────────────
+# NOTE: kp_type / question_type 现在是 str 字段，合法值由 DisciplineSpec 在
+# Task 7 接入时校验。本文件当前阶段暂不做白名单校验。
 
 
 class Task1Extractor:
@@ -418,8 +394,7 @@ class Task1Extractor:
         block: MdBlockSource | None,
         order_index: int,
     ) -> KnowledgePoint:
-        item_type = str(it.get("item_type", "theorem"))
-        kp_type = _KP_TYPE_MAP.get(item_type, KPType.THEOREM)
+        kp_type = str(it.get("item_type") or "theorem")
 
         ctx = it.get("structural_context") or {}
 
@@ -450,8 +425,7 @@ class Task1Extractor:
         block: MdBlockSource | None,
         order_index: int,
     ) -> Question:
-        q_type_str = str(it.get("question_type") or "proof")
-        q_type = _Q_TYPE_MAP.get(q_type_str, QuestionType.PROOF)
+        q_type = str(it.get("question_type") or "proof")
 
         ctx = it.get("structural_context") or {}
 
