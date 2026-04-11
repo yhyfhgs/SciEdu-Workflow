@@ -24,6 +24,7 @@ from typing import Any
 import structlog
 
 from sciforge.core.models import (
+    Discipline,
     KnowledgePoint,
     Question,
 )
@@ -35,22 +36,22 @@ logger = structlog.get_logger()
 
 _KP_INSERT_SQL = """
 INSERT OR REPLACE INTO knowledge_points
-    (id, kp_type, number, content, proof_content, proof_methods,
+    (id, discipline, kp_type, number, content, proof_content, proof_methods,
      difficulty, subject, taxonomy_path, tags,
      source_file, source_chapter, source_section,
      start_line, end_line, order_index, page_start, page_end,
      quality_grade, content_hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _Q_INSERT_SQL = """
 INSERT OR REPLACE INTO questions
-    (id, question_type, number, content, solution_content, solution_methods,
+    (id, discipline, question_type, number, content, solution_content, solution_methods,
      answer, difficulty, subject, taxonomy_path, tags,
      source_file, source_chapter, exam_type, exam_year,
      start_line, end_line, order_index, page_start, page_end,
      quality_grade, content_hash, is_generated, parent_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -76,6 +77,7 @@ def _kp_to_tuple(kp: KnowledgePoint) -> tuple[Any, ...]:
     """KP → executemany 参数元组（顺序与 _KP_INSERT_SQL 一致）"""
     return (
         kp.id,
+        str(kp.discipline),
         str(kp.kp_type),
         kp.number,
         kp.content,
@@ -102,6 +104,7 @@ def _question_to_tuple(q: Question) -> tuple[Any, ...]:
     """Question → executemany 参数元组（顺序与 _Q_INSERT_SQL 一致）"""
     return (
         q.id,
+        str(q.discipline),
         str(q.question_type),
         q.number,
         q.content,
@@ -331,6 +334,7 @@ class SQLiteStorageBackend:
                     conditions.append(f"id NOT IN ({placeholders})")
                     params.extend(ids_list)
             elif key in (
+                "discipline",
                 "kp_type",
                 "question_type",
                 "subject",
@@ -354,8 +358,13 @@ class SQLiteStorageBackend:
 
     @staticmethod
     def _row_to_kp(row: sqlite3.Row) -> KnowledgePoint:
+        try:
+            discipline = Discipline(row["discipline"] or "math")
+        except ValueError:
+            discipline = Discipline.OTHER
         return KnowledgePoint(
             id=row["id"],
+            discipline=discipline,
             kp_type=row["kp_type"] or "theorem",
             number=row["number"] or "",
             content=row["content"],
@@ -378,8 +387,13 @@ class SQLiteStorageBackend:
 
     @staticmethod
     def _row_to_question(row: sqlite3.Row) -> Question:
+        try:
+            discipline = Discipline(row["discipline"] or "math")
+        except ValueError:
+            discipline = Discipline.OTHER
         return Question(
             id=row["id"],
+            discipline=discipline,
             question_type=row["question_type"] or "proof",
             number=row["number"] or "",
             content=row["content"],

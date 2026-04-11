@@ -1,7 +1,11 @@
--- SciForge SQLite Schema v3
--- 精简字段、proof/solution 嵌入主表、统一 tag 格式
--- 删除 taxonomy_nodes/item_tree_placement/relations 表（树/关系不再持久化）
--- 新增 start_line/end_line/order_index/page_start/page_end 列
+-- SciForge SQLite Schema v4
+-- v4 变更：新增 discipline 列（math/physics/chemistry/biology/other）作为学科路由
+--         分层的第一级字段；subject 继续作为二级字符串分类。
+-- v3 变更：精简字段、proof/solution 嵌入主表、统一 tag 格式、删除
+--         taxonomy_nodes/item_tree_placement/relations 表、新增
+--         start_line/end_line/order_index/page_start/page_end 列
+--
+-- 升级路径：旧 DB 不做 ALTER 迁移；重新 `parse run --restart` 即可。
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -10,6 +14,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS knowledge_points (
     id TEXT PRIMARY KEY,
+    discipline TEXT NOT NULL DEFAULT 'math',
     kp_type TEXT NOT NULL DEFAULT 'theorem',
     number TEXT DEFAULT '',
     content TEXT NOT NULL DEFAULT '',
@@ -39,6 +44,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
 
 CREATE TABLE IF NOT EXISTS questions (
     id TEXT PRIMARY KEY,
+    discipline TEXT NOT NULL DEFAULT 'math',
     question_type TEXT NOT NULL DEFAULT 'proof',
     number TEXT DEFAULT '',
     content TEXT NOT NULL DEFAULT '',
@@ -85,6 +91,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS question_fts USING fts5(
 
 -- ── 索引 ──
 
+CREATE INDEX IF NOT EXISTS idx_kp_discipline ON knowledge_points(discipline);
 CREATE INDEX IF NOT EXISTS idx_kp_type ON knowledge_points(kp_type);
 CREATE INDEX IF NOT EXISTS idx_kp_subject ON knowledge_points(subject);
 CREATE INDEX IF NOT EXISTS idx_kp_taxonomy ON knowledge_points(taxonomy_path);
@@ -92,6 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_kp_hash ON knowledge_points(content_hash);
 CREATE INDEX IF NOT EXISTS idx_kp_order ON knowledge_points(source_file, order_index);
 CREATE INDEX IF NOT EXISTS idx_kp_page ON knowledge_points(source_file, page_start);
 
+CREATE INDEX IF NOT EXISTS idx_q_discipline ON questions(discipline);
 CREATE INDEX IF NOT EXISTS idx_q_type ON questions(question_type);
 CREATE INDEX IF NOT EXISTS idx_q_subject ON questions(subject);
 CREATE INDEX IF NOT EXISTS idx_q_taxonomy ON questions(taxonomy_path);
