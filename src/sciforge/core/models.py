@@ -1,4 +1,4 @@
-"""MathForge 核心数据模型 (Pydantic v2)"""
+"""SciForge 核心数据模型 (Pydantic v2)"""
 
 from __future__ import annotations
 
@@ -10,6 +10,20 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 # ── 枚举 ──────────────────────────────────────────────
+
+
+class Discipline(StrEnum):
+    """顶层学科分类（稳定 API，新增需改代码）
+
+    用于路由 Pipeline/Agent 的学科特化逻辑。二级学科（subject）保持字符串，
+    由 DisciplineSpec 约束允许值。
+    """
+
+    MATH = "math"
+    PHYSICS = "physics"
+    CHEMISTRY = "chemistry"
+    BIOLOGY = "biology"
+    OTHER = "other"
 
 
 class Subject(StrEnum):
@@ -154,6 +168,7 @@ class KnowledgePoint(BaseModel):
     """知识点存储模型 — 与 DB schema 一一对应"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    discipline: Discipline = Discipline.MATH  # 顶层学科（math/physics/...）
     kp_type: KPType = KPType.THEOREM
     number: str = ""
     content: str = ""  # LaTeX+文本混排，唯一内容字段
@@ -195,6 +210,7 @@ class Question(BaseModel):
     """题目存储模型 — solution 直接嵌入，不再有独立 solutions 表"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    discipline: Discipline = Discipline.MATH  # 顶层学科
     question_type: QuestionType = QuestionType.PROOF
     number: str = ""
     content: str = ""  # 题目内容
@@ -633,6 +649,7 @@ class FileExtractionState(BaseModel):
     # 已识别完成的 batch，元组 (file_idx, page_start, page_end)
     vlm_batches_done: list[tuple[int, int, int]] = Field(default_factory=list)
     failed_batches: list[tuple[int, int, int]] = Field(default_factory=list)
+    task0_completed: bool = False  # Producer 无错误完成所有批次后置 True，用于直通判定
 
     # ── Consumer (Task1) 端 ──
     current_block_idx: int = 0  # 已完成入库的最后一个 block_index + 1
