@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from mathforge.llm.backends.openai_backend import OpenAIBackend
-from mathforge.llm.config import LLMConfig
+from sciforge.llm.backends.openai_backend import OpenAIBackend
+from sciforge.llm.config import LLMConfig
 
 
 class OpenAICompatibleBackend(OpenAIBackend):

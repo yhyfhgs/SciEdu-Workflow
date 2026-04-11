@@ -18,11 +18,11 @@ from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
-from mathforge.core.models import DocumentFormat
+from sciforge.core.models import DocumentFormat
 
 if TYPE_CHECKING:
-    from mathforge.config.settings import AppConfig
-    from mathforge.llm.client import LLMClient
+    from sciforge.config.settings import AppConfig
+    from sciforge.llm.client import LLMClient
 
 logger = structlog.get_logger()
 
@@ -64,7 +64,7 @@ class VlmRecognizer:
     """基于 VlmConverter 的多模态 PDF/DOCX → Markdown 识别器"""
 
     def __init__(self, llm_client: LLMClient, config: AppConfig) -> None:
-        from mathforge.pipeline.vlm_converter import VlmConverter
+        from sciforge.pipeline.vlm_converter import VlmConverter
 
         self._converter = VlmConverter(
             llm_client=llm_client,

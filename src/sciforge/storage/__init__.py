@@ -1,5 +1,5 @@
 """Storage backend protocol and implementations."""
 
-from mathforge.storage.protocol import StorageBackend
+from sciforge.storage.protocol import StorageBackend
 
 __all__ = ["StorageBackend"]

@@ -6,8 +6,8 @@ import os
 
 import structlog
 
-from mathforge.core.exceptions import LLMError, LLMTimeoutError
-from mathforge.llm.config import LLMConfig
+from sciforge.core.exceptions import LLMError, LLMTimeoutError
+from sciforge.llm.config import LLMConfig
 
 logger = structlog.get_logger()
 

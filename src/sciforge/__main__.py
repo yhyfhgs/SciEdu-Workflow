@@ -1,5 +1,5 @@
-"""Allow running as `python -m mathforge`."""
+"""Allow running as `python -m sciforge`."""
 
-from mathforge.cli.main import app
+from sciforge.cli.main import app
 
 app()

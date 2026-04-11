@@ -1,8 +1,8 @@
-"""MathForge LLM 客户端包"""
+"""SciForge LLM 客户端包"""
 
-from mathforge.llm.client import LLMClient
-from mathforge.llm.config import LLMConfig, LLMProvider, TaskLLMConfig
-from mathforge.llm.parser import parse_llm_json
+from sciforge.llm.client import LLMClient
+from sciforge.llm.config import LLMConfig, LLMProvider, TaskLLMConfig
+from sciforge.llm.parser import parse_llm_json
 
 __all__ = [
     "LLMClient",

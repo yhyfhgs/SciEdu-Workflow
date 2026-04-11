@@ -25,11 +25,11 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from mathforge.core.exceptions import VlmConversionError
-from mathforge.prompts.templates import VLM_CONVERT_PROMPT
+from sciforge.core.exceptions import VlmConversionError
+from sciforge.prompts.templates import VLM_CONVERT_PROMPT
 
 if TYPE_CHECKING:
-    from mathforge.llm.client import LLMClient
+    from sciforge.llm.client import LLMClient
 
 logger = structlog.get_logger()
 
@@ -300,7 +300,7 @@ class VlmConverter:
         Yields:
             (page_start_1based, page_end_1based, md_text, md_path)
         """
-        from mathforge.pipeline.retry import RetryExhausted, with_retry
+        from sciforge.pipeline.retry import RetryExhausted, with_retry
 
         output_dir.mkdir(parents=True, exist_ok=True)
         done_set = {tuple(p) for p in already_done}

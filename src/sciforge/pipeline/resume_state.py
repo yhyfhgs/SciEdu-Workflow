@@ -1,6 +1,6 @@
 """Pipeline 断点续传状态的加载/保存助手
 
-State 对象本身定义在 mathforge.core.models.FileExtractionState；本模块提供：
+State 对象本身定义在 sciforge.core.models.FileExtractionState；本模块提供：
 - compute_file_hash: 单文件 / 多卷文件的内容哈希
 - state_dir: checkpoint 目录路径
 - load_state / save_state: 原子加载与保存（tmp + os.replace）
@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 if TYPE_CHECKING:
-    from mathforge.core.models import FileExtractionState
+    from sciforge.core.models import FileExtractionState
 
 # C.3 节流保存：每个 file_hash 最近一次刷盘的 monotonic 时间戳
 _LAST_SAVED_AT: dict[str, float] = {}
@@ -74,7 +74,7 @@ def recognize_dir(checkpoint_root: Path, file_hash: str, file_idx: int, file_ste
 
 def load_state(checkpoint_root: Path, file_hash: str) -> FileExtractionState | None:
     """加载已有 state；不存在或损坏时返回 None"""
-    from mathforge.core.models import FileExtractionState
+    from sciforge.core.models import FileExtractionState
 
     f = state_file(checkpoint_root, file_hash)
     if not f.exists():
@@ -174,6 +174,54 @@ def scan_recognized_batches(
             except ValueError:
                 continue
             results.append((file_idx, page_start, page_end, md_file))
+
+    results.sort(key=lambda x: (x[0], x[1]))
+    return results
+
+
+def enum_cached_batches_for_file(
+    checkpoint_root: Path,
+    file_hash: str,
+    file_idx: int,
+    file_stem: str,
+) -> list[tuple[int, int, Path]]:
+    """列出某个文件（logical_document 中第 file_idx 个）的全部缓存 batch
+
+    支持两种 checkpoint 格式（以保留历史 VLM 运行的产物）：
+
+    1. **新格式**（当前代码产出）：`<hash>/recognize/file_NNN_<stem>/page_NNN-NNN.md`，
+       页码是 1-based。
+    2. **旧格式**（已淘汰但仍然存在的 VLM 运行产物）：`<hash>/vlm/page_NNN-NNN.md`，
+       页码通常是 0-based，没有 file_NNN 子目录（旧代码不支持多分卷）。
+       仅在 `file_idx == 0` 时才扫描。
+
+    返回 [(page_start, page_end, md_path), ...]，按 (page_start, page_end) 排序。
+    包括空 md（大小为 0）—— 它们可能是封面/空白页，连续性判断需要它们存在。
+    Replay 时调用方应过滤空内容。
+    """
+    results: list[tuple[int, int, Path]] = []
+
+    def _collect(rdir: Path) -> None:
+        if not rdir.exists():
+            return
+        for mdp in rdir.glob("page_*.md"):
+            try:
+                _, rng = mdp.stem.split("_", 1)
+                ps_str, pe_str = rng.split("-")
+                ps = int(ps_str)
+                pe = int(pe_str)
+            except ValueError:
+                continue
+            results.append((ps, pe, mdp))
+
+    # 新格式
+    new_dir = recognize_dir(checkpoint_root, file_hash, file_idx, file_stem)
+    _collect(new_dir)
+
+    # 旧格式（legacy）：只在新格式没有内容且 file_idx == 0 时才接管
+    if not results and file_idx == 0:
+        legacy_dir = state_dir(checkpoint_root, file_hash) / "vlm"
+        _collect(legacy_dir)
 
     results.sort(key=lambda x: (x[0], x[1]))
     return results

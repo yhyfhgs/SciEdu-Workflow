@@ -1,4 +1,4 @@
--- MathForge SQLite Schema v3
+-- SciForge SQLite Schema v3
 -- 精简字段、proof/solution 嵌入主表、统一 tag 格式
 -- 删除 taxonomy_nodes/item_tree_placement/relations 表（树/关系不再持久化）
 -- 新增 start_line/end_line/order_index/page_start/page_end 列

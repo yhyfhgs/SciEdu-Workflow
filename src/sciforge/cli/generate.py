@@ -12,7 +12,7 @@ from pathlib import Path
 
 import typer
 
-from mathforge.cli.display import error
+from sciforge.cli.display import error
 
 generate_app = typer.Typer(name="generate", help="AI 题目生成（暂未对接，待重建）")
 

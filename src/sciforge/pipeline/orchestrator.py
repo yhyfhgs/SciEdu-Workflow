@@ -19,27 +19,28 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from mathforge.core.models import (
+from sciforge.core.models import (
     DirectoryProgress,
     DocumentFormat,
     FileExtractionState,
     MdBlockSource,
 )
-from mathforge.pipeline.recognizers import get_recognizer
-from mathforge.pipeline.resume_state import (
+from sciforge.pipeline.recognizers import get_recognizer
+from sciforge.pipeline.resume_state import (
     compute_file_hash,
+    enum_cached_batches_for_file,
     load_state,
     recognize_dir,
     save_state_locked,
     state_dir,
 )
-from mathforge.pipeline.task1_extractor import SENTINEL, Task1Extractor
-from mathforge.storage.sqlite_backend import SQLiteStorageBackend
+from sciforge.pipeline.task1_extractor import SENTINEL, Task1Extractor
+from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 if TYPE_CHECKING:
-    from mathforge.config.settings import AppConfig
-    from mathforge.llm.client import LLMClient
-    from mathforge.storage.protocol import BatchStorageBackend
+    from sciforge.config.settings import AppConfig
+    from sciforge.llm.client import LLMClient
+    from sciforge.storage.protocol import BatchStorageBackend
 
 logger = structlog.get_logger()
 
@@ -142,14 +143,26 @@ class PipelineOrchestrator:
         queue: asyncio.Queue[object] = asyncio.Queue(maxsize=self.config.pipeline_queue_size)
 
         # 4. 启动 Producer + Consumer
-        producer_task = asyncio.create_task(
-            self._task0_producer(files, state, queue, result)
-        )
+        # 如果所有文件的 Task0 缓存都完整，走直通 Producer（不打开原始文件，直接重放缓存 md）
+        if self._is_cache_complete(files, state):
+            logger.info(
+                "pipeline_task0_skip_replay",
+                file=primary_path.name,
+                reason="task0_completed" if state.task0_completed else "cache_scan",
+            )
+            producer_task = asyncio.create_task(
+                self._task0_replay_from_cache(files, state, queue, result)
+            )
+        else:
+            producer_task = asyncio.create_task(self._task0_producer(files, state, queue, result))
 
         extract_llm = self._get_llm("extract_and_classify")
         consumer_task: asyncio.Task[None] | None = None
         if extract_llm is None:
-            logger.warning("pipeline_no_llm", file=primary_path.name)
+            logger.warning("pipeline_no_llm_drain_queue", file=primary_path.name)
+            # 没有 LLM 时仍启动一个 drain consumer，避免 queue 背压死锁
+            # 典型场景：--skip-llm 只做 Task0 识别不做 Task1 条目提取
+            consumer_task = asyncio.create_task(self._drain_consumer(queue, result))
         else:
             extractor = Task1Extractor(
                 llm_client=extract_llm,
@@ -208,6 +221,7 @@ class PipelineOrchestrator:
         result: PipelineResult,
     ) -> None:
         """识别每个文件每 N 页一批，按顺序推入 queue"""
+        producer_had_error = False
         try:
             block_index = 0
             # state 中 vlm_batches_done 序列化为 list[list]，转 set[tuple] 便于 O(1) lookup
@@ -231,9 +245,7 @@ class PipelineOrchestrator:
 
                 vlm_llm = self._get_llm("vlm_convert")
                 try:
-                    recognizer = get_recognizer(
-                        fmt, self._pdf_backend, vlm_llm, self.config
-                    )
+                    recognizer = get_recognizer(fmt, self._pdf_backend, vlm_llm, self.config)
                 except Exception as exc:
                     logger.error(
                         "pipeline_recognizer_init_failed",
@@ -242,6 +254,7 @@ class PipelineOrchestrator:
                         error=str(exc),
                     )
                     result.errors.append(f"recognizer_init({f.name}): {exc}")
+                    producer_had_error = True
                     continue
 
                 logger.info(
@@ -270,9 +283,7 @@ class PipelineOrchestrator:
                     )
                     block_index += 1
                     result.blocks_pushed = block_index
-                    result.pages_recognized = max(
-                        result.pages_recognized, batch.page_end
-                    )
+                    result.pages_recognized = max(result.pages_recognized, batch.page_end)
 
                     # 记录到 state.vlm_batches_done
                     key = (file_idx, batch.page_start, batch.page_end)
@@ -287,7 +298,12 @@ class PipelineOrchestrator:
         except Exception as exc:
             logger.error("task0_producer_failed", error=str(exc), exc_info=True)
             result.errors.append(f"producer: {exc}")
+            producer_had_error = True
         finally:
+            # 只有整个 Producer 跑完且无任何错误（包括 recognizer_init / batch-level）
+            # 才标记 Task0 完成，作为"已识别直通"的权威信号
+            if not producer_had_error:
+                state.task0_completed = True
             # SENTINEL 推送后强制刷盘，覆盖节流保存
             try:
                 await save_state_locked(self.config.checkpoint_dir, state, force=True)
@@ -295,7 +311,153 @@ class PipelineOrchestrator:
                 pass
             await queue.put(SENTINEL)
 
+    # ── Task0: Replay (已识别直通) ──────────────────────
+
+    async def _task0_replay_from_cache(
+        self,
+        files: list[Path],
+        state: FileExtractionState,
+        queue: asyncio.Queue[object],
+        result: PipelineResult,
+    ) -> None:
+        """不打开原始文件，直接从缓存 md 按顺序推入 queue
+
+        前提：调用方已通过 `_is_cache_complete` 确认所有分卷的缓存完整。
+        支持新旧两种 checkpoint 格式（见 `enum_cached_batches_for_file`）。
+        """
+        try:
+            block_index = 0
+            for file_idx, f in enumerate(files):
+                batches = enum_cached_batches_for_file(
+                    self.config.checkpoint_dir, state.file_hash, file_idx, f.stem
+                )
+                if not batches:
+                    logger.warning("task0_replay_cache_missing", file=f.name)
+                    continue
+
+                for page_start, page_end, mdp in batches:
+                    try:
+                        text = mdp.read_text(encoding="utf-8")
+                    except OSError as exc:
+                        logger.warning(
+                            "task0_replay_read_failed",
+                            file=f.name,
+                            md=mdp.name,
+                            error=str(exc),
+                        )
+                        continue
+                    if not text.strip():
+                        continue
+
+                    msb = MdBlockSource(
+                        file_path=str(f),
+                        page_start=page_start,
+                        page_end=page_end,
+                        md_path=str(mdp),
+                        md_text=text,
+                        block_index=block_index,
+                    )
+                    block_index += 1
+                    result.blocks_pushed = block_index
+                    result.pages_recognized = max(result.pages_recognized, page_end)
+                    await queue.put(msb)
+
+            logger.info(
+                "task0_replay_done",
+                file_hash=state.file_hash,
+                blocks=block_index,
+            )
+        except Exception as exc:
+            logger.error("task0_replay_failed", error=str(exc), exc_info=True)
+            result.errors.append(f"replay: {exc}")
+        finally:
+            try:
+                await save_state_locked(self.config.checkpoint_dir, state, force=True)
+            except Exception:
+                pass
+            await queue.put(SENTINEL)
+
+    def _is_cache_complete(
+        self,
+        files: list[Path],
+        state: FileExtractionState,
+    ) -> bool:
+        """判断所有输入文件的 Task0 缓存是否完整覆盖
+
+        权威来源：state.task0_completed（Producer 正常跑完时置 True）。
+        若未设置则按文件类型扫描 legacy 或新格式缓存：
+        - md/tex：刚好 1 个 page_*.md 即视为完整
+        - pdf：pymupdf 读总页数，batch 列表必须连续覆盖全部页面
+          （自动识别 0-based / 1-based）
+        - 其他格式：返回 False（走正常流程）
+        """
+        if state.task0_completed:
+            return True
+
+        for file_idx, f in enumerate(files):
+            batches = [
+                (ps, pe)
+                for ps, pe, _ in enum_cached_batches_for_file(
+                    self.config.checkpoint_dir, state.file_hash, file_idx, f.stem
+                )
+            ]
+            if not batches:
+                return False
+
+            fmt = self._detect_format(f)
+            if fmt in (DocumentFormat.MARKDOWN, DocumentFormat.TEX):
+                if len(batches) != 1:
+                    return False
+                continue
+            if fmt == DocumentFormat.PDF:
+                try:
+                    import fitz
+
+                    with fitz.open(str(f)) as doc:
+                        total_pages = int(doc.page_count)
+                except Exception:
+                    return False
+                # 自动识别 0-based / 1-based
+                base = batches[0][0]
+                if base not in (0, 1):
+                    return False
+                expected = base
+                last_pe = -1
+                for ps, pe in batches:
+                    if ps != expected:
+                        return False
+                    last_pe = pe
+                    expected = pe + 1
+                # 1-based: 最后 pe 应 == total_pages
+                # 0-based: 最后 pe 应 == total_pages - 1
+                target = total_pages if base == 1 else total_pages - 1
+                if last_pe != target:
+                    return False
+                continue
+            # 未知格式（DOCX/PPTX 等）：无法检查页数，保守返回 False
+            return False
+
+        return True
+
     # ── Task1: Consumer ───────────────────────────────
+
+    async def _drain_consumer(
+        self,
+        queue: asyncio.Queue[object],
+        result: PipelineResult,
+    ) -> None:
+        """Dummy consumer: drain the queue until SENTINEL without doing anything
+
+        Used when no LLM is available (e.g. --skip-llm) so the producer doesn't
+        block on a full queue. Task0 output is still produced on disk.
+        """
+        drained = 0
+        while True:
+            msg = await queue.get()
+            if msg is SENTINEL:
+                break
+            drained += 1
+        logger.info("pipeline_drain_done", blocks_drained=drained)
 
     async def _task1_consumer(
         self,
@@ -335,9 +497,7 @@ class PipelineOrchestrator:
         for i, item in enumerate(grouped):
             pkey = str(item[0]) if isinstance(item, list) else str(item)
             try:
-                cur_hash = compute_file_hash(
-                    item if isinstance(item, list) else item
-                )
+                cur_hash = compute_file_hash(item if isinstance(item, list) else item)
             except Exception:
                 cur_hash = ""
             if (
@@ -376,10 +536,7 @@ class PipelineOrchestrator:
                     dir_progress.failed_files[pkey] = str(exc)
                     self._save_directory_progress(dir_path, dir_progress)
 
-        tasks = [
-            _process_one(idx, item, pkey)
-            for idx, (_, item, pkey) in enumerate(work_items)
-        ]
+        tasks = [_process_one(idx, item, pkey) for idx, (_, item, pkey) in enumerate(work_items)]
         await asyncio.gather(*tasks)
 
         return results
@@ -430,9 +587,7 @@ class PipelineOrchestrator:
         return [
             p
             for p in dir_path.rglob("*")
-            if p.is_file()
-            and p.suffix.lower() in extensions
-            and not p.name.startswith(".")
+            if p.is_file() and p.suffix.lower() in extensions and not p.name.startswith(".")
         ]
 
     @staticmethod
@@ -456,17 +611,13 @@ class PipelineOrchestrator:
                 pass
         return DirectoryProgress(dir_path=str(dir_path))
 
-    def _save_directory_progress(
-        self, dir_path: Path, progress: DirectoryProgress
-    ) -> None:
+    def _save_directory_progress(self, dir_path: Path, progress: DirectoryProgress) -> None:
         import hashlib
 
         dir_hash = hashlib.sha256(str(dir_path.resolve()).encode()).hexdigest()[:12]
         self.config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         progress_file = self.config.checkpoint_dir / f"dir_{dir_hash}.json"
-        progress_file.write_text(
-            progress.model_dump_json(indent=2), encoding="utf-8"
-        )
+        progress_file.write_text(progress.model_dump_json(indent=2), encoding="utf-8")
 
     # ── 清理 checkpoint（--restart 用）──────────────────
 

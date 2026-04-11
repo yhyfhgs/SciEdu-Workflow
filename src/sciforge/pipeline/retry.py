@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 if TYPE_CHECKING:
-    from mathforge.llm.client import LLMClient
+    from sciforge.llm.client import LLMClient
 
 logger = structlog.get_logger()
 

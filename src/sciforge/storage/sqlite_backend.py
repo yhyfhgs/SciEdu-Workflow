@@ -1,4 +1,4 @@
-"""SQLite 存储后端 — MathForge 主存储
+"""SQLite 存储后端 — SciForge 主存储
 
 提供事务安全、FTS5 全文检索、索引查询、内容哈希去重。
 实现 `BatchStorageBackend` Protocol。
@@ -23,7 +23,7 @@ from typing import Any
 
 import structlog
 
-from mathforge.core.models import (
+from sciforge.core.models import (
     KnowledgePoint,
     KPType,
     Question,

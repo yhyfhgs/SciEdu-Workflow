@@ -6,8 +6,8 @@ import os
 
 import structlog
 
-from mathforge.core.exceptions import LLMError, LLMTimeoutError
-from mathforge.llm.config import LLMConfig
+from sciforge.core.exceptions import LLMError, LLMTimeoutError
+from sciforge.llm.config import LLMConfig
 
 logger = structlog.get_logger()
 
@@ -19,7 +19,7 @@ class GeminiBackend:
         try:
             from google import genai
         except ImportError:
-            raise ImportError("需要安装 google-genai SDK: pip install 'mathforge[gemini]'")
+            raise ImportError("需要安装 google-genai SDK: pip install 'sciforge[gemini]'")
 
         api_key = config.api_key or os.environ.get("GOOGLE_API_KEY")
         self.client = genai.Client(api_key=api_key)

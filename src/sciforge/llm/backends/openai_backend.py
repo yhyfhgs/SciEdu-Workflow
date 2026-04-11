@@ -6,8 +6,8 @@ import os
 
 import structlog
 
-from mathforge.core.exceptions import LLMError, LLMTimeoutError
-from mathforge.llm.config import LLMConfig
+from sciforge.core.exceptions import LLMError, LLMTimeoutError
+from sciforge.llm.config import LLMConfig
 
 logger = structlog.get_logger()
 
@@ -191,7 +191,7 @@ class OpenAIBackend:
         tools: list[dict],
         **kwargs,
     ) -> dict:
-        from mathforge.llm.tool_definitions import to_openai_format
+        from sciforge.llm.tool_definitions import to_openai_format
 
         all_messages = [{"role": "system", "content": system}] + messages
         params: dict = {

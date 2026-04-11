@@ -11,7 +11,7 @@ import structlog
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from mathforge.llm.config import TaskLLMConfig
+from sciforge.llm.config import TaskLLMConfig
 
 logger = structlog.get_logger()
 
@@ -49,7 +49,7 @@ class AppConfig(BaseSettings):
     # ── 存储路径 ────────────────────────────────────────
     data_dir: Path = Path("data")
     raw_data_dir: Path = Path("Raw Data")
-    sqlite_db_path: Path = Path("data/mathforge.db")
+    sqlite_db_path: Path = Path("data/sciforge.db")
     checkpoint_dir: Path = Path("data/checkpoint")
 
     # ── LLM 全局默认配置 ────────────────────────────────
@@ -76,7 +76,8 @@ class AppConfig(BaseSettings):
     vlm_max_retries: int = 3  # Phase A batch 失败重试次数
 
     # ── Pipeline: Consumer (Task1) — 滑动窗口提取 ───────
-    extract_window_lines: int = 200  # Task1 滑动窗口大小
+    extract_window_lines: int = 200  # Task1 滑动窗口基础大小
+    extract_max_window_lines: int = 1000  # incomplete 时窗口扩展上限
     max_extract_retries: int = 3  # Task1 LLM 调用重试次数
     extract_retry_base_delay: float = 2.0  # 指数退避基础秒数
 
@@ -113,7 +114,7 @@ class AppConfig(BaseSettings):
     enable_numerical_verification: bool = True
 
     model_config = SettingsConfigDict(
-        env_prefix="MATHFORGE_",
+        env_prefix="SCIFORGE_",
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
@@ -121,7 +122,7 @@ class AppConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _load_task_llm_config(self) -> AppConfig:
-        """从 TOML 文件和 MATHFORGE_TASK_* 环境变量加载 per-task LLM 配置"""
+        """从 TOML 文件和 SCIFORGE_TASK_* 环境变量加载 per-task LLM 配置"""
         self._load_from_toml()
         self._load_from_env()
         return self
@@ -146,7 +147,7 @@ class AppConfig(BaseSettings):
         for toml_key, attr_name in _toml_globals.items():
             if toml_key in llm_section:
                 # 仅当环境变量未显式设置时才使用 TOML 值
-                env_key = f"MATHFORGE_{attr_name.upper()}"
+                env_key = f"SCIFORGE_{attr_name.upper()}"
                 if env_key not in os.environ:
                     setattr(self, attr_name, llm_section[toml_key])
 
@@ -171,8 +172,8 @@ class AppConfig(BaseSettings):
         )
 
     def _load_from_env(self) -> None:
-        """从 MATHFORGE_TASK_{TASK}_{FIELD} 环境变量加载（优先于 TOML）"""
-        prefix = "MATHFORGE_TASK_"
+        """从 SCIFORGE_TASK_{TASK}_{FIELD} 环境变量加载（优先于 TOML）"""
+        prefix = "SCIFORGE_TASK_"
 
         for key, value in os.environ.items():
             if not key.startswith(prefix):

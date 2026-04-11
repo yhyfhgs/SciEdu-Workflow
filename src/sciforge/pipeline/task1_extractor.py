@@ -1,13 +1,13 @@
 """Task1Extractor — Pipeline Consumer
 
-从 queue 取 MdBlockSource，按累计行号注入到行缓冲，每 200 行送给 LLM 做
+从 queue 取 MdBlockSource，按累计行号注入到行缓冲，滑动窗口送给 LLM 做
 "提取 + 校正 + 分类 + 打标签 + 难度评估" 单次调用，结果直接入库。
 
 核心特性:
 - 累计全局行号（跨 mdblock 连续）
 - TagTree 跨调用注入，提示 LLM 复用已有路径
 - 单调递增的 order_index 用于后续知识图谱构建
-- "incomplete" 时等下一个 mdblock 来扩展窗口
+- "incomplete" 时动态扩展窗口（base → max），buffer 不够时等下一个 mdblock
 - 失败 mdblock 不阻断整体流程，记入 state.failed_blocks
 - 行级 checkpoint 持久化（每次 commit 后保存）
 """
@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from mathforge.core.models import (
+from sciforge.core.models import (
     FileExtractionState,
     KnowledgePoint,
     KPType,
@@ -32,15 +32,15 @@ from mathforge.core.models import (
     QuestionType,
     StoredItemBatch,
 )
-from mathforge.pipeline.resume_state import save_state_locked
-from mathforge.pipeline.retry import RetryExhausted, call_llm_json_with_retry
-from mathforge.pipeline.tag_tree import TagTree
-from mathforge.prompts.templates import EXTRACT_AND_CLASSIFY_PROMPT
+from sciforge.pipeline.resume_state import save_state_locked
+from sciforge.pipeline.retry import RetryExhausted, call_llm_json_with_retry
+from sciforge.pipeline.tag_tree import TagTree
+from sciforge.prompts.templates import EXTRACT_AND_CLASSIFY_PROMPT
 
 if TYPE_CHECKING:
-    from mathforge.config.settings import AppConfig
-    from mathforge.llm.client import LLMClient
-    from mathforge.storage.protocol import BatchStorageBackend
+    from sciforge.config.settings import AppConfig
+    from sciforge.llm.client import LLMClient
+    from sciforge.storage.protocol import BatchStorageBackend
 
 logger = structlog.get_logger()
 
@@ -104,6 +104,8 @@ class Task1Extractor:
         self.line_buffer: list[str] = []
         self.line_offset = 0
         self.order_index = 0
+        # 当前目标窗口大小：incomplete 时可扩展到 extract_max_window_lines，成功消费后复位
+        self._current_window_size = config.extract_window_lines
 
     # ── 主循环 ─────────────────────────────────────────
 
@@ -198,17 +200,20 @@ class Task1Extractor:
         current_block: MdBlockSource | None,
         is_last: bool,
     ) -> AsyncIterator[StoredItemBatch]:
-        window_size = self.config.extract_window_lines
+        base_window = self.config.extract_window_lines
+        max_window = max(self.config.extract_max_window_lines, base_window)
 
         while True:
-            # buffer 不够大且不是最后一批 → 等下一个 block
-            if len(self.line_buffer) < window_size and not is_last:
-                break
-
             if not self.line_buffer:
                 break
 
-            window = self.line_buffer[:window_size]
+            # buffer 不够当前目标窗口且不是最后一批 → 等下一个 block 扩充内容
+            target = self._current_window_size
+            if len(self.line_buffer) < target and not is_last:
+                break
+
+            window_len = min(target, len(self.line_buffer))
+            window = self.line_buffer[:window_len]
 
             try:
                 llm_out = await self._extract_and_classify(window)
@@ -216,7 +221,7 @@ class Task1Extractor:
                 logger.error(
                     "task1_window_failed",
                     block=current_block.block_index if current_block else -1,
-                    line_range=f"{self.line_offset + 1}-{self.line_offset + len(window)}",
+                    line_range=f"{self.line_offset + 1}-{self.line_offset + window_len}",
                     attempts=exc.attempts,
                 )
                 if (
@@ -224,44 +229,74 @@ class Task1Extractor:
                     and current_block.block_index not in state.failed_blocks
                 ):
                     state.failed_blocks.append(current_block.block_index)
-                # 跳过该窗口的行
-                self.line_buffer = self.line_buffer[len(window):]
-                self.line_offset += len(window)
+                # 跳过该窗口的行，复位窗口大小避免后续窗口被放大的目标拖累
+                self.line_buffer = self.line_buffer[window_len:]
+                self.line_offset += window_len
+                self._current_window_size = base_window
                 break
 
             trunc = llm_out.get("truncation_line")
             items = llm_out.get("items", [])
 
-            # 处理 incomplete
             if trunc == "incomplete":
-                if is_last and len(self.line_buffer) <= window_size:
-                    # 最后窗口仍 incomplete → 丢弃，避免死锁
-                    logger.warning(
-                        "task1_final_incomplete_discard",
-                        lines=len(self.line_buffer),
-                    )
-                    self.line_offset += len(self.line_buffer)
-                    self.line_buffer = []
-                    break
-                else:
-                    # 等下一个 block 进 queue 来扩窗
+                # 核心原则：只在「能看到更多内容」时才扩展窗口重试，避免
+                # 用相同 window 重复调 LLM 的死循环。
+                #
+                # 能看到更多内容的两种情况：
+                #  (a) buffer 已经多于当前 window（新 block 提前到达）→ 扩窗
+                #  (b) is_last=False 且 buffer >= target（还可能有下个 block）→ 扩窗
+                buffer_has_more = len(self.line_buffer) > window_len
+                can_wait_next = not is_last
+
+                if self._current_window_size < max_window and (buffer_has_more or can_wait_next):
+                    next_size = min(self._current_window_size + base_window, max_window)
+                    self._current_window_size = next_size
                     logger.debug(
-                        "task1_incomplete_wait_next",
-                        buffer_size=len(self.line_buffer),
+                        "task1_incomplete_expand",
+                        old=target,
+                        new=next_size,
+                        buffer=len(self.line_buffer),
+                        is_last=is_last,
+                    )
+                    # 立即有内容能扩到新大小 → 重试；否则 break 等下一个 block
+                    if len(self.line_buffer) >= next_size:
+                        continue
+                    if is_last:
+                        # is_last 且 buffer 不足 next_size：不能再等，整个 buffer 就是窗口
+                        continue
+                    break
+
+                # 无法扩大或已到上限：
+                if is_last:
+                    logger.warning(
+                        "task1_final_incomplete_force_consume",
+                        window=self._current_window_size,
+                        buffer=len(self.line_buffer),
+                        llm_items=len(items),
+                    )
+                    # 强制按当前窗口消费（可能丢失未闭合条目，但比死锁好）
+                    trunc = None
+                else:
+                    # 未到最后，等下一个 block 到来再看
+                    logger.debug(
+                        "task1_incomplete_wait_next_block",
+                        buffer=len(self.line_buffer),
+                        window=self._current_window_size,
                     )
                     break
 
-            # 计算消费的行数：LLM 可指定 truncation_line 表示最后一个完整条目的
-            # 结束行，本轮 consumed 到该行之前（不含），下一轮 window 从该行开始，
-            # 确保不会在条目中间被句号切开
+            # ── 正常消费路径 ──
+            # truncation_line=N 表示全局行 1..N 是完整语义单元（prompt 定义）；
+            # 下一窗口应从 N+1 开始，所以 consumed = cut_idx + 1。
             if isinstance(trunc, int) and trunc > 0:
                 cut_idx = self._find_buffer_idx(trunc)
-                if cut_idx <= 0:
-                    consumed = len(window)
+                if 0 <= cut_idx < window_len:
+                    consumed = cut_idx + 1
                 else:
-                    consumed = cut_idx
+                    # LLM 返回的 trunc 在 window 之外或找不到 → 退化为整窗消费
+                    consumed = window_len
             else:
-                consumed = len(window)
+                consumed = window_len
 
             # 入库
             stored = await self._store_items(items, current_block, state)
@@ -269,6 +304,9 @@ class Task1Extractor:
             # 推进 buffer + 全局行号
             self.line_buffer = self.line_buffer[consumed:]
             self.line_offset += consumed
+
+            # 成功处理 → 复位目标窗口
+            self._current_window_size = base_window
 
             yield stored
 
@@ -441,9 +479,7 @@ class Task1Extractor:
 
     def _restore_state(self, state: FileExtractionState) -> None:
         """从 state 恢复内部 buffer / tag_tree / 计数器"""
-        self.tag_tree = (
-            TagTree.from_json(state.tag_tree_json) if state.tag_tree_json else TagTree()
-        )
+        self.tag_tree = TagTree.from_json(state.tag_tree_json) if state.tag_tree_json else TagTree()
         self.order_index = state.order_index_next
         self.line_offset = state.line_offset
         self.line_buffer = list(state.line_buffer_carry)

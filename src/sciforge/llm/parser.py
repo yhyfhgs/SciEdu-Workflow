@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 
-from mathforge.core.exceptions import LLMParseError
+from sciforge.core.exceptions import LLMParseError
 
 
 def parse_llm_json(text: str) -> dict:

@@ -8,7 +8,7 @@
 下，待生成引擎重建时按需加载。
 """
 
-from mathforge.prompts.loader import load_prompt
+from sciforge.prompts.loader import load_prompt
 
 EXTRACT_AND_CLASSIFY_PROMPT = load_prompt("pipeline/extract_and_classify.txt")
 VLM_CONVERT_PROMPT = load_prompt("pipeline/vlm_convert.txt")

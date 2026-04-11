@@ -9,11 +9,11 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from mathforge.core.exceptions import LLMVisionError, ToolCallError
-from mathforge.core.models import ConversationMessage, ToolCall, ToolResult
-from mathforge.llm.backends import ToolCallingBackend, VisionBackend
-from mathforge.llm.config import LLMConfig, LLMProvider
-from mathforge.llm.parser import parse_llm_json
+from sciforge.core.exceptions import LLMVisionError, ToolCallError
+from sciforge.core.models import ConversationMessage, ToolCall, ToolResult
+from sciforge.llm.backends import ToolCallingBackend, VisionBackend
+from sciforge.llm.config import LLMConfig, LLMProvider
+from sciforge.llm.parser import parse_llm_json
 
 if TYPE_CHECKING:
     pass
@@ -38,19 +38,19 @@ class LLMClient:
     def _create_backend(self, config: LLMConfig):
         match config.provider:
             case LLMProvider.ANTHROPIC:
-                from mathforge.llm.backends.anthropic import AnthropicBackend
+                from sciforge.llm.backends.anthropic import AnthropicBackend
 
                 return AnthropicBackend(config)
             case LLMProvider.OPENAI:
-                from mathforge.llm.backends.openai_backend import OpenAIBackend
+                from sciforge.llm.backends.openai_backend import OpenAIBackend
 
                 return OpenAIBackend(config)
             case LLMProvider.GEMINI:
-                from mathforge.llm.backends.gemini import GeminiBackend
+                from sciforge.llm.backends.gemini import GeminiBackend
 
                 return GeminiBackend(config)
             case LLMProvider.OPENAI_COMPATIBLE:
-                from mathforge.llm.backends.compatible import OpenAICompatibleBackend
+                from sciforge.llm.backends.compatible import OpenAICompatibleBackend
 
                 return OpenAICompatibleBackend(config)
             case _:

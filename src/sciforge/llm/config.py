@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from mathforge.config.settings import AppConfig
+    from sciforge.config.settings import AppConfig
 
 
 class LLMProvider(StrEnum):

@@ -1,11 +1,11 @@
-"""MathForge 异常层次"""
+"""SciForge 异常层次"""
 
 
-class MathForgeError(Exception):
+class SciForgeError(Exception):
     """基础异常"""
 
 
-class LLMError(MathForgeError):
+class LLMError(SciForgeError):
     """LLM 调用异常"""
 
 
@@ -21,7 +21,7 @@ class LLMTimeoutError(LLMError):
     """LLM 请求超时"""
 
 
-class ParseError(MathForgeError):
+class ParseError(SciForgeError):
     """解析异常"""
 
 
@@ -54,19 +54,19 @@ class CsvParseError(ParseError):
     """CSV 解析错误"""
 
 
-class StorageError(MathForgeError):
+class StorageError(SciForgeError):
     """存储操作异常"""
 
 
-class OcrRepairError(MathForgeError):
+class OcrRepairError(SciForgeError):
     """OCR 修复异常"""
 
 
-class GenerationError(MathForgeError):
+class GenerationError(SciForgeError):
     """生成流水线异常"""
 
 
-class SandboxError(MathForgeError):
+class SandboxError(SciForgeError):
     """代码沙箱执行异常"""
 
 
@@ -96,7 +96,7 @@ class EvolutionExhaustedError(GenerationError):
         super().__init__(f"进化引擎耗尽: {rounds} 轮改进, {candidates_tried} 个候选均未通过验证")
 
 
-class PipelineError(MathForgeError):
+class PipelineError(SciForgeError):
     """Pipeline 处理异常"""
 
 
