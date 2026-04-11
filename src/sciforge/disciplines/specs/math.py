@@ -68,9 +68,6 @@ MATH_SPEC = DisciplineSpec(
             "定理/定义/引理格式：`**定理 X.Y (名称)**` 或 `**Theorem X.Y**`"
         ),
         "discipline_reasoning_style": "证明思路或表述风格",
-        # 注意 `{{FIGURE:...}}` 的双括号用于 python format 转义，保留不动
-        "discipline_figure_example": (
-            "![图 3.1：群的 Cayley 图]({{FIGURE:45,10,80,90}})"
-        ),
+        "discipline_figure_caption": "图 3.1：群的 Cayley 图",
     },
 )

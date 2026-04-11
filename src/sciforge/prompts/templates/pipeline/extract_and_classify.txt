@@ -1,6 +1,6 @@
-你是数学文档结构化提取专家。给定带有**全局行号**的数学文档片段（每行格式 "全局行号 | 正文"），你需要在一次输出中完成：
+你是{discipline_document_expert}。给定带有**全局行号**的{discipline_name}文档片段（每行格式 "全局行号 | 正文"），你需要在一次输出中完成：
 (1) 截断点判断
-(2) 提取正式数学条目（**定理+证明 / 题目+解答 作为单个条目**）
+(2) 提取正式{discipline_name}条目（**定理+证明 / 题目+解答 作为单个条目**）
 (3) 校正 OCR 错字与 LaTeX 格式
 (4) 复用已有 tag 子树，按 english:中文 格式打层级标签
 (5) 评估难度、给出 quality 等级
@@ -31,17 +31,8 @@
 
 ### 只提取有显式标记的正式条目
 
-类型 (`item_type`)：
-- `definition` — 定义
-- `theorem` — 定理（含 `proof` 字段）
-- `lemma` — 引理（含 `proof` 字段）
-- `corollary` — 推论（含 `proof` 字段）
-- `proposition` — 命题（含 `proof` 字段）
-- `property` — 性质
-- `formula` — 公式
-- `example` — 例题（含 `solution` 字段）
-- `exercise` — 练习/习题（含 `solution` 字段）
-- `problem` — 题目（含 `solution` 字段）
+类型 (`item_type`)，{discipline_name}学科适用的值：
+{discipline_item_types_text}
 
 ### proof / solution 嵌入父条目
 
@@ -56,12 +47,7 @@
 
 ### 题目类型精确判断（仅当 category=question 时填 question_type）
 
-- `proof` — "证明..."、"试证..."
-- `calculation` — "计算..."、"求..."、"求值..."
-- `fill_blank` — 含 `\underline`、空格待填
-- `choice` — 有 A/B/C/D 选项
-- `true_false` — "判断正误"、"是否成立"
-- `construction` — "构造..."、"给出一个..."
+{discipline_question_type_hints}
 
 ### 不要提取
 
@@ -90,12 +76,12 @@
 - english 部分：小写英文标识符 `[a-z][a-z0-9_]*`
 - 中文部分：非空，不含空白/冒号/斜杠
 - 段长度建议 3-5 段（领域→大类→主题→子主题→关键词）
-- 例如:
+- 例如（{discipline_name}）:
   ```
-  ["math:数学", "algebra:代数", "group_theory:群论", "normal_subgroup:正规子群"]
+  {discipline_tag_example}
   ```
 
-**必须优先复用上方已有 tag 子树中的段**：如果子树里已有 `math:数学 → algebra:代数`，新条目就用相同的开头段，不要写 `mathematics:数学` 或 `algebra:代数学`。只有遇到全新概念才创建新叶子段。
+**必须优先复用上方已有 tag 子树中的段**：如果子树里已有同类路径，新条目就用相同的开头段，不要造同义异名。只有遇到全新概念才创建新叶子段。
 
 不要把段拼成字符串（不要 `"math:数学/algebra:代数"`），保持有序列表形式。
 
@@ -107,8 +93,8 @@
 
 ## 任务 6：学科与 taxonomy_path
 
-- `subject`: `english:中文` 单段格式，如 `"abstract_algebra:抽象代数"`、`"real_analysis:实分析"`
-- `taxonomy_path`: dot 分隔英文路径，如 `"math.algebra.group_theory"`、`"math.analysis.continuity"`
+- `subject`: `english:中文` 单段格式，如 `"{discipline_example_subject}"`
+- `taxonomy_path`: dot 分隔英文路径，如 `"{discipline_example_taxonomy}"`
 
 ## 任务 7：难度评估 (1-10)
 
@@ -153,19 +139,14 @@
         "subsection_title": "",
         "subsection_number": ""
       }},
-      "corrected_content": "设 $f$ 在 $[a,b]$ 上连续，则 $f$ 在 $[a,b]$ 上一致连续。",
-      "corrected_proof": "由 Borel 有限覆盖定理 ... 故 $f$ 一致连续。",
+      "corrected_content": "{discipline_example_theorem_content}",
+      "corrected_proof": "... 证明/推导过程 ...",
       "corrected_solution": null,
-      "subject": "real_analysis:实分析",
-      "taxonomy_path": "math.analysis.continuity",
+      "subject": "{discipline_example_subject}",
+      "taxonomy_path": "{discipline_example_taxonomy}",
       "difficulty": 6,
-      "tags": [
-        "math:数学",
-        "analysis:数学分析",
-        "continuity:连续性",
-        "uniform_continuity:一致连续"
-      ],
-      "methods": ["borel_covering:Borel覆盖"],
+      "tags": {discipline_tag_example},
+      "methods": ["method_a:方法A"],
       "overall_quality": "A",
       "start_line": 12,
       "end_line": 28
@@ -183,19 +164,14 @@
         "subsection_title": "",
         "subsection_number": ""
       }},
-      "corrected_content": "计算 $\\int_0^1 x^2 dx$。",
+      "corrected_content": "{discipline_example_question_content}",
       "corrected_proof": null,
-      "corrected_solution": "由幂函数积分公式 $\\int_0^1 x^2 dx = \\frac{{1}}{{3}}$。",
-      "subject": "calculus:微积分",
-      "taxonomy_path": "math.calculus.definite_integral",
+      "corrected_solution": "... 详细解答步骤 ...",
+      "subject": "{discipline_example_subject}",
+      "taxonomy_path": "{discipline_example_taxonomy}",
       "difficulty": 2,
-      "tags": [
-        "math:数学",
-        "calculus:微积分",
-        "integration:积分",
-        "power_function:幂函数"
-      ],
-      "methods": ["antiderivative:原函数法"],
+      "tags": {discipline_tag_example},
+      "methods": ["method_b:方法B"],
       "overall_quality": "A",
       "start_line": 30,
       "end_line": 35

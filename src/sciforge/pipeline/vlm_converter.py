@@ -26,7 +26,9 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from sciforge.core.exceptions import VlmConversionError
-from sciforge.prompts.templates import VLM_CONVERT_PROMPT
+from sciforge.core.models import Discipline
+from sciforge.disciplines import DISCIPLINE_REGISTRY
+from sciforge.prompts.templates import get_vlm_prompt_template
 
 if TYPE_CHECKING:
     from sciforge.llm.client import LLMClient
@@ -35,8 +37,9 @@ logger = structlog.get_logger()
 
 _CONTEXT_TAIL_LINES = 10
 
-_SYSTEM_PROMPT = (
-    "你是一位高精度数学文档转写专家，擅长将文档页面图像精确转换为 Markdown+LaTeX 格式。"
+# System prompt 模板（{discipline_vlm_expert} 由 VlmConverter.__init__ 注入）
+_SYSTEM_PROMPT_TEMPLATE = (
+    "你是一位{discipline_vlm_expert}，擅长将文档页面图像精确转换为 Markdown+LaTeX 格式。"
     "你只输出正文内容，自行判断并忽略页眉、页脚、页码、水印等非正文元素。"
     "你特别注意保持原文的段落结构，不会随意合并或拆分段落。"
 )
@@ -56,6 +59,7 @@ class VlmConverter:
         dpi: int = 200,
         max_concurrent: int = 2,
         pages_per_batch: int = 4,
+        discipline: Discipline = Discipline.MATH,
     ) -> None:
         self.llm = llm_client
         self.checkpoint_dir = checkpoint_dir
@@ -63,6 +67,13 @@ class VlmConverter:
         self.dpi = dpi
         self.max_concurrent = max_concurrent
         self.pages_per_batch = pages_per_batch
+        self.discipline = discipline
+        # 按 discipline 构造实例级 system prompt + user prompt 模板
+        spec = DISCIPLINE_REGISTRY.get(discipline)
+        self._system_prompt = _SYSTEM_PROMPT_TEMPLATE.replace(
+            "{discipline_vlm_expert}", spec.prompt_vars["discipline_vlm_expert"]
+        )
+        self._prompt_template = get_vlm_prompt_template(discipline)
 
     # ── 文档打开 ──────────────────────────────────────────
 
@@ -133,7 +144,7 @@ class VlmConverter:
         )
 
         safe_context = context_block.replace("{", "{{").replace("}", "}}")
-        prompt = VLM_CONVERT_PROMPT.format(
+        prompt = self._prompt_template.format(
             page_number=page_range,
             total_pages=total_pages,
             previous_context=safe_context,
@@ -145,7 +156,7 @@ class VlmConverter:
                 prompt=prompt,
                 image_data=images[0],
                 image_media_type="image/png",
-                system=_SYSTEM_PROMPT,
+                system=self._system_prompt,
                 temperature=0.0,
                 max_tokens=16384,
             )
@@ -154,7 +165,7 @@ class VlmConverter:
             prompt=prompt,
             images=images,
             image_media_type="image/png",
-            system=_SYSTEM_PROMPT,
+            system=self._system_prompt,
             temperature=0.0,
             max_tokens=16384,
         )

@@ -70,8 +70,6 @@ PHYSICS_SPEC = DisciplineSpec(
             "定律/定义/公式/例题格式：`**定律 X.Y (名称)**` 或 `**Law X.Y**`"
         ),
         "discipline_reasoning_style": "推导过程或表述风格",
-        "discipline_figure_example": (
-            "![图 3.1：斜面受力分析]({{FIGURE:45,10,80,90}})"
-        ),
+        "discipline_figure_caption": "图 3.1：斜面受力分析",
     },
 )
