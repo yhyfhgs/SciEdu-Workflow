@@ -118,9 +118,7 @@ class CompiledGraph:
 
         while current != END:
             if steps >= max_steps:
-                raise RuntimeError(
-                    f"StateGraph 执行超过 max_steps={max_steps}（死循环？）"
-                )
+                raise RuntimeError(f"StateGraph 执行超过 max_steps={max_steps}（死循环？）")
             steps += 1
 
             fn = self._g._nodes.get(current)
@@ -140,9 +138,7 @@ class CompiledGraph:
             else:
                 next_node = self._g._edges.get(current, END)
 
-            logger.debug(
-                "graph_node_exit", node=current, step=steps, next=next_node
-            )
+            logger.debug("graph_node_exit", node=current, step=steps, next=next_node)
             current = next_node
 
         return state

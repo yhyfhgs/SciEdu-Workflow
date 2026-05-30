@@ -10,6 +10,7 @@ from sciforge.core.models import FileExtractionState
 from sciforge.pipeline.resume_state import (
     compute_file_hash,
     enum_cached_batches_for_file,
+    is_state_complete,
     load_state,
     recognize_dir,
     save_state,
@@ -71,9 +72,9 @@ def test_save_and_load_state_roundtrip(checkpoint_root: Path) -> None:
         current_block_idx=3,
         line_offset=500,
         line_buffer_carry=["    501 | hello"],
-        order_index_next=42,
+        next_item_id=42,
         tag_tree_json="{}",
-        saved_item_count=40,
+        stage3_persisted_count=40,
     )
     save_state(checkpoint_root, state)
 
@@ -84,12 +85,34 @@ def test_save_and_load_state_roundtrip(checkpoint_root: Path) -> None:
     assert loaded.current_block_idx == 3
     assert loaded.line_offset == 500
     assert loaded.line_buffer_carry == ["    501 | hello"]
-    assert loaded.order_index_next == 42
-    assert loaded.saved_item_count == 40
+    assert loaded.next_item_id == 42
+    assert loaded.stage3_persisted_count == 40
 
 
 def test_load_state_missing_returns_none(checkpoint_root: Path) -> None:
     assert load_state(checkpoint_root, "nonexistent") is None
+
+
+def test_load_state_autofixes_completed_phase(checkpoint_root: Path) -> None:
+    state = FileExtractionState(
+        file_path="/tmp/foo.pdf",
+        file_hash="done123",
+        phase="running",
+        task0_completed=True,
+        stage1_completed=True,
+        stage3_completed=True,
+        stage3_persisted_count=5,
+    )
+    save_state(checkpoint_root, state)
+
+    loaded = load_state(checkpoint_root, "done123")
+    assert loaded is not None
+    assert loaded.phase == "completed"
+    assert is_state_complete(loaded) is True
+
+    reloaded = load_state(checkpoint_root, "done123")
+    assert reloaded is not None
+    assert reloaded.phase == "completed"
 
 
 # ── enum_cached_batches_for_file ──────────────────────

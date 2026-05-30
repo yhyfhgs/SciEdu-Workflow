@@ -15,7 +15,6 @@ Post-MVP 占位（raise NotImplementedError）：
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,6 +33,18 @@ if TYPE_CHECKING:
 
 generate_app = typer.Typer(name="generate", help="AI 题目/讲义/解答生成")
 
+_DEFAULT_LLM_CONFIG = Path("config/sciforge.toml")
+
+
+def _resolve_llm_config(p: Path | None) -> Path | None:
+    """统一解析 --llm-config：显式错误路径 fail-fast，未指定时回退到默认路径"""
+    if p is not None:
+        if not p.exists():
+            error(f"--llm-config 路径不存在: {p}")
+            raise typer.Exit(1)
+        return p
+    return _DEFAULT_LLM_CONFIG if _DEFAULT_LLM_CONFIG.exists() else None
+
 
 # ── 共用 helper ──────────────────────────────────────
 
@@ -43,9 +54,23 @@ def _parse_discipline(value: str) -> Discipline:
         return Discipline(value)
     except ValueError as exc:
         allowed = ", ".join(d.value for d in Discipline)
-        raise typer.BadParameter(
-            f"未知学科 {value!r}；允许值: {allowed}"
-        ) from exc
+        raise typer.BadParameter(f"未知学科 {value!r}；允许值: {allowed}") from exc
+
+
+def _resolve_provider_override(llm_provider: str | None) -> dict[str, str]:
+    """把 CLI --llm-provider 智能分派为 provider_ref 或 raw provider type
+
+    - 若值匹配已知 LLMProvider 枚举 → 当 raw type
+    - 否则当 provider_ref 别名
+    """
+    from sciforge.llm.config import LLMProvider
+
+    if not llm_provider:
+        return {}
+    known_types = {e.value for e in LLMProvider}
+    if llm_provider in known_types:
+        return {"provider": llm_provider}
+    return {"provider_ref": llm_provider}
 
 
 def _build_llm_client(
@@ -54,18 +79,16 @@ def _build_llm_client(
     llm_provider: str | None,
     llm_model: str | None,
 ) -> LLMClient:
-    """按 task 构造一个 LLMClient 实例（失败直接 typer.Exit）"""
+    """按 task 构造一个 LLMClient 实例（失败直接 typer.Exit）
+
+    调用方应已用 `_resolve_llm_config` 预处理 llm_config_file；这里不再做 silent fallback。
+    """
     from sciforge.config.settings import AppConfig
     from sciforge.llm.client import LLMClient
     from sciforge.llm.config import LLMConfig
 
-    if llm_config_file and not llm_config_file.exists():
-        llm_config_file = None
-
     config = AppConfig(llm_config_file=llm_config_file)
-    cli_overrides: dict[str, str] = {}
-    if llm_provider:
-        cli_overrides["provider"] = llm_provider
+    cli_overrides: dict[str, str] = _resolve_provider_override(llm_provider)
     if llm_model:
         cli_overrides["model"] = llm_model
 
@@ -100,15 +123,15 @@ def generate_free(
     difficulty: int = typer.Option(5, "-d", "--difficulty", min=1, max=10),
     question_type: str = typer.Option("proof", "--type", help="题型 (proof/calculation/...)"),
     count: int = typer.Option(1, "-n", "--count", help="生成数量"),
-    discipline: str = typer.Option(
-        "math", "--discipline", "-D", help="学科 (math/physics/...)"
-    ),
+    discipline: str = typer.Option("math", "--discipline", "-D", help="学科 (math/physics/...)"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="SQLite 数据库路径"),
     save: bool = typer.Option(True, "--save/--no-save", help="是否保存生成结果到 DB"),
     llm_provider: str | None = typer.Option(None, "--llm-provider"),
     llm_model: str | None = typer.Option(None, "--llm-model"),
     llm_config: Path | None = typer.Option(
-        Path("config/sciforge.toml"), "--llm-config"
+        None,
+        "--llm-config",
+        help="LLM TOML 配置文件路径（未指定时默认读 config/sciforge.toml）",
     ),
 ) -> None:
     """自由模式生成新题目（QGenAgent 5 阶段闭环）"""
@@ -120,11 +143,26 @@ def generate_free(
         error("至少提供一个 topic")
         raise typer.Exit(1)
 
+    llm_config = _resolve_llm_config(llm_config)
     llm = _build_llm_client("generate", llm_config, llm_provider, llm_model)
     storage = _open_storage(db)
 
     try:
-        agent = QGenAgent(llm=llm, storage=storage, discipline=discipline_enum)
+        from sciforge.config.settings import AppConfig
+
+        app_cfg = AppConfig()
+        agent = QGenAgent(
+            llm=llm,
+            storage=storage,
+            discipline=discipline_enum,
+            max_rounds=app_cfg.generation_max_rounds,
+            candidates_per_round=app_cfg.generation_candidates_per_round,
+            retriever_max_kps=app_cfg.qgen_retriever_max_kps,
+            retriever_max_refs=app_cfg.qgen_retriever_max_refs,
+            retriever_max_negatives=app_cfg.qgen_retriever_max_negatives,
+            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
+            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+        )
 
         async def run_once() -> None:
             request = GenerationRequest(
@@ -169,13 +207,16 @@ def generate_solve(
     llm_provider: str | None = typer.Option(None, "--llm-provider"),
     llm_model: str | None = typer.Option(None, "--llm-model"),
     llm_config: Path | None = typer.Option(
-        Path("config/sciforge.toml"), "--llm-config"
+        None,
+        "--llm-config",
+        help="LLM TOML 配置文件路径（未指定时默认读 config/sciforge.toml）",
     ),
 ) -> None:
     """为已有题目生成详细解答"""
     from sciforge.agents import SolveAgent, SolveInput
 
     discipline_enum = _parse_discipline(discipline)
+    llm_config = _resolve_llm_config(llm_config)
     llm = _build_llm_client("solve", llm_config, llm_provider, llm_model)
     storage = _open_storage(db)
 
@@ -192,7 +233,14 @@ def generate_solve(
             console.print(result.solution.solution_latex or "(空)")
 
             if save:
-                q = storage.load_question(question_id)
+                try:
+                    q = storage.load_question(question_id)
+                except FileNotFoundError:
+                    error(f"题目不存在: {question_id}")
+                    raise typer.Exit(1) from None
+                if q is None:
+                    error(f"题目不存在: {question_id}")
+                    raise typer.Exit(1)
                 q.solution_content = result.solution.solution_latex
                 storage.save_batch([], [q])
                 success(f"已更新 question {question_id[:8]}.solution_content")
@@ -218,11 +266,13 @@ def generate_batch(
     llm_provider: str | None = typer.Option(None, "--llm-provider"),
     llm_model: str | None = typer.Option(None, "--llm-model"),
     llm_config: Path | None = typer.Option(
-        Path("config/sciforge.toml"), "--llm-config"
+        None,
+        "--llm-config",
+        help="LLM TOML 配置文件路径（未指定时默认读 config/sciforge.toml）",
     ),
 ) -> None:
-    """批量生成题目（内部循环 QGenAgent.run）"""
-    # 直接复用 free 的实现
+    """批量生成题目（等价于 `generate free --count N`，仅作为便捷别名）"""
+    # 直接复用 free 的实现；_resolve_llm_config 会在 generate_free 内部调用
     generate_free(
         subject=subject,
         topic=topic,
@@ -248,13 +298,13 @@ def generate_lecture(
     discipline: str = typer.Option("math", "--discipline", "-D"),
     audience: str = typer.Option("大学一年级", "--audience"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db"),
-    output_dir: Path = typer.Option(
-        Path("data/lectures"), "--output", "-o", help="讲义输出目录"
-    ),
+    output_dir: Path = typer.Option(Path("data/lectures"), "--output", "-o", help="讲义输出目录"),
     llm_provider: str | None = typer.Option(None, "--llm-provider"),
     llm_model: str | None = typer.Option(None, "--llm-model"),
     llm_config: Path | None = typer.Option(
-        Path("config/sciforge.toml"), "--llm-config"
+        None,
+        "--llm-config",
+        help="LLM TOML 配置文件路径（未指定时默认读 config/sciforge.toml）",
     ),
 ) -> None:
     """生成 markdown 讲义（DocAssemblyAgent lite）"""
@@ -266,13 +316,12 @@ def generate_lecture(
         error("至少提供一个 topic")
         raise typer.Exit(1)
 
+    llm_config = _resolve_llm_config(llm_config)
     llm = _build_llm_client("generate", llm_config, llm_provider, llm_model)
     storage = _open_storage(db)
 
     try:
-        agent = DocAssemblyAgent(
-            llm=llm, storage=storage, discipline=discipline_enum
-        )
+        agent = DocAssemblyAgent(llm=llm, storage=storage, discipline=discipline_enum)
 
         async def run_once() -> None:
             result = await agent.run(
@@ -288,9 +337,7 @@ def generate_lecture(
             md_path = output_dir / f"{result.lecture.id}.md"
             json_path = output_dir / f"{result.lecture.id}.json"
             md_path.write_text(result.markdown_text, encoding="utf-8")
-            json_path.write_text(
-                result.lecture.model_dump_json(indent=2), encoding="utf-8"
-            )
+            json_path.write_text(result.lecture.model_dump_json(indent=2), encoding="utf-8")
 
             console.print(f"[bold]讲义标题:[/] {result.lecture.title}")
             console.print(f"[bold]章节数:[/] {len(result.lecture.sections)}")

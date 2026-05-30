@@ -73,9 +73,7 @@ class QuestionGenerator:
                         difficulty=result.get("estimated_difficulty"),
                     )
             except Exception as exc:
-                logger.warning(
-                    "qgen_candidate_failed", idx=i + 1, error=str(exc)[:200]
-                )
+                logger.warning("qgen_candidate_failed", idx=i + 1, error=str(exc)[:200])
         return candidates
 
     def _build_prompt(self, req: GenerationRequest, ctx: ContextBundle) -> str:
@@ -114,9 +112,7 @@ class QuestionGenerator:
     ) -> Question | None:
         """LLM JSON → Question"""
         # 兼容新 / 旧 key (content vs content_latex)
-        content = str(
-            data.get("content") or data.get("content_latex") or ""
-        ).strip()
+        content = str(data.get("content") or data.get("content_latex") or "").strip()
         if not content:
             return None
 
@@ -129,8 +125,6 @@ class QuestionGenerator:
             difficulty=int(data.get("estimated_difficulty") or req.difficulty_target),
             subject=req.subject,
             tags=list(data.get("knowledge_points_used") or []) + req.topics,
-            is_generated=True,
-            parent_id=req.source_question.id if req.source_question else None,
         )
 
     @staticmethod

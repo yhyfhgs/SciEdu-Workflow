@@ -1,7 +1,7 @@
 """VLM (Vision Language Model) 文档转 Markdown 转换器
 
 逐页渲染文档为图像，送入多模态 LLM 识别，输出高精度 Markdown+LaTeX。
-支持 PDF 和 DOCX（通过 LibreOffice 转 PDF）。
+支持 PDF / DOCX / PPTX（Office 文档通过 LibreOffice 转 PDF）。
 
 核心接口: `recognize_in_batches` — 异步生成器，每 N 页为一个 batch yield
 `(page_start, page_end, md_text, md_path)` 给上游 Producer 使用。
@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -48,6 +49,20 @@ _SYSTEM_PROMPT_TEMPLATE = (
 _FIGURE_RE = re.compile(r"!\[([^\]]*)\]\(\{\{FIGURE:(\d+),(\d+),(\d+),(\d+)\}\}\)")
 
 
+@dataclass
+class _OpenedDocument:
+    pdf_path: Path
+    page_count: int
+    fitz_doc: Any | None = None
+    tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+
+    def close(self) -> None:
+        if self.fitz_doc is not None:
+            self.fitz_doc.close()
+        if self.tmp_dir is not None:
+            self.tmp_dir.cleanup()
+
+
 class VlmConverter:
     """多模态 LLM 文档转 Markdown 转换器（仅保留 recognize_in_batches 入口）"""
 
@@ -60,6 +75,9 @@ class VlmConverter:
         max_concurrent: int = 2,
         pages_per_batch: int = 4,
         discipline: Discipline = Discipline.MATH,
+        rate_limit_base_sleep: float = 300.0,
+        rate_limit_max_sleep: float = 1800.0,
+        rate_limit_total_budget: float = 21600.0,
     ) -> None:
         self.llm = llm_client
         self.checkpoint_dir = checkpoint_dir
@@ -68,6 +86,9 @@ class VlmConverter:
         self.max_concurrent = max_concurrent
         self.pages_per_batch = pages_per_batch
         self.discipline = discipline
+        self.rate_limit_base_sleep = rate_limit_base_sleep
+        self.rate_limit_max_sleep = rate_limit_max_sleep
+        self.rate_limit_total_budget = rate_limit_total_budget
         # 按 discipline 构造实例级 system prompt + user prompt 模板
         spec = DISCIPLINE_REGISTRY.get(discipline)
         self._system_prompt = _SYSTEM_PROMPT_TEMPLATE.replace(
@@ -77,24 +98,53 @@ class VlmConverter:
 
     # ── 文档打开 ──────────────────────────────────────────
 
-    def _open_document(
-        self, file_path: Path
-    ) -> tuple[Any, tempfile.TemporaryDirectory[str] | None]:
-        """打开 PDF 或 DOCX（自动转为 PDF）
+    @staticmethod
+    def _has_fitz() -> bool:
+        try:
+            import fitz  # noqa: F401
+        except ImportError:
+            return False
+        return True
 
-        Returns:
-            (fitz.Document, tmp_dir_or_None) — tmp_dir 仅 DOCX 路径非空
-        """
-        import fitz
+    @staticmethod
+    def _pdf_page_count(pdf_path: Path) -> int:
+        pdfinfo = shutil.which("pdfinfo")
+        if not pdfinfo:
+            raise VlmConversionError("缺少 pdfinfo，无法读取 PDF 页数")
+        result = subprocess.run(
+            [pdfinfo, str(pdf_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise VlmConversionError(
+                f"pdfinfo 读取页数失败: {result.stderr or result.stdout or 'unknown error'}"
+            )
+        for line in result.stdout.splitlines():
+            if line.lower().startswith("pages:"):
+                raw = line.split(":", 1)[1].strip()
+                try:
+                    total = int(raw)
+                except ValueError as exc:
+                    raise VlmConversionError(f"pdfinfo 返回非法页数: {raw}") from exc
+                if total > 0:
+                    return total
+        raise VlmConversionError("pdfinfo 未返回 Pages 字段")
 
+    def _open_document(self, file_path: Path) -> _OpenedDocument:
+        """打开 PDF / Office 文档（自动转为 PDF）"""
         suffix = file_path.suffix.lower()
+        tmp: tempfile.TemporaryDirectory[str] | None = None
         if suffix == ".pdf":
-            return fitz.open(str(file_path)), None
-
-        if suffix == ".docx":
+            pdf_path = file_path
+        elif suffix in {".docx", ".pptx"}:
             soffice = shutil.which("soffice")
             if not soffice:
-                raise VlmConversionError("VLM 转换 DOCX 需要 LibreOffice")
+                raise VlmConversionError(f"VLM 转换 {suffix} 需要 LibreOffice")
 
             tmp = tempfile.TemporaryDirectory()
             result = subprocess.run(
@@ -119,9 +169,27 @@ class VlmConverter:
             if not pdf_files:
                 tmp.cleanup()
                 raise VlmConversionError("LibreOffice 未生成 PDF")
-            return fitz.open(str(pdf_files[0])), tmp
+            pdf_path = pdf_files[0]
+        else:
+            raise VlmConversionError(f"不支持的格式: {suffix}")
 
-        raise VlmConversionError(f"不支持的格式: {suffix}")
+        if self._has_fitz():
+            import fitz
+
+            fitz_doc = fitz.open(str(pdf_path))
+            return _OpenedDocument(
+                pdf_path=pdf_path,
+                page_count=int(fitz_doc.page_count),
+                fitz_doc=fitz_doc,
+                tmp_dir=tmp,
+            )
+
+        return _OpenedDocument(
+            pdf_path=pdf_path,
+            page_count=self._pdf_page_count(pdf_path),
+            fitz_doc=None,
+            tmp_dir=tmp,
+        )
 
     # ── 多页批量 VLM 调用 ─────────────────────────────────
 
@@ -143,11 +211,10 @@ class VlmConverter:
             else f"第 {page_nums[0] + 1}-{page_nums[-1] + 1} 页"
         )
 
-        safe_context = context_block.replace("{", "{{").replace("}", "}}")
         prompt = self._prompt_template.format(
             page_number=page_range,
             total_pages=total_pages,
-            previous_context=safe_context,
+            previous_context=context_block,
             figure_hint="",
         )
 
@@ -181,7 +248,7 @@ class VlmConverter:
     def _crop_figures_from_md(
         self,
         md: str,
-        doc: Any,
+        doc: _OpenedDocument,
         page_nums: list[int],
         file_stem: str,
         assets_dir: Path,
@@ -191,6 +258,9 @@ class VlmConverter:
         页面归属策略：按 FIGURE 在 md 文本中的位置比例，映射到 batch 内的
         对应页面。单页 batch 时所有 FIGURE 都属于该页。
         """
+        if doc.fitz_doc is None:
+            return _FIGURE_RE.sub(lambda m: f"[图：{m.group(1)}]", md)
+
         import fitz
 
         matches = list(_FIGURE_RE.finditer(md))
@@ -219,7 +289,7 @@ class VlmConverter:
             page_idx = min(int(text_pos_ratio * n_pages), n_pages - 1)
             target_page = page_nums[page_idx]
 
-            page = doc[target_page]
+            page = doc.fitz_doc[target_page]
             page_rect = page.rect
 
             x0 = page_rect.x0 + page_rect.width * left_pct / 100
@@ -298,7 +368,7 @@ class VlmConverter:
         output_dir: Path,
         already_done: list[tuple[int, int]],
         max_retries: int = 3,
-    ) -> AsyncGenerator[tuple[int, int, str, Path], None]:
+    ) -> AsyncGenerator[tuple[int, int, str, Path, bool], None]:
         """把文档按 batch_pages 一批识别为 markdown 并 yield
 
         Args:
@@ -309,14 +379,15 @@ class VlmConverter:
             max_retries: 单 batch 调用 LLM 失败时的重试次数
 
         Yields:
-            (page_start_1based, page_end_1based, md_text, md_path)
+            (page_start_1based, page_end_1based, md_text, md_path, is_failed)
+            is_failed=True 表示该 batch 重试耗尽，md_text 为空，md_path 指向未写入的缓存路径
         """
         from sciforge.pipeline.retry import RetryExhausted, with_retry
 
         output_dir.mkdir(parents=True, exist_ok=True)
         done_set = {tuple(p) for p in already_done}
 
-        doc, tmp_pdf = self._open_document(file_path)
+        doc = self._open_document(file_path)
         prev_md_tail = ""
 
         try:
@@ -347,7 +418,7 @@ class VlmConverter:
                             pages=f"{page_start_1based}-{page_end_1based}",
                         )
                         prev_md_tail = self._tail_lines(md_text)
-                        yield (page_start_1based, page_end_1based, md_text, cache_path)
+                        yield (page_start_1based, page_end_1based, md_text, cache_path, False)
                     page_idx = batch_end_excl
                     continue
 
@@ -378,6 +449,9 @@ class VlmConverter:
                             attempt=i,
                             error=str(e)[:200],
                         ),
+                        rate_limit_base_sleep=self.rate_limit_base_sleep,
+                        rate_limit_max_sleep=self.rate_limit_max_sleep,
+                        rate_limit_total_budget=self.rate_limit_total_budget,
                     )
                 except RetryExhausted as exc:
                     logger.error(
@@ -386,6 +460,10 @@ class VlmConverter:
                         pages=f"{page_start_1based}-{page_end_1based}",
                         attempts=exc.attempts,
                     )
+                    # 关键修复：不再内部吞并失败，yield is_failed=True 让上游 Producer
+                    # 记入 state.failed_batches 并标记 producer_had_error=True，避免
+                    # task0_completed 被误置为 True 后走缓存直通模式
+                    yield (page_start_1based, page_end_1based, "", cache_path, True)
                     page_idx = batch_end_excl
                     continue
 
@@ -404,19 +482,56 @@ class VlmConverter:
                     md_length=len(md_text),
                 )
 
-                yield (page_start_1based, page_end_1based, md_text, cache_path)
+                yield (page_start_1based, page_end_1based, md_text, cache_path, False)
                 page_idx = batch_end_excl
 
         finally:
             doc.close()
-            if tmp_pdf:
-                tmp_pdf.cleanup()
 
-    def _render_batch_images(self, doc: Any, page_nums_0based: list[int]) -> list[bytes]:
+    def _render_pdf_page_with_poppler(self, pdf_path: Path, page_number_1based: int) -> bytes:
+        renderer = shutil.which("pdftocairo") or shutil.which("pdftoppm")
+        if not renderer:
+            raise VlmConversionError("缺少 PDF 渲染器：需要 pdftocairo 或 pdftoppm")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_prefix = Path(tmp_dir) / f"page_{page_number_1based:04d}"
+            result = subprocess.run(
+                [
+                    renderer,
+                    "-png",
+                    "-singlefile",
+                    "-r",
+                    str(self.dpi),
+                    "-f",
+                    str(page_number_1based),
+                    "-l",
+                    str(page_number_1based),
+                    str(pdf_path),
+                    str(output_prefix),
+                ],
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+            png_path = output_prefix.with_suffix(".png")
+            if result.returncode != 0 or not png_path.exists():
+                stderr = result.stderr.decode("utf-8", errors="replace")
+                raise VlmConversionError(f"PDF 渲染失败: {stderr or 'unknown error'}")
+            return png_path.read_bytes()
+
+    def _render_batch_images(
+        self,
+        doc: _OpenedDocument,
+        page_nums_0based: list[int],
+    ) -> list[bytes]:
         """把一批页面渲染为 PNG bytes，供 asyncio.to_thread 调用"""
         images: list[bytes] = []
+        if doc.fitz_doc is None:
+            for pn in page_nums_0based:
+                images.append(self._render_pdf_page_with_poppler(doc.pdf_path, pn + 1))
+            return images
         for pn in page_nums_0based:
-            page = doc[pn]
+            page = doc.fitz_doc[pn]
             pix = page.get_pixmap(dpi=self.dpi)
             images.append(pix.tobytes("png"))
         return images

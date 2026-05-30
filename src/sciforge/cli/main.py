@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from sciforge import __version__
+from sciforge.cli.config_cmd import config_app
 from sciforge.cli.generate import generate_app
 from sciforge.cli.parse import parse_app
 from sciforge.config.logging import setup_logging
@@ -47,3 +48,4 @@ def main(
 
 app.add_typer(parse_app)
 app.add_typer(generate_app)
+app.add_typer(config_app)

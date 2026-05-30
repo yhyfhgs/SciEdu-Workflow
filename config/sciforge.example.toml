@@ -1,62 +1,312 @@
-# SciForge LLM 配置示例
+# =============================================================================
+# SciForge 统一配置（v2 schema）
+# -----------------------------------------------------------------------------
+# 使用方式:
+#   1. cp config/sciforge.example.toml config/sciforge.toml
+#   2. 在 config/sciforge.toml 中填入你的 API Keys 或保留 ${ENV_VAR} 占位符
+#   3. 运行 CLI 时自动加载 config/sciforge.toml，也可显式 --llm-config <path>
 #
-# 使用方法:
-#   1. 复制本文件: cp config/sciforge.example.toml config/sciforge.toml
-#   2. 通过 CLI 指定: sciforge parse run --llm-config config/sciforge.toml ...
-#   3. 或通过环境变量: SCIFORGE_LLM_CONFIG_FILE=config/sciforge.toml
-
-[llm]
-# 全局默认配置（可被 per-task 配置覆盖）
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
-
-# ── Pipeline 任务（必填）────────────────────────────────
+# 敏感信息处理:
+#   - 推荐: api_key = "${OPENROUTER_API_KEY}"  (从 .env 或 shell env 解析)
+#   - 也可: 把 config/sciforge.toml 加入 .gitignore 后直接写明文
+#   - 不要把明文 API Key 提交到 git 仓库
 #
-# Producer-Consumer 流水线只需两个 LLM 任务:
-#   1. vlm_convert         - Phase A: 多模态识别 PDF/DOCX → markdown
-#   2. extract_and_classify - Task1: 单次调用做 提取+校正+分类+打标签+难度
+# 整体结构:
+#   default_provider_ref  顶层字段 - 未指定 provider_ref 的 task 默认走这个 provider
+#   [providers.*]         命名连接池 - 定义多个平台（官方/中转/本地）
+#   [tasks.*]             任务级配置 - 每个 pipeline/agent 任务引用一个 provider_ref
+#   [pipeline]            流水线运行参数（并发/批量/滑动窗口/checkpoint）
+#   [logging]             日志级别与输出路径
+# =============================================================================
 
-[llm.tasks.vlm_convert]
-# Phase A: VLM 视觉识别（必须支持图像输入！）
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
 
-[llm.tasks.extract_and_classify]
-# Task1: 一次 LLM 调用完成提取/校正/分类/打标签/难度评估
-# JSON 输出量较大（一窗口可能含多个 item + tag 子树），max_tokens 建议 ≥ 32k
-provider = "anthropic"
+# -----------------------------------------------------------------------------
+# 顶层字段 — 必须放在所有 [section] 之前
+# -----------------------------------------------------------------------------
+# 未显式指定 provider_ref 的 task 将默认使用此别名
+default_provider_ref = "openrouter"
+
+
+# -----------------------------------------------------------------------------
+# [providers.*] 命名连接池
+# -----------------------------------------------------------------------------
+# 每个条目代表一个"独立的 API 端点 + API Key + 默认模型"。Tasks 通过 provider_ref
+# 引用这里的别名。用户可以混用官方端点与多家中转，互不影响。
+#
+# 支持的 type:
+#   - anthropic             官方 Anthropic API
+#   - openai                官方 OpenAI API
+#   - gemini                官方 Google Gemini
+#   - openai_compatible     OpenAI Chat Completions 格式兼容网关（OpenRouter/Z.AI/Ollama/vLLM/...）
+#   - anthropic_compatible  Anthropic Messages 格式兼容网关（Z.AI/DeepSeek-Claude/Kimi/...）
+# -----------------------------------------------------------------------------
+
+# 官方 Anthropic API
+# 申请: https://console.anthropic.com/settings/keys
+# 模型列表: https://docs.anthropic.com/en/docs/about-claude/models
+[providers.anthropic_official]
+type = "anthropic"
+api_key = "${ANTHROPIC_API_KEY}"
+default_model = "claude-sonnet-4-20250514"
+timeout = 180
+max_retries = 3
+
+
+# 官方 OpenAI API
+# 申请: https://platform.openai.com/api-keys
+# 模型列表: https://platform.openai.com/docs/models
+[providers.openai_official]
+type = "openai"
+api_key = "${OPENAI_API_KEY}"
+default_model = "gpt-4o-2024-11-20"
+timeout = 120
+max_retries = 3
+
+
+# 官方 Google Gemini
+# 申请: https://aistudio.google.com/app/apikey
+# 模型列表: https://ai.google.dev/gemini-api/docs/models
+[providers.gemini_official]
+type = "gemini"
+api_key = "${GOOGLE_API_KEY}"
+default_model = "gemini-2.0-flash-exp"
+timeout = 120
+
+
+# OpenRouter 聚合网关 (兼容 OpenAI Chat Completions 格式)
+# 申请: https://openrouter.ai/keys
+# 模型列表: https://openrouter.ai/models
+# 特点: 单 API Key 访问几乎所有主流模型，统一计费
+[providers.openrouter]
+type = "openai_compatible"
+api_key = "${OPENROUTER_API_KEY}"
+base_url = "https://openrouter.ai/api/v1"
+default_model = "anthropic/claude-sonnet-4"
+timeout = 180
+max_retries = 3
+
+
+# Z.AI (Anthropic Messages API 兼容)
+# 申请: https://z.ai
+# Base URL: https://api.z.ai/api/coding/paas/v4/anthropic
+# 特点: 中国大陆友好的 Claude 中转，支持 /v1/messages 格式
+[providers.zai_anthropic]
+type = "anthropic_compatible"
+api_key = "${ZAI_API_KEY}"
+base_url = "https://api.z.ai/api/coding/paas/v4/anthropic"
+default_model = "claude-sonnet-4-20250514"
+
+
+# DeepSeek Anthropic 兼容端点（如平台支持）
+# 申请: https://platform.deepseek.com/api_keys
+[providers.deepseek_anthropic]
+type = "anthropic_compatible"
+api_key = "${DEEPSEEK_API_KEY}"
+base_url = "https://api.deepseek.com/anthropic"
+default_model = "deepseek-chat"
+
+
+# 本地 Ollama (OpenAI 格式兼容层)
+# 启动: ollama serve
+# 拉取模型: ollama pull qwen2.5:72b
+# 特点: 完全本地推理，无需 API Key（用 "dummy" 填充）
+[providers.ollama_local]
+type = "openai_compatible"
+api_key = "dummy"
+base_url = "http://localhost:11434/v1"
+default_model = "qwen2.5:72b"
+timeout = 600   # 本地推理较慢，适当调大
+
+
+# -----------------------------------------------------------------------------
+# [tasks.*] 任务级 LLM 配置
+# -----------------------------------------------------------------------------
+# 每个 task 引用一个 provider_ref；未设置的字段继承 provider 默认 或 PRESETS 预设。
+# 未列出的 task 使用 default_provider_ref（在文件顶部定义）。
+# -----------------------------------------------------------------------------
+
+
+# ─── Pipeline 核心任务（5 阶段）───
+#   Task0 (vlm_convert): PDF/图像 → Markdown
+#   Stage1Extract (extract_and_classify): 批量滑动窗口提取（每窗口提取所有完整条目）
+#     输出 BatchItemExtractPayloadLLM：{items[], stop_reason, last_consumed_line}
+#   Stage1Review (review): 批量 item 校验（修复 exercise 漏 solution 等）
+#     输出 BatchReviewPayloadLLM（reviewed_items[]）；未配置则 fallback 到 extract_and_classify
+#   Stage2Annotate (tag): 单条标注（tags/difficulty/subject/taxonomy_path/question_type）
+#     输出 SingleAnnotationLLM；未配置则 fallback 到 extract_and_classify
+#   Stage2Review (annotate_review): 单条 annotation 审核（tag 格式/复用、taxonomy、校准）
+#     输出 SingleAnnotationLLM；未配置则 fallback 到 tag
+#   Stage3Persist: 合并 item + annotation → KP/Question 入库（无 LLM）
+
+# Task0: PDF/DOCX 页面截图 → Markdown
+# 必须支持图像输入（Vision）；建议 Claude Sonnet / GPT-4o / Gemini-2.0
+[tasks.vlm_convert]
+provider_ref = "openrouter"
+model = "anthropic/claude-sonnet-4"
+temperature = 0.0
+max_tokens = 8192
+# 可选：OpenRouter provider routing
+# extra_body = { provider = { order = ["anthropic", "google"], allow_fallbacks = true } }
+
+# Stage1Extract: 批量滑动窗口提取（每窗口输出所有完整条目）
+# Pydantic schema 强校验失败自动重试（with error feedback 注入下次 prompt）
+# 500 行窗口 → LLM 判断能否提取；否则扩窗口到 3000，仍不行 force consume
+[tasks.extract_and_classify]
+provider_ref = "openrouter"
+model = "anthropic/claude-sonnet-4"
+temperature = 0.0
+max_tokens = 32768      # 批量输出 schema，建议 16k-32k
+response_format = { type = "json_object" }   # OpenAI/Gemini 生效；Anthropic 静默丢弃
+# seed = 42   # 可选：仅 OpenAI / Gemini 支持
+
+
+# ─── 生成引擎任务 ───
+
+# 自由题目生成（需要创造力）
+[tasks.generate]
+provider_ref = "anthropic_official"
 model = "claude-sonnet-4-20250514"
+temperature = 0.9
+max_tokens = 16384
+top_p = 0.95
+
+# 基础求解（精确推理）
+[tasks.solve]
+provider_ref = "openai_official"
+model = "gpt-4o-2024-11-20"
+temperature = 0.0
+max_tokens = 16384
+seed = 42
+
+# 深度求解（多轮推理 + 可选 extended thinking）
+[tasks.solve_deep]
+provider_ref = "anthropic_official"
+model = "claude-sonnet-4-20250514"
+temperature = 0.0
 max_tokens = 32768
+# 仅 Anthropic 支持 extended thinking
+thinking = { type = "enabled", budget_tokens = 16384 }
 
-# ── 生成引擎任务（按需启用，与 parse pipeline 无关）──────
-
-[llm.tasks.generate]
-# 题目生成：需要创造力
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
-
-[llm.tasks.solve]
-# 基础求解：需要精确推理
-provider = "openai"
-model = "gpt-4o"
-
-[llm.tasks.solve_deep]
-# 深度求解（多轮 + tool calling）
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
-max_tokens = 32768
-
-[llm.tasks.review]
-# 验证审阅：可用较轻量模型
-provider = "anthropic"
+# Stage1Review / 通用 review task（单条 item 校验）
+# 可以用较轻量模型，因为输入简短（window + item JSON）
+[tasks.review]
+provider_ref = "anthropic_official"
 model = "claude-haiku-4-20250514"
+temperature = 0.0
+max_tokens = 8192
 
-[llm.tasks.tag]
-# 难度标注（生成路径独立于 Pipeline tag 树）
-provider = "anthropic"
+# Stage2Annotate: 单条 item 标注（tags/difficulty/subject/taxonomy_path/question_type/methods）
+# 未配置此项时自动 fallback 到 extract_and_classify 的 provider/model
+# tags 格式强校验 (english:中文) + taxonomy_path 必须命中学科 taxonomy 树
+[tasks.tag]
+provider_ref = "openrouter"
+model = "anthropic/claude-sonnet-4"
+temperature = 0.0
+max_tokens = 8192
+response_format = { type = "json_object" }
+
+# Stage2Review: 单条 annotation 审核（与 [tasks.tag] 通常同型号）
+# 未配置此项时自动 fallback 到 [tasks.tag]
+[tasks.annotate_review]
+provider_ref = "anthropic_official"
 model = "claude-haiku-4-20250514"
+temperature = 0.0
+max_tokens = 8192
 
-[llm.tasks.improve]
+# 修复任务（格式修正、tag 矫正等）
+[tasks.repair]
+provider_ref = "openrouter"
+temperature = 0.0
+max_tokens = 8192
+
 # 迭代改进
-provider = "openai"
-model = "gpt-4o"
+[tasks.improve]
+provider_ref = "openai_official"
+model = "gpt-4o-2024-11-20"
+temperature = 0.3
+max_tokens = 16384
+
+# 数值验证
+[tasks.numerical_verify]
+provider_ref = "openai_official"
+temperature = 0.0
+max_tokens = 8192
+seed = 42
+
+# 以下低层子任务通常无需手动配置，会走 default_provider_ref + PRESETS
+# [tasks.split]
+# [tasks.process_item]
+# [tasks.infer_relations]
+
+
+# -----------------------------------------------------------------------------
+# [pipeline] 流水线运行参数
+# -----------------------------------------------------------------------------
+# 所有字段均有合理默认值（见 src/sciforge/config/settings.py），
+# 仅在需要调优时取消注释。
+# -----------------------------------------------------------------------------
+
+[pipeline]
+# Task0: 文档识别
+# pages_per_batch = 5                     # 每批页数
+# vlm_dpi = 200                           # PDF → image 渲染 DPI
+# vlm_max_concurrent = 3                  # VLM 同时调用并发数
+# vlm_max_retries = 3                     # batch 失败重试次数
+
+# Stage1Extract: 单条滑动窗口提取
+# extract_window_lines = 500              # 初始窗口行数
+# extract_max_window_lines = 3000         # 扩窗口上限
+# extract_window_expand_step = 500        # 每次扩窗口步长
+# extract_empty_force_limit = 2           # 达上限后连续 N 次空提取触发 force consume
+# stage1_extract_max_retries = 3          # Stage1 LLM 重试次数（schema 校验失败触发）
+# extract_retry_base_delay = 2.0          # 指数退避基础秒数
+
+# Stage1Review / Stage2Review 开关（关闭则 queue 直通，提速但降低质量）
+# stage1_review_enabled = true
+# stage2_review_enabled = true
+# stage1_review_max_retries = 2
+# stage2_annotate_max_retries = 3
+# stage2_review_max_retries = 2
+
+# retry with feedback（失败时把 schema error 注入下一轮 prompt）
+# retry_feedback_enabled = true
+
+# Tag 树 & Taxonomy 注入 prompt 的限制
+# tag_tree_max_depth = 4
+# tag_tree_max_nodes = 200
+
+# 各 stage 间 queue 的 maxsize
+# pipeline_queue_size = 4                 # Task0 → Stage1Extract asyncio.Queue 大小（背压）
+# pipeline_stage_queue_size = 2           # 每个 stage 间 queue 的 maxsize
+# checkpoint_flush_interval = 3.0         # state.json 节流保存间隔（秒）
+
+# 目录模式并发
+# max_concurrent_files = 4                # 同时处理多少个 logical_document
+# max_concurrent_llm_calls = 5            # 全局 LLM 并发上限（跨所有 model 的总在途请求数）
+
+
+# -----------------------------------------------------------------------------
+# [pipeline.llm_model_concurrency] Per-model 并发限流
+# -----------------------------------------------------------------------------
+# 按 LLM model id 单独限制在途并发请求数，防止 provider 侧触发 per-model 限流
+# （如 Anthropic Token Plan 个人套餐的 rate_limit_error 2062）。
+# key 为 task TOML 中的 model 字段字面值（或 provider.default_model），
+# value 为该 model 允许的最大并发数。未列出的 model 仅受全局 max_concurrent_llm_calls 约束。
+#
+# 示例：Anthropic Token Plan 个人套餐压低 Sonnet 并发，Haiku 可以高一些
+# [pipeline.llm_model_concurrency]
+# "claude-sonnet-4-20250514" = 2
+# "claude-haiku-4-20250514" = 4
+# "anthropic/claude-sonnet-4" = 3          # OpenRouter 路径
+# "gpt-4o-2024-11-20" = 5
+
+
+# -----------------------------------------------------------------------------
+# [logging] 日志配置
+# -----------------------------------------------------------------------------
+
+[logging]
+# log_level = "INFO"                # DEBUG | INFO | WARNING | ERROR
+# log_format = "console"            # console | json
+# llm_log_interval = 10             # 每 N 次 LLM 调用打一次详细日志
+# llm_log_dir = "data/llm_logs"     # JSONL 详细日志目录

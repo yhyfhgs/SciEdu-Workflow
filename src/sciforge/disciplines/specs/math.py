@@ -28,6 +28,27 @@ MATH_SPEC = DisciplineSpec(
         "fill_blank",
     ),
     tag_root="math:数学",
+    allowed_branches=(
+        "analysis",
+        "algebra",
+        "abstract_algebra",
+        "linear_algebra",
+        "matrix_theory",
+        "complex_analysis",
+        "functional_analysis",
+        "real_analysis",
+        "number_theory",
+        "combinatorics",
+        "geometry",
+        "topology",
+        "probability",
+        "statistics",
+        "discrete_math",
+        "logic",
+        "numerical_analysis",
+        "differential_equations",
+        "set_theory",
+    ),
     prompt_vars={
         # extract_and_classify.txt 占位符
         "discipline_name": "数学",
@@ -56,6 +77,7 @@ MATH_SPEC = DisciplineSpec(
         "discipline_example_subject": "real_analysis:实分析",
         "discipline_example_taxonomy": "math.analysis.continuity",
         "discipline_example_tag_root": "math:数学",
+        "discipline_taxonomy_root": "math",
         "discipline_tag_example": (
             '["math:数学", "algebra:代数", "group_theory:群论", "normal_subgroup:正规子群"]'
         ),
@@ -65,7 +87,17 @@ MATH_SPEC = DisciplineSpec(
         "discipline_example_question_content": "计算 $\\int_0^1 x^2 dx$。",
         # vlm_convert.txt 占位符
         "discipline_block_format_hint": (
-            "定理/定义/引理格式：`**定理 X.Y (名称)**` 或 `**Theorem X.Y**`"
+            "**所有知识点都要按统一粗体编号格式转写，不要遗漏**：\n"
+            "- 定义：`**定义 X.Y (名称)**` 或 `**Definition X.Y**`\n"
+            "- 定理：`**定理 X.Y (名称)**` 或 `**Theorem X.Y**`\n"
+            "- 引理：`**引理 X.Y**` 或 `**Lemma X.Y**`\n"
+            "- 推论：`**推论 X.Y**` 或 `**Corollary X.Y**`\n"
+            "- 命题：`**命题 X.Y**` 或 `**Proposition X.Y**`\n"
+            "- 性质：`**性质 X.Y**` 或 `**Property X.Y**`\n"
+            "- 公式：`**公式 X.Y**` 或 `**Formula X.Y**`\n"
+            "- 例题：`**例 X.Y**` / `**例题 X.Y**` 或 `**Example X.Y**`\n"
+            "- 习题：`**习题 X**` / `**问题 X**` 或 `**Exercise X**` / `**Problem X**`\n"
+            "- 注记：`**注 X.Y**` 或 `**Remark X.Y**`"
         ),
         "discipline_reasoning_style": "证明思路或表述风格",
         "discipline_figure_caption": "图 3.1：群的 Cayley 图",

@@ -25,6 +25,7 @@ from sciforge.core.models import FileExtractionState
 from sciforge.pipeline.orchestrator import PipelineOrchestrator
 from sciforge.pipeline.resume_state import (
     compute_file_hash,
+    is_state_complete,
     load_state,
     recognize_dir,
     save_state,
@@ -184,8 +185,8 @@ def migrate_legacy_checkpoint(
         already_has_new_files = new_dir_path.exists() and any(new_dir_path.glob("page_*.md"))
         task1_in_progress = existing_state is not None and (
             existing_state.current_block_idx > 0
-            or existing_state.saved_item_count > 0
-            or existing_state.phase == "completed"
+            or existing_state.stage3_persisted_count > 0
+            or is_state_complete(existing_state)
         )
 
         if (already_has_new_files or task1_in_progress) and not force:
@@ -243,9 +244,9 @@ def migrate_legacy_checkpoint(
             state.current_block_idx = 0
             state.line_offset = 0
             state.line_buffer_carry = []
-            state.order_index_next = 0
+            state.next_item_id = 0
             state.tag_tree_json = ""
-            state.saved_item_count = 0
+            state.stage3_persisted_count = 0
             state.failed_blocks = []
             state.errors = []
             save_state(checkpoint_dir, state)

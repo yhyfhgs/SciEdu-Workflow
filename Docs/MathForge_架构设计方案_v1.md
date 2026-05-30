@@ -3,6 +3,13 @@
 ## 完整架构设计方案 (v3.0)
 
 > 更新日期: 2026-03-31
+>
+> ⚠️ **已归档**：本文档为项目早期蓝图（项目名还叫 MathForge 时写的，现在叫 SciForge）。
+> 当前架构请参考：
+> - [`Docs/00_MVP_开发总览.md`](./00_MVP_开发总览.md)
+> - [`Docs/01_数据处理Pipeline.md`](./01_数据处理Pipeline.md) — 5 阶段并发 Pipeline
+> - [`Docs/16_Agent系统MVP.md`](./16_Agent系统MVP.md) — 多 Agent 系统 MVP
+> - [`Docs/PROGRESS.md`](./PROGRESS.md) — 最新实现进度
 
 ---
 

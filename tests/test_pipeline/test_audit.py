@@ -78,8 +78,8 @@ def test_audit_single_tex_no_checkpoint(tmp_path: Path) -> None:
     e = entries[0]
     assert e.logical_name == "paper.tex"
     assert e.task0_status in ("no_checkpoint", "not_started")
-    assert e.task1_status == "not_started"
-    assert e.task1_saved_items == 0
+    assert e.pipeline_status == "not_started"
+    assert e.saved_items == 0
 
 
 def test_audit_md_task0_done_via_cache_scan(tmp_path: Path) -> None:
@@ -99,7 +99,7 @@ def test_audit_md_task0_done_via_cache_scan(tmp_path: Path) -> None:
     e = entries[0]
     assert e.task0_status == "done"  # cache scan 识别为完整
     assert e.task0_batches_done == 1
-    assert e.task1_status == "not_started"
+    assert e.pipeline_status == "not_started"
 
 
 def test_audit_task0_done_via_state_flag(tmp_path: Path) -> None:
@@ -137,15 +137,15 @@ def test_audit_task1_in_progress_from_state(tmp_path: Path) -> None:
             file_hash=file_hash,
             task0_completed=True,
             current_block_idx=1,
-            saved_item_count=7,
+            stage3_persisted_count=7,
         ),
     )
 
     entries = audit_directory(raw_data_dir=raw, checkpoint_dir=ckpt, db_path=tmp_path / "x.db")
     e = entries[0]
-    assert e.task1_status == "in_progress"
-    assert e.task1_saved_items == 7
-    assert e.task1_current_block == 1
+    assert e.pipeline_status == "in_progress"
+    assert e.saved_items == 7
+    assert e.current_block == 1
 
 
 def test_audit_task1_completed_phase(tmp_path: Path) -> None:
@@ -164,13 +164,13 @@ def test_audit_task1_completed_phase(tmp_path: Path) -> None:
             file_hash=file_hash,
             phase="completed",
             task0_completed=True,
-            saved_item_count=12,
+            stage3_persisted_count=12,
         ),
     )
 
     entries = audit_directory(raw_data_dir=raw, checkpoint_dir=ckpt, db_path=tmp_path / "x.db")
-    assert entries[0].task1_status == "done"
-    assert entries[0].task1_saved_items == 12
+    assert entries[0].pipeline_status == "done"
+    assert entries[0].saved_items == 12
 
 
 def test_audit_groups_part_files(tmp_path: Path) -> None:
@@ -207,8 +207,8 @@ def test_format_report_contains_headers(tmp_path: Path) -> None:
             task0_status="done",
             task0_batches_done=1,
             task0_batches_expected=1,
-            task1_status="not_started",
-            task1_saved_items=0,
+            pipeline_status="not_started",
+            saved_items=0,
         ),
     ]
     report = format_audit_report(entries, tmp_path, tmp_path / "ckpt", tmp_path / "db")

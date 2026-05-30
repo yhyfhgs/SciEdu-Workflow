@@ -144,7 +144,7 @@ def test_migrate_basic_0based_to_1based(tmp_path: Path, pdf_file: Path) -> None:
     assert state.task0_completed is True
     assert state.vlm_batches_done == [(0, 1, 8), (0, 9, 16)]
     assert state.current_block_idx == 0
-    assert state.saved_item_count == 0
+    assert state.stage3_persisted_count == 0
 
 
 def test_migrate_orphan_no_matching_file(tmp_path: Path) -> None:
@@ -214,7 +214,7 @@ def test_migrate_skips_when_task1_has_progress(tmp_path: Path, pdf_file: Path) -
     state = FileExtractionState(
         file_path=str(pdf_file),
         file_hash=file_hash,
-        saved_item_count=42,
+        stage3_persisted_count=42,
         current_block_idx=5,
     )
     save_state(ckpt, state)
@@ -226,7 +226,7 @@ def test_migrate_skips_when_task1_has_progress(tmp_path: Path, pdf_file: Path) -
     # state 应保持不变
     after = load_state(ckpt, file_hash)
     assert after is not None
-    assert after.saved_item_count == 42
+    assert after.stage3_persisted_count == 42
     assert after.current_block_idx == 5
 
 

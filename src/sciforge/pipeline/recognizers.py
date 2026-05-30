@@ -11,6 +11,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
+import shutil
+import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,18 +30,146 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+# 结构化边界检测正则（Phase 2：.md/.tex 预分块）
+_MD_HEADING_RE = re.compile(r"^(#{1,4})\s+(.+)$")
+_TEX_SECTION_RE = re.compile(
+    r"^\s*\\(chapter|section|subsection|subsubsection|part)\*?\s*\{(.+?)\}",
+    re.IGNORECASE,
+)
+_CN_CHAPTER_RE = re.compile(
+    r"^\s*\*\*\s*(第[零〇一二三四五六七八九十百千\d]+[章节部分篇]|§[\d.]+)\s*.+?\*\*\s*$"
+)
+
+
+def detect_section_boundaries(lines: list[str]) -> list[tuple[int, int, str]]:
+    """扫描行列表，检测章节/小节/子节边界。
+
+    Args:
+        lines: 源文档的行列表（每行含或不含 '\\n' 都可）
+
+    Returns:
+        列表，每项 (line_index, level, title)：
+        - line_index: 0-based 行号
+        - level: 1 (chapter/#) ~ 4 (subsubsection/####)
+        - title: 标题文本（已去除标记）
+    """
+    results: list[tuple[int, int, str]] = []
+    for i, raw in enumerate(lines):
+        line = raw.rstrip("\n\r")
+        # Markdown heading
+        m = _MD_HEADING_RE.match(line)
+        if m:
+            level = len(m.group(1))
+            title = m.group(2).strip()
+            results.append((i, level, title))
+            continue
+        # LaTeX sectioning
+        m = _TEX_SECTION_RE.match(line)
+        if m:
+            tex_cmd = m.group(1).lower()
+            level_map = {
+                "part": 0,
+                "chapter": 1,
+                "section": 2,
+                "subsection": 3,
+                "subsubsection": 4,
+            }
+            level = level_map.get(tex_cmd, 2)
+            title = m.group(2).strip()
+            results.append((i, level, title))
+            continue
+        # 中文粗体章节
+        if _CN_CHAPTER_RE.match(line):
+            # 中文章节按"章"=1, "节"=2, 其他=3 判层级
+            if "章" in line or "篇" in line or "部分" in line:
+                level = 1
+            elif "节" in line:
+                level = 2
+            else:
+                level = 3
+            title = line.strip().strip("*").strip()
+            results.append((i, level, title))
+    return results
+
+
+def _has_fitz() -> bool:
+    try:
+        import fitz  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _has_pdf_image_renderer() -> bool:
+    return (
+        _has_fitz()
+        or shutil.which("pdftocairo") is not None
+        or shutil.which("pdftoppm") is not None
+    )
+
+
+def pdf_page_count(file_path: Path) -> int | None:
+    """返回 PDF 总页数；优先 fitz，缺失时退回 pdfinfo。"""
+    if _has_fitz():
+        try:
+            import fitz
+
+            with fitz.open(str(file_path)) as doc:
+                total = int(doc.page_count)
+            return total if total > 0 else None
+        except Exception:
+            logger.debug("pdf_page_count_fitz_failed", file=str(file_path), exc_info=True)
+
+    pdfinfo = shutil.which("pdfinfo")
+    if not pdfinfo:
+        return None
+
+    try:
+        result = subprocess.run(
+            [pdfinfo, str(file_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except OSError:
+        logger.debug("pdf_page_count_pdfinfo_failed", file=str(file_path), exc_info=True)
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.splitlines():
+        if not line.lower().startswith("pages:"):
+            continue
+        raw = line.split(":", 1)[1].strip()
+        try:
+            total = int(raw)
+        except ValueError:
+            return None
+        return total if total > 0 else None
+    return None
+
 
 # ── 共享数据结构 ───────────────────────────────────────
 
 
 @dataclass
 class BatchResult:
-    """单个识别 batch 的产物"""
+    """单个识别 batch 的产物
+
+    is_failed=True 时表示该 batch 重试耗尽失败（md_text 为空）；Producer 应据此
+    记录 state.failed_batches 并标记 producer_had_error，避免误将 task0_completed
+    置 True 而走缓存直通模式。
+    """
 
     page_start: int  # 1-based
     page_end: int  # 1-based, inclusive
     md_text: str
     md_path: Path
+    is_failed: bool = False
 
 
 # ── 协议 ────────────────────────────────────────────
@@ -79,6 +211,11 @@ class VlmRecognizer:
             max_concurrent=config.vlm_max_concurrent,
             pages_per_batch=config.pages_per_batch,
             discipline=discipline,
+            rate_limit_base_sleep=float(getattr(config, "rate_limit_base_sleep", 300.0)),
+            rate_limit_max_sleep=float(getattr(config, "rate_limit_max_sleep", 1800.0)),
+            rate_limit_total_budget=float(
+                getattr(config, "rate_limit_total_budget", 21600.0)
+            ),
         )
 
     async def recognize_in_batches(
@@ -90,7 +227,7 @@ class VlmRecognizer:
         already_done: list[tuple[int, int]],
         max_retries: int = 3,
     ) -> AsyncIterator[BatchResult]:
-        async for ps, pe, md, path in self._converter.recognize_in_batches(
+        async for ps, pe, md, path, is_failed in self._converter.recognize_in_batches(
             file_path,
             batch_pages=batch_pages,
             output_dir=output_dir,
@@ -102,6 +239,7 @@ class VlmRecognizer:
                 page_end=pe,
                 md_text=md,
                 md_path=path,
+                is_failed=is_failed,
             )
 
 
@@ -139,11 +277,7 @@ class PyMuPdfRecognizer:
                 cache_path = output_dir / f"page_{page_start:03d}-{page_end:03d}.md"
 
                 if (page_start, page_end) in done_set or cache_path.exists():
-                    md_text = (
-                        cache_path.read_text(encoding="utf-8")
-                        if cache_path.exists()
-                        else ""
-                    )
+                    md_text = cache_path.read_text(encoding="utf-8") if cache_path.exists() else ""
                     if md_text.strip():
                         yield BatchResult(page_start, page_end, md_text, cache_path)
                     page_idx = end_excl
@@ -204,6 +338,90 @@ class MarkdownRecognizer:
         )
 
 
+class PdfToTextRecognizer:
+    """基于 poppler `pdftotext` 的纯文本 PDF 识别器（不依赖 fitz）"""
+
+    def __init__(self, command: str | None = None) -> None:
+        resolved_command = command or shutil.which("pdftotext")
+        if not resolved_command:
+            raise RuntimeError("缺少 PDF 提取能力：既没有 pymupdf(fitz)，也没有系统命令 pdftotext")
+        self._command = resolved_command
+
+    def _extract_page_range(self, file_path: Path, page_start: int, page_end: int) -> str:
+        result = subprocess.run(
+            [
+                self._command,
+                "-enc",
+                "UTF-8",
+                "-layout",
+                "-nopgbrk",
+                "-f",
+                str(page_start),
+                "-l",
+                str(page_end),
+                str(file_path),
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            raise RuntimeError(f"pdftotext 失败: {stderr or 'unknown error'}")
+        return result.stdout.strip()
+
+    async def recognize_in_batches(
+        self,
+        file_path: Path,
+        *,
+        batch_pages: int,
+        output_dir: Path,
+        already_done: list[tuple[int, int]],
+        max_retries: int = 3,  # 未使用，签名一致
+    ) -> AsyncIterator[BatchResult]:
+        del max_retries
+        total_pages = pdf_page_count(file_path)
+        if total_pages is None:
+            raise RuntimeError(f"无法确定 PDF 页数: {file_path}")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        done_set = {tuple(p) for p in already_done}
+
+        page_idx = 0
+        while page_idx < total_pages:
+            page_start = page_idx + 1
+            page_end = min(page_idx + batch_pages, total_pages)
+            cache_path = output_dir / f"page_{page_start:03d}-{page_end:03d}.md"
+
+            if (page_start, page_end) in done_set or cache_path.exists():
+                md_text = cache_path.read_text(encoding="utf-8") if cache_path.exists() else ""
+                if md_text.strip():
+                    yield BatchResult(page_start, page_end, md_text, cache_path)
+                page_idx = page_end
+                continue
+
+            md_text = await asyncio.to_thread(
+                self._extract_page_range,
+                file_path,
+                page_start,
+                page_end,
+            )
+            cache_path.write_text(md_text, encoding="utf-8")
+
+            logger.info(
+                "pdftotext_batch_done",
+                file=file_path.name,
+                pages=f"{page_start}-{page_end}",
+                md_length=len(md_text),
+            )
+            yield BatchResult(page_start, page_end, md_text, cache_path)
+            page_idx = page_end
+
+
 # ── 工厂 ────────────────────────────────────────────
 
 
@@ -225,13 +443,32 @@ def get_recognizer(
     if fmt in (DocumentFormat.MARKDOWN, DocumentFormat.TEX):
         return MarkdownRecognizer()
 
-    if fmt in (DocumentFormat.PDF, DocumentFormat.DOCX, DocumentFormat.PPTX):
+    if fmt == DocumentFormat.PDF:
         if backend == "vlm" and llm_client is not None and llm_client.supports_vision:
+            if not _has_pdf_image_renderer():
+                logger.warning(
+                    "recognizer_pdf_vlm_fallback",
+                    backend=backend,
+                    reason="no_pdf_image_renderer",
+                    fallback="pdftotext",
+                )
+                return PdfToTextRecognizer()
             return VlmRecognizer(llm_client, config, discipline=discipline)
-        if fmt == DocumentFormat.PDF:
+        if _has_fitz():
             return PyMuPdfRecognizer()
-        raise RuntimeError(
-            f"格式 {fmt.value} 在 backend={backend} 下不支持；请使用 vlm 后端"
+        logger.warning(
+            "recognizer_pdf_text_fallback",
+            backend=backend,
+            reason="fitz_missing",
+            fallback="pdftotext",
         )
+        return PdfToTextRecognizer()
+
+    if fmt in (DocumentFormat.DOCX, DocumentFormat.PPTX):
+        if backend == "vlm" and llm_client is not None and llm_client.supports_vision:
+            if not _has_fitz():
+                raise RuntimeError(f"格式 {fmt.value} 的 VLM 识别需要 pymupdf(fitz)")
+            return VlmRecognizer(llm_client, config, discipline=discipline)
+        raise RuntimeError(f"格式 {fmt.value} 在 backend={backend} 下不支持；请使用 vlm 后端")
 
     raise RuntimeError(f"暂不支持的格式: {fmt.value}")

@@ -24,30 +24,42 @@
 
 **职责**: 数据处理流水线中的 LLM 调用环节
 
-**架构**: Producer-Consumer 单管道，由 `PipelineOrchestrator`（`src/sciforge/pipeline/orchestrator.py`）编排两个并发 Task：
+**架构**: 5 阶段并发 Producer-Consumer，由 `PipelineOrchestrator`（`src/sciforge/pipeline/orchestrator.py`）用 `asyncio.gather` 并发启动 6 个 Task + 4 个 stage queue：
 
-- **Task0 (Producer)**：`Recognizer` 协议的具体实现（`VlmRecognizer` / `PyMuPdfRecognizer` / `MarkdownRecognizer`）按 5 页一批识别为 markdown，每个 batch 立即推入 `asyncio.Queue`。落盘 `data/checkpoint/<file_hash>/recognize/file_NNN_<stem>/page_NNN-NNN.md`。
-- **Task1 (Consumer)**：`Task1Extractor`（`pipeline/task1_extractor.py`）按 FIFO 取出 `MdBlockSource`，给每行注入全局行号，按 200 行滑动窗口送 LLM 完成"提取 + 校正 + 分类 + 打标签 + 难度评估"五合一调用，结果直接入库。
+- **Task0 (Producer)**：`Recognizer` 协议的具体实现（`VlmRecognizer` / `PyMuPdfRecognizer` / `MarkdownRecognizer`）按 5 页一批识别为 markdown，推入 `q_md`。落盘 `data/checkpoint/<file_hash>/recognize/file_NNN_<stem>/page_NNN-NNN.md`
+- **Stage1Extract** (`stages/stage1_extract.py`)：从 `q_md` 取 mdblock → 500 行滑动窗口 → LLM 每窗口批量提取所有完整条目 → `OrderIndexAllocator` 预留连续 `item_id` → `ExtractedBatch` 推入 `q_raw`
+- **Stage1Review** (`stages/stage1_review.py`)：原 window + 批量 items → LLM 批量校验修正（专门修复 exercise/example/problem 过早标 no_solution_in_source 的 bug）→ 拆成 `ReviewedItem` 推入 `q_rev`
+- **Stage2Annotate** (`stages/stage2_annotate.py`)：单条 item + tag_tree + taxonomy → LLM 打 tags/difficulty/subject/taxonomy_path → `q_ann`
+- **Stage2Review** (`stages/stage2_review.py`)：单条 annotation 审核（tag 格式/复用、taxonomy 存在、difficulty 校准）→ `q_done`
+- **Stage3Persist** (`stages/stage3_persist.py`)：合并 item + annotation → `KnowledgePoint` / `Question` → `storage.save_batch` + `tag_tree.insert_path`（无 LLM，按 item_id 严格递增入库）
 
 入口命令：`uv run sciforge parse run <path>`。
 
-**Pipeline 主线只用两个 LLM 任务**:
+**Pipeline 主线 LLM 任务**（可分别配置 provider / model）：
 
 | 任务名 | 用途 | 必备能力 |
 |---|---|---|
-| `vlm_convert` | Phase A: 多模态视觉识别 PDF/DOCX → markdown | 支持图像输入 |
-| `extract_and_classify` | Task1: 一次调用完成 提取/校正/分类/打标签/难度 | JSON 结构化输出 + 较大 max_tokens（≥32k） |
+| `vlm_convert` | Task0：多模态视觉识别 PDF/DOCX → markdown | 支持图像输入 |
+| `extract_and_classify` | Stage1Extract：批量窗口提取 + 内容纠错 | JSON 结构化输出，16-32k max_tokens |
+| `review` | Stage1Review：批量 item 校验（fallback 到 extract_and_classify） | JSON，可用廉价模型 |
+| `tag` | Stage2Annotate：单条打 tags/difficulty/taxonomy（fallback 到 extract_and_classify） | JSON |
+| `annotate_review` | Stage2Review：单条 annotation 审核（fallback 到 tag） | JSON，可用廉价模型 |
 
-**关键 prompt**:
-- `src/sciforge/prompts/templates/pipeline/extract_and_classify.txt` (Task1 主 prompt)
-- `src/sciforge/prompts/templates/pipeline/vlm_convert.txt` (Phase A VLM prompt)
+**关键 prompt**（全部含 `{retry_feedback}` 占位符）：
+- `prompts/templates/pipeline/extract_stage1_initial.txt` (Stage1Extract)
+- `prompts/templates/pipeline/extract_stage1_review.txt` (Stage1Review)
+- `prompts/templates/pipeline/annotate_stage2_initial.txt` (Stage2Annotate)
+- `prompts/templates/pipeline/annotate_stage2_review.txt` (Stage2Review)
+- `prompts/templates/pipeline/vlm_convert.txt` (Task0)
 
 **可靠性机制**:
-- **行级断点恢复**：`FileExtractionState` 持久化到 `state.json`，记录 `vlm_batches_done` / `current_block_idx` / `line_offset` / `line_buffer_carry` / `tag_tree_json` / `order_index_next`。重启可无缝恢复。
-- **统一重试**：`pipeline/retry.py` 提供 `with_retry` + `call_llm_json_with_retry`，所有 LLM/VLM 调用都包含重试 + 指数退避。
-- **异常隔离**：单 batch / 单窗口失败被记入 `failed_batches` / `failed_blocks`，不阻断整体流程。
-- **背压**：`asyncio.Queue(maxsize=4)` 自动平衡 Producer 与 Consumer 速度。
-- **Tag 一致性**：`pipeline/tag_tree.py` 维护跨调用的层级 tag 树，每次 LLM 调用前序列化为 prompt context 注入，避免同义异名（`group:群` vs `groups:群论`）。
+- **断点恢复**：`FileExtractionState` 持久化到 `state.json`，记录 `vlm_batches_done` / `current_block_idx` / `line_offset` / `line_buffer_carry` / `next_item_id` / `current_window_size` / `stageN_count` / `last_persisted_item_id` / `tag_tree_json`。重启可无缝恢复；旧 v1 schema 不兼容 → 检测到时 raise `StateSchemaMismatch`，要求 `--restart` 清库
+- **Retry with feedback**：`pipeline/retry.py` 的 `call_llm_json_with_schema_retry_with_feedback` 在每次重试时把上次 Pydantic 错误文本注入下次 prompt，LLM 有机会修正；所有 4 个 stage 的 LLM 调用都走这条路径
+- **Exercise 漏 solution 三道防线**：prompt 显式规则 + Pydantic `window_last_line` context validator + Stage1Review 专项复核
+- **异常隔离**：任一 stage 异常 → try/finally 向下游 put SENTINEL 避免死锁；单 item 失败降级（Stage1 丢弃 / Stage2 写空标注），不阻断整体
+- **背压**：`q_md` (maxsize=pipeline_queue_size) + 4 个 stage queue (maxsize=pipeline_stage_queue_size)
+- **严格保序**：item_id 全局递增 + FIFO queue；Stage2 可选 N-worker 并发时通过 `ReorderBuffer` 恢复顺序，Stage3 禁止 item_id 倒退并允许上游拒绝造成 gap
+- **Tag 一致性**：`pipeline/tag_tree.py` 在 Stage3 原子累积，Stage2 prompt 注入 tag_subtree 避免同义异名（`group:群` vs `groups:群论`）
 
 **约束**:
 - 所有 LLM 调用通过 `llm/client.py` 的统一接口
@@ -105,9 +117,9 @@
 ## Agent 间通信
 
 - Agent 之间通过 Pydantic 模型传递结构化数据（`core/models.py` 是唯一定义点）
-- Pipeline 内部 Producer-Consumer 通过 `asyncio.Queue[MdBlockSource | _Sentinel]` 通信
+- Pipeline 5 阶段通过 4 个 `asyncio.Queue` 传递 Pydantic payload（`ExtractedBatch` / `ReviewedItem` / `AnnotatedItem` / `ReviewedAnnotatedItem`），通过共享 `SENTINEL` 单例（`core/sentinel.py`）通知流结束
 - 不使用全局状态，所有上下文通过函数参数显式传递
-- LLM 调用的并发由 `pipeline_queue_size`（背压）+ `max_concurrent_llm_calls` 控制
+- LLM 调用的并发由 `pipeline_queue_size`（Task0→Stage1 背压）+ `pipeline_stage_queue_size`（各 stage 间）+ `max_concurrent_llm_calls` 控制
 
 ## 新增 Agent 检查清单
 

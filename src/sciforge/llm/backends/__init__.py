@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
 class LLMBackend(Protocol):
     """LLM 后端协议，每个提供者实现此接口"""
 
-    async def generate(self, prompt: str, system: str, **kwargs) -> str: ...
-    def generate_sync(self, prompt: str, system: str, **kwargs) -> str: ...
+    async def generate(self, prompt: str, system: str, **kwargs: Any) -> str: ...
+    def generate_sync(self, prompt: str, system: str, **kwargs: Any) -> str: ...
 
 
 @runtime_checkable
@@ -23,11 +23,11 @@ class ToolCallingBackend(Protocol):
 
     async def generate_with_tools(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         system: str,
-        tools: list[dict],
-        **kwargs,
-    ) -> dict:
+        tools: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """异步 tool calling
 
         Returns:
@@ -43,11 +43,11 @@ class ToolCallingBackend(Protocol):
 
     def generate_with_tools_sync(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         system: str,
-        tools: list[dict],
-        **kwargs,
-    ) -> dict:
+        tools: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """同步 tool calling，返回格式同上"""
         ...
 
@@ -66,7 +66,7 @@ class VisionBackend(Protocol):
         image_data: bytes,
         image_media_type: str,
         system: str,
-        **kwargs,
+        **kwargs: Any,
     ) -> str:
         """异步多模态生成：图像 + 文本 → 文本"""
         ...
@@ -77,7 +77,7 @@ class VisionBackend(Protocol):
         image_data: bytes,
         image_media_type: str,
         system: str,
-        **kwargs,
+        **kwargs: Any,
     ) -> str:
         """同步多模态生成"""
         ...

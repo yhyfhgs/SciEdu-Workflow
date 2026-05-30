@@ -32,12 +32,25 @@ logger = structlog.get_logger()
 class ContextRetriever:
     """从 SQLite 存储检索生成上下文"""
 
-    MAX_KPS = 8
-    MAX_REFS = 8
-    MAX_NEGATIVES = 5
+    # 默认值，可通过 config 覆盖（见 __init__）
+    DEFAULT_MAX_KPS = 8
+    DEFAULT_MAX_REFS = 8
+    DEFAULT_MAX_NEGATIVES = 5
 
-    def __init__(self, storage: SQLiteStorageBackend) -> None:
+    def __init__(
+        self,
+        storage: SQLiteStorageBackend,
+        *,
+        max_kps: int | None = None,
+        max_refs: int | None = None,
+        max_negatives: int | None = None,
+    ) -> None:
         self.storage = storage
+        self.MAX_KPS = int(max_kps) if max_kps is not None else self.DEFAULT_MAX_KPS
+        self.MAX_REFS = int(max_refs) if max_refs is not None else self.DEFAULT_MAX_REFS
+        self.MAX_NEGATIVES = (
+            int(max_negatives) if max_negatives is not None else self.DEFAULT_MAX_NEGATIVES
+        )
 
     def build_context(
         self,

@@ -1,6 +1,17 @@
 # Agent 编排系统
 
-> 版本: v3.0 | 日期: 2026-03-31 | 阶段: Phase 5-6 (Post-MVP)
+> 版本: v3.0 | 日期: 2026-03-31（2026-04-14 订正）| 阶段: Phase 5-6 (Post-MVP 蓝图)
+
+> ⚠️ **当前状态**：本文档描述的是 Post-MVP 完整蓝图（LangGraph + 十大 Agent）。
+> **MVP 实际已实现的 Agent** 见 [`Docs/16_Agent系统MVP.md`](./16_Agent系统MVP.md)。
+>
+> - 实际目录：**`src/sciforge/agents/`**（本文档中的 `backend/agents/` 仅作架构示意）
+> - 实际 StateGraph：**手写极简版本**（`src/sciforge/agents/graph.py`），非 LangGraph
+> - Pipeline Agent 7-10（FormatAnalyzer/ContentExtractor/OcrCorrector/ContentTagger）
+>   当前**不是独立 Agent 类**，其职责内置于 `src/sciforge/pipeline/` 的 5 阶段流水线
+>   （`recognizers.py` / `vlm_converter.py` / `stages/stage1_extract.py` /
+>   `stages/stage1_review.py` / `stages/stage2_annotate.py` / `stages/stage2_review.py` /
+>   `stages/stage3_persist.py`）
 
 ## 1. 定位
 
@@ -233,18 +244,22 @@ def create_pipeline_subgraph():
 
 ---
 
-## 6. 实现文件
+## 6. 实现文件（MVP 实际映射）
 
-| 文件 | 职责 |
-|------|------|
-| `backend/agents/router.py` | LangGraph 主路由 + Pipeline 子图 |
-| `backend/agents/kb_agent.py` | 知识库处理（委托 Pipeline） |
-| `backend/agents/qgen_agent.py` | 题目生成 |
-| `backend/agents/solve_agent.py` | 求解 |
-| `backend/agents/tag_agent.py` | 标签/分级 |
-| `backend/agents/doc_agent.py` | 文档组装 |
-| `backend/agents/recommend_agent.py` | 推荐 |
-| `pipeline/agents/format_analyzer.py` | 格式分析 Agent |
-| `pipeline/agents/content_extractor.py` | 内容提取 Agent |
-| `pipeline/agents/ocr_corrector.py` | OCR 修正 Agent |
-| `pipeline/agents/content_tagger.py` | 标签分类 Agent |
+| 蓝图 Agent | MVP 实现 | 状态 |
+|---|---|---|
+| Router (LangGraph) | `src/sciforge/agents/graph.py`（手写极简 StateGraph）+ `qgen/agent.py` 内置编排 | ✅ |
+| QGen Agent | `src/sciforge/agents/qgen/agent.py` + retriever/generator/solver/verifier/annotator | ✅ |
+| Solve Agent | `src/sciforge/agents/solve_agent.py` | ✅ |
+| Tag Agent | `src/sciforge/agents/tag_agent.py` | ✅ |
+| DocAssembly Agent | `src/sciforge/agents/doc_agent.py`（lite 版，markdown 输出） | ✅ |
+| KB Agent | `src/sciforge/agents/stub_agents.py::KBAgent` | 🔲 骨架 |
+| Recommend Agent | `src/sciforge/agents/stub_agents.py::RecommendAgent` | 🔲 骨架 |
+| FormatAnalyzer Agent | 职责内置于 `src/sciforge/pipeline/recognizers.py`（`VlmRecognizer` / `PyMuPdfRecognizer` / `MarkdownRecognizer`） | ✅ 内置 |
+| ContentExtractor Agent | 职责内置于 `pipeline/vlm_converter.py` + `stages/stage1_extract.py`（批量窗口提取） | ✅ 内置 |
+| OcrCorrector Agent | 职责内置于 `stages/stage1_extract.py` + `stages/stage1_review.py`（两个 stage LLM 调用，修复 exercise 漏 solution bug） | ✅ 内置 |
+| ContentTagger Agent | 职责内置于 `stages/stage2_annotate.py` + `stages/stage2_review.py`（两个 stage LLM 调用） | ✅ 内置 |
+
+> **设计决策**：MVP 阶段不把 pipeline 5 阶段拆成独立 Agent 类，是为了保持流水线的
+> 背压和 asyncio.Queue 协作效率；Agent 抽象（`BaseAgent.run()`）适合一次请求一次结果
+> 的场景（生成/求解/讲义），不适合异步流式处理。

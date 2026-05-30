@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import structlog
 
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
     pass
 
 logger = structlog.get_logger()
+
+T = TypeVar("T")
 
 DEFAULT_SYSTEM = "你是一位资深数学教育专家。"
 JSON_SYSTEM = "你是一位资深数学教育专家。请严格按 JSON 格式输出，不要包含 markdown 代码块。"
@@ -34,13 +37,51 @@ class LLMClient:
         self._call_count: int = 0
         self._log_interval: int = 10
         self._log_dir: str | None = None
+        # 全局 semaphore（跨 model 的总并发上限）+ per-model semaphore（按 model id 限流）
+        # 两者嵌套：获得全局许可后再争 model 许可，保证 provider 级限流精准
+        self._request_semaphore: asyncio.Semaphore | None = None
+        self._model_semaphore: asyncio.Semaphore | None = None
 
-    def _create_backend(self, config: LLMConfig):
+    def set_request_semaphore(self, semaphore: asyncio.Semaphore | None) -> None:
+        """绑定跨 model 全局并发闸门（对应 AppConfig.max_concurrent_llm_calls）"""
+        self._request_semaphore = semaphore
+
+    def set_model_semaphore(self, semaphore: asyncio.Semaphore | None) -> None:
+        """绑定 per-model 并发闸门（对应 AppConfig.llm_model_concurrency[self.config.model]）
+
+        None 表示该 model 无独立限流，仅受全局 semaphore 约束。
+        """
+        self._model_semaphore = semaphore
+
+    async def _run_with_request_limit(self, fn: Callable[[], Awaitable[T]]) -> T:
+        """两层嵌套：先全局，再 per-model；未设置则直通"""
+        global_sem = getattr(self, "_request_semaphore", None)
+        model_sem = getattr(self, "_model_semaphore", None)
+        if global_sem is None and model_sem is None:
+            return await fn()
+        if global_sem is None:
+            assert model_sem is not None
+            async with model_sem:
+                return await fn()
+        if model_sem is None:
+            async with global_sem:
+                return await fn()
+        async with global_sem:
+            async with model_sem:
+                return await fn()
+
+    def _create_backend(self, config: LLMConfig) -> Any:
         match config.provider:
             case LLMProvider.ANTHROPIC:
                 from sciforge.llm.backends.anthropic import AnthropicBackend
 
                 return AnthropicBackend(config)
+            case LLMProvider.ANTHROPIC_COMPATIBLE:
+                from sciforge.llm.backends.anthropic_compatible import (
+                    AnthropicCompatibleBackend,
+                )
+
+                return AnthropicCompatibleBackend(config)
             case LLMProvider.OPENAI:
                 from sciforge.llm.backends.openai_backend import OpenAIBackend
 
@@ -65,7 +106,7 @@ class LLMClient:
     ) -> str:
         """异步生成文本"""
         system = system or DEFAULT_SYSTEM
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
@@ -79,7 +120,12 @@ class LLMClient:
         )
 
         start = time.monotonic()
-        result = await self._backend.generate(prompt=prompt, system=system, **kwargs)
+        result = cast(
+            str | None,
+            await self._run_with_request_limit(
+                lambda: self._backend.generate(prompt=prompt, system=system, **kwargs)
+            ),
+        )
         elapsed = int((time.monotonic() - start) * 1000)
 
         if result is None:
@@ -110,7 +156,7 @@ class LLMClient:
     ) -> str:
         """同步生成文本"""
         system = system or DEFAULT_SYSTEM
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
@@ -124,7 +170,10 @@ class LLMClient:
         )
 
         start = time.monotonic()
-        result = self._backend.generate_sync(prompt=prompt, system=system, **kwargs)
+        result = cast(
+            str | None,
+            self._backend.generate_sync(prompt=prompt, system=system, **kwargs),
+        )
         elapsed = int((time.monotonic() - start) * 1000)
 
         if result is None:
@@ -150,8 +199,8 @@ class LLMClient:
         self,
         prompt: str,
         system: str | None = None,
-        **kwargs,
-    ) -> dict:
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """异步生成并解析 JSON"""
         system = system or JSON_SYSTEM
         raw = await self.generate(prompt, system=system, **kwargs)
@@ -161,8 +210,8 @@ class LLMClient:
         self,
         prompt: str,
         system: str | None = None,
-        **kwargs,
-    ) -> dict:
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """同步生成并解析 JSON"""
         system = system or JSON_SYSTEM
         raw = self.generate_sync(prompt, system=system, **kwargs)
@@ -189,7 +238,7 @@ class LLMClient:
             raise LLMVisionError(f"后端 {self.config.provider} 不支持多模态图像输入")
 
         system = system or DEFAULT_SYSTEM
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
@@ -204,12 +253,17 @@ class LLMClient:
         )
 
         start = time.monotonic()
-        result = await self._backend.generate_vision(
-            prompt=prompt,
-            image_data=image_data,
-            image_media_type=image_media_type,
-            system=system,
-            **kwargs,
+        result = cast(
+            str | None,
+            await self._run_with_request_limit(
+                lambda: self._backend.generate_vision(
+                    prompt=prompt,
+                    image_data=image_data,
+                    image_media_type=image_media_type,
+                    system=system,
+                    **kwargs,
+                )
+            ),
         )
         elapsed = int((time.monotonic() - start) * 1000)
 
@@ -246,7 +300,7 @@ class LLMClient:
             raise LLMVisionError(f"后端 {self.config.provider} 不支持多模态图像输入")
 
         system = system or DEFAULT_SYSTEM
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
@@ -260,24 +314,28 @@ class LLMClient:
             total_bytes=sum(len(i) for i in images),
         )
 
+        if not images:
+            raise LLMVisionError("generate_with_images: images 列表为空")
+
+        if not hasattr(self._backend, "generate_vision_multi"):
+            raise LLMVisionError(
+                f"后端 {self.config.provider} 未实现 generate_vision_multi，"
+                f"无法发送 {len(images)} 张图像"
+            )
+
         start = time.monotonic()
-        if hasattr(self._backend, "generate_vision_multi"):
-            result = await self._backend.generate_vision_multi(
-                prompt=prompt,
-                images=images,
-                image_media_type=image_media_type,
-                system=system,
-                **kwargs,
-            )
-        else:
-            # fallback: 只发第一张图
-            result = await self._backend.generate_vision(
-                prompt=prompt,
-                image_data=images[0],
-                image_media_type=image_media_type,
-                system=system,
-                **kwargs,
-            )
+        result = cast(
+            str | None,
+            await self._run_with_request_limit(
+                lambda: self._backend.generate_vision_multi(
+                    prompt=prompt,
+                    images=images,
+                    image_media_type=image_media_type,
+                    system=system,
+                    **kwargs,
+                )
+            ),
+        )
         elapsed = int((time.monotonic() - start) * 1000)
 
         if result is None:
@@ -308,7 +366,7 @@ class LLMClient:
             raise LLMVisionError(f"后端 {self.config.provider} 不支持多模态图像输入")
 
         system = system or DEFAULT_SYSTEM
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
@@ -323,12 +381,15 @@ class LLMClient:
         )
 
         start = time.monotonic()
-        result = self._backend.generate_vision_sync(
-            prompt=prompt,
-            image_data=image_data,
-            image_media_type=image_media_type,
-            system=system,
-            **kwargs,
+        result = cast(
+            str | None,
+            self._backend.generate_vision_sync(
+                prompt=prompt,
+                image_data=image_data,
+                image_media_type=image_media_type,
+                system=system,
+                **kwargs,
+            ),
         )
         elapsed = int((time.monotonic() - start) * 1000)
 
@@ -360,22 +421,27 @@ class LLMClient:
 
     async def generate_with_tools(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         system: str | None = None,
-        tools: list[dict] | None = None,
-        **kwargs,
-    ) -> dict:
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """异步 tool calling 单轮调用"""
         if not self.supports_tools:
             raise ToolCallError(f"后端 {self.config.provider} 不支持 tool calling")
 
         system = system or DEFAULT_SYSTEM
         start = time.monotonic()
-        result = await self._backend.generate_with_tools(
-            messages=messages,
-            system=system,
-            tools=tools or [],
-            **kwargs,
+        result = cast(
+            dict[str, Any],
+            await self._run_with_request_limit(
+                lambda: self._backend.generate_with_tools(
+                    messages=messages,
+                    system=system,
+                    tools=tools or [],
+                    **kwargs,
+                )
+            ),
         )
         elapsed = int((time.monotonic() - start) * 1000)
 
@@ -390,22 +456,25 @@ class LLMClient:
 
     def generate_with_tools_sync(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         system: str | None = None,
-        tools: list[dict] | None = None,
-        **kwargs,
-    ) -> dict:
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """同步 tool calling 单轮调用"""
         if not self.supports_tools:
             raise ToolCallError(f"后端 {self.config.provider} 不支持 tool calling")
 
         system = system or DEFAULT_SYSTEM
         start = time.monotonic()
-        result = self._backend.generate_with_tools_sync(
-            messages=messages,
-            system=system,
-            tools=tools or [],
-            **kwargs,
+        result = cast(
+            dict[str, Any],
+            self._backend.generate_with_tools_sync(
+                messages=messages,
+                system=system,
+                tools=tools or [],
+                **kwargs,
+            ),
         )
         elapsed = int((time.monotonic() - start) * 1000)
 
@@ -422,12 +491,12 @@ class LLMClient:
 
     async def generate_multiturn(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         system: str | None = None,
-        tools: list[dict] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         tool_executor: Callable[[ToolCall], ToolResult] | None = None,
         max_turns: int = 5,
-        **kwargs,
+        **kwargs: Any,
     ) -> list[ConversationMessage]:
         """异步多轮对话 + 本地 tool 执行循环
 
@@ -439,7 +508,7 @@ class LLMClient:
         """
         system = system or DEFAULT_SYSTEM
         history: list[ConversationMessage] = []
-        current_messages = list(messages)
+        current_messages: list[dict[str, Any]] = list(messages)
 
         for turn in range(max_turns):
             result = await self.generate_with_tools(
@@ -493,7 +562,7 @@ class LLMClient:
             # 构建下一轮消息（附加 assistant + tool results）
             current_messages.append({"role": "assistant", "content": result.get("content", "")})
             # Anthropic 格式: tool results 作为 user 消息
-            tool_content = []
+            tool_content: list[dict[str, Any]] = []
             for tr in tool_results:
                 tool_content.append(
                     {
@@ -515,17 +584,17 @@ class LLMClient:
 
     def generate_multiturn_sync(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         system: str | None = None,
-        tools: list[dict] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         tool_executor: Callable[[ToolCall], ToolResult] | None = None,
         max_turns: int = 5,
-        **kwargs,
+        **kwargs: Any,
     ) -> list[ConversationMessage]:
         """同步多轮对话 + 本地 tool 执行循环"""
         system = system or DEFAULT_SYSTEM
         history: list[ConversationMessage] = []
-        current_messages = list(messages)
+        current_messages: list[dict[str, Any]] = list(messages)
 
         for turn in range(max_turns):
             result = self.generate_with_tools_sync(
@@ -573,7 +642,7 @@ class LLMClient:
             history.append(tool_msg)
 
             current_messages.append({"role": "assistant", "content": result.get("content", "")})
-            tool_content = []
+            tool_content: list[dict[str, Any]] = []
             for tr in tool_results:
                 tool_content.append(
                     {

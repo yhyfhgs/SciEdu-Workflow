@@ -30,8 +30,7 @@ class _StubAgent(BaseAgent[_StubInput, _StubOutput]):
 
     async def run(self, input: _StubInput) -> _StubOutput:  # pragma: no cover
         raise NotImplementedError(
-            f"{type(self).__name__} 是 Post-MVP 骨架，尚未实现。"
-            f"参见 Docs/09_Agent编排系统.md。"
+            f"{type(self).__name__} 是 Post-MVP 骨架，尚未实现。参见 Docs/09_Agent编排系统.md。"
         )
 
 
@@ -60,12 +59,12 @@ class ContentExtractorAgent(_StubAgent):
 
 
 class OcrCorrectorAgent(_StubAgent):
-    """Agent 9: OCR 修正 — 修正 OCR 错误、跨页合并 (MVP 内置于 task1_extractor.py)"""
+    """Agent 9: OCR 修正 — 修正 OCR 错误、跨页合并 (MVP 内置于 stages/stage1_extract.py)"""
 
     name = "ocr_corrector"
 
 
 class ContentTaggerAgent(_StubAgent):
-    """Agent 10: 内容标签 — tag 分类 + 难度评估 (MVP 内置于 task1_extractor.py)"""
+    """Agent 10: 内容标签 — tag 分类 + 难度评估 (MVP 内置于 stages/stage2_annotate.py)"""
 
     name = "content_tagger"

@@ -1,8 +1,20 @@
-"""应用全局配置"""
+"""应用全局配置
+
+v2 schema：单一 TOML 文件统一管理所有运行时配置
+- [providers.*]  — 命名 LLM 连接池（type/api_key/base_url/default_model/...）
+- [tasks.*]      — 任务级 LLM 配置（provider_ref + 覆写参数）
+- [pipeline]     — 流水线参数（pages_per_batch / max_concurrent_llm_calls / ...）
+- [logging]      — 日志参数（log_level / log_format / llm_log_dir / ...）
+- default_provider_ref — 顶层字段，未指定 provider_ref 的 task 默认走此 provider
+
+TOML 支持 `${ENV_VAR}` 占位符，从 os.environ 解析（递归处理嵌套 dict/list）。
+启动时检测残留的 MATHFORGE_* 环境变量并打 deprecation warning。
+"""
 
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -11,27 +23,35 @@ import structlog
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from sciforge.llm.config import TaskLLMConfig
+from sciforge.llm.config import ProviderConfig, TaskLLMConfig
 
 logger = structlog.get_logger()
 
-# 已知的任务名列表，用于环境变量解析
+# 已知的任务名列表，用于环境变量解析 SCIFORGE_TASK_<TASK>_<FIELD>
 KNOWN_TASKS: list[str] = [
     "generate",
     "solve",
     "solve_deep",
     "review",
+    "annotate_review",
     "tag",
     "repair",
-    "extract_and_classify",  # Pipeline Task1: 一次 LLM 调用做提取+校正+分类+打标签
+    "extract_and_classify",
     "improve",
     "numerical_verify",
     "vlm_convert",
+    "split",
+    "process_item",
+    "infer_relations",
 ]
 
 # TaskLLMConfig 中需要类型转换的字段
-_FLOAT_FIELDS = {"temperature"}
-_INT_FIELDS = {"max_tokens", "timeout", "max_retries"}
+_FLOAT_FIELDS = {"temperature", "top_p", "frequency_penalty", "presence_penalty"}
+_INT_FIELDS = {"max_tokens", "top_k", "seed", "timeout", "max_retries"}
+_LIST_FIELDS = {"stop_sequences"}
+
+# ${VAR_NAME} 占位符
+_ENV_VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
 
 def _coerce_field(field_name: str, value: str) -> Any:
@@ -40,11 +60,34 @@ def _coerce_field(field_name: str, value: str) -> Any:
         return float(value)
     if field_name in _INT_FIELDS:
         return int(value)
+    if field_name in _LIST_FIELDS:
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return value
+
+
+def _interpolate_env(value: Any) -> Any:
+    """递归把 ${VAR_NAME} 占位符从 os.environ 解析成实际值
+
+    - str: 查找所有 ${VAR} 并替换；未定义的变量保持原样
+    - dict / list: 递归处理元素
+    - 其他类型: 原样返回
+    """
+    if isinstance(value, str):
+
+        def _sub(m: re.Match[str]) -> str:
+            var_name = m.group(1)
+            return os.environ.get(var_name, m.group(0))
+
+        return _ENV_VAR_PATTERN.sub(_sub, value)
+    if isinstance(value, dict):
+        return {k: _interpolate_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_interpolate_env(item) for item in value]
     return value
 
 
 class AppConfig(BaseSettings):
-    """应用全局配置，支持环境变量和 .env 文件"""
+    """应用全局配置（v2 schema）"""
 
     # ── 存储路径 ────────────────────────────────────────
     data_dir: Path = Path("data")
@@ -52,49 +95,76 @@ class AppConfig(BaseSettings):
     sqlite_db_path: Path = Path("data/sciforge.db")
     checkpoint_dir: Path = Path("data/checkpoint")
 
-    # ── LLM 全局默认配置 ────────────────────────────────
-    llm_provider: str = "anthropic"
-    llm_model: str = "claude-sonnet-4-20250514"
-    llm_temperature: float = 0.7
-    llm_max_tokens: int = 16384
-    llm_base_url: str | None = None
-    llm_reasoning_effort: str | None = None
-
-    # API Keys
-    anthropic_api_key: str | None = None
-    openai_api_key: str | None = None
-    google_api_key: str | None = None
-
-    # Per-task LLM 配置（vlm_convert / extract_and_classify / ...）
+    # ── LLM v2 schema ───────────────────────────────────
+    providers: dict[str, ProviderConfig] = {}
     task_llm: dict[str, TaskLLMConfig] = {}
+    default_provider_ref: str | None = None
     llm_config_file: Path | None = None
 
     # ── Pipeline: Producer (Task0) — 文档识别 ───────────
-    pages_per_batch: int = 5  # Phase A 每批页数
-    vlm_dpi: int = 200  # PDF → image 渲染 DPI
-    vlm_max_concurrent: int = 3  # VLM 同时调用并发数
-    vlm_max_retries: int = 3  # Phase A batch 失败重试次数
+    pages_per_batch: int = 5
+    vlm_dpi: int = 200
+    vlm_max_concurrent: int = 3
+    vlm_max_retries: int = 3
 
-    # ── Pipeline: Consumer (Task1) — 滑动窗口提取 ───────
-    extract_window_lines: int = 200  # Task1 滑动窗口基础大小
-    extract_max_window_lines: int = 1000  # incomplete 时窗口扩展上限
-    max_extract_retries: int = 3  # Task1 LLM 调用重试次数
-    extract_retry_base_delay: float = 2.0  # 指数退避基础秒数
+    # ── Pipeline: Stage1Extract — 单条滑动窗口 ──────────
+    extract_window_lines: int = 500  # 初始窗口行数（旧默认 200）
+    extract_max_window_lines: int = 3000  # 最大窗口行数（扩展上限，旧 1000）
+    extract_window_expand_step: int = 500  # 每次扩窗口的步长
+    extract_empty_force_limit: int = 2  # 达到 max 后连续 N 次空提取触发 force consume
+    extract_retry_base_delay: float = 2.0
+    max_extract_retries: int = 3  # 老别名（保留兼容）
+    stage1_extract_max_retries: int = 3
+
+    # ── Pipeline: Stage1Review / Stage2Review 开关 ──────
+    stage1_review_enabled: bool = True
+    stage2_review_enabled: bool = True
+    stage1_review_max_retries: int = 2
+    stage2_annotate_max_retries: int = 3
+    stage2_review_max_retries: int = 2
+    # 老别名（与新开关 AND 生效，用于兼容既有 TOML）
+    extract_review_enabled: bool = True
+    extract_stage1_review_enabled: bool = True
+    annotate_stage2_review_enabled: bool = True
+    task2_max_retries: int = 3
+
+    # ── retry with feedback ─────────────────────────────
+    retry_feedback_enabled: bool = True
+
+    # ── Pipeline: 各 stage 间 queue 大小 ─────────────────
+    pipeline_stage_queue_size: int = 2
+    pipeline_annotate_queue_size: int = 4  # 保留兼容老 TOML
 
     # Tag 树注入到 prompt 的限制
     tag_tree_max_depth: int = 4
     tag_tree_max_nodes: int = 200
 
+    # ── Pipeline: Debug ──────────────────────────────────
+    pipeline_debug: bool = False
+
     # ── Pipeline: Producer-Consumer 通信 ────────────────
-    pipeline_queue_size: int = 4  # asyncio.Queue 大小（背压）
-    checkpoint_flush_interval: float = 3.0  # C.3 state.json 节流保存间隔（秒）
+    pipeline_queue_size: int = 4
+    checkpoint_flush_interval: float = 3.0
 
     # ── Pipeline: 目录模式 ─────────────────────────────
-    max_concurrent_files: int = 4  # 同时处理多少个 logical_document
-    max_concurrent_llm_calls: int = 5  # 全局 LLM 并发上限
+    # 并发建议：≤16GB RAM → 4-6；32GB → 8-12；64GB+ → 16-24
+    # 过高会挤占 WASM 工具（VS Code SQLite 插件等）的内存分配
+    max_concurrent_files: int = 8
+    max_concurrent_llm_calls: int = 5
+
+    # ── Pipeline: per-model 并发限流 ────────────────────
+    # 防止被 provider 按 model 维度限流（如 Anthropic Token Plan 的 429）。
+    # key 为 LLM model id（与 TaskLLMConfig.model 或 Provider.default_model 对齐），
+    # value 为该 model 允许的最大并发在途请求数。未列出的 model 仅受全局
+    # max_concurrent_llm_calls 约束。
+    # TOML 示例：
+    #   [pipeline.llm_model_concurrency]
+    #   "claude-sonnet-4-20250514" = 2
+    #   "anthropic/claude-sonnet-4" = 3
+    llm_model_concurrency: dict[str, int] = {}
 
     # ── 进度守护 ────────────────────────────────────────
-    progress_log_interval: int = 15  # 守护进程日志间隔（秒）
+    progress_log_interval: int = 15
 
     # ── 日志 ────────────────────────────────────────────
     log_level: str = "INFO"
@@ -102,9 +172,16 @@ class AppConfig(BaseSettings):
     llm_log_interval: int = 10
     llm_log_dir: Path = Path("data/llm_logs")
 
-    # ── 生成引擎参数（暂不在 MVP 主线上）─────────────────
+    # ── 生成引擎参数 ────────────────────────────────────
     generation_max_rounds: int = 3
     generation_candidates_per_round: int = 3
+    qgen_retriever_max_kps: int = 8
+    qgen_retriever_max_refs: int = 8
+    qgen_retriever_max_negatives: int = 5
+    qgen_lightweight_prefilter: bool = True
+    # Phase 6c: verifier 在 verdict=PASS 时顺带返回 10 维难度评分，
+    # 省一次独立的 annotator LLM 调用。默认开启（review.txt 已支持新格式）。
+    qgen_merge_difficulty_into_verify: bool = True
     pipeline_parallel: bool = False
     evolution_enabled: bool = False
     evolution_max_improvement_rounds: int = 2
@@ -113,63 +190,136 @@ class AppConfig(BaseSettings):
     sandbox_timeout: int = 10
     enable_numerical_verification: bool = True
 
+    # ── Pipeline 优化开关（Phase 2.5 / 4 / 5）──────────────
+    empty_window_fast_skip: bool = True
+    review_conditional_enabled: bool = True
+    stage2_annotate_concurrency: int = 1
+    stage2_review_concurrency: int = 1
+
+    # ── 429 / 速率限制处理 ────────────────────────────────
+    # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）
+    # minimax 5h/4500 次场景建议 300s；其他 provider 可调小
+    rate_limit_base_sleep: float = 300.0
+    # 单次 429 最长睡眠秒数（上限，避免 Retry-After 给出过大值）
+    rate_limit_max_sleep: float = 1800.0
+    # 单个 LLM 请求累计等 429 的总预算秒数（超过放弃）
+    # 6 小时足以覆盖 minimax 的 5h 配额窗口
+    rate_limit_total_budget: float = 21600.0
+
     model_config = SettingsConfigDict(
         env_prefix="SCIFORGE_",
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     @model_validator(mode="after")
-    def _load_task_llm_config(self) -> AppConfig:
-        """从 TOML 文件和 SCIFORGE_TASK_* 环境变量加载 per-task LLM 配置"""
+    def _post_init(self) -> AppConfig:
+        """启动时依次执行：加载 dotenv → 加载 TOML → 加载 env overrides → 检测 legacy 前缀"""
+        from dotenv import load_dotenv
+
+        load_dotenv(override=False)
         self._load_from_toml()
         self._load_from_env()
+        self._warn_legacy_env_vars()
         return self
 
+    # ── TOML 加载 ─────────────────────────────────────────
+
     def _load_from_toml(self) -> None:
-        """从 TOML 配置文件加载 per-task LLM 配置"""
+        """加载 v2 schema TOML 配置
+
+        段落：
+        - [providers.*]  → self.providers
+        - [tasks.*]      → self.task_llm
+        - [pipeline]     → setattr 到同名字段
+        - [logging]      → setattr 到同名字段
+        - default_provider_ref 顶层字段 → self.default_provider_ref
+        """
         if not self.llm_config_file or not self.llm_config_file.exists():
             return
 
         with open(self.llm_config_file, "rb") as f:
             data = tomllib.load(f)
 
-        llm_section = data.get("llm", {})
+        # [providers.*]
+        providers_section = data.get("providers", {})
+        for name, cfg in providers_section.items():
+            if not isinstance(cfg, dict):
+                continue
+            interpolated = _interpolate_env(cfg)
+            try:
+                self.providers[name] = ProviderConfig(**interpolated)
+            except Exception as exc:
+                logger.warning("invalid_provider_config", name=name, error=str(exc))
 
-        # [llm] 全局字段作为 fallback（低于环境变量，仅覆盖默认值）
-        _toml_globals = {
-            "provider": "llm_provider",
-            "model": "llm_model",
-            "base_url": "llm_base_url",
-            "reasoning_effort": "llm_reasoning_effort",
-        }
-        for toml_key, attr_name in _toml_globals.items():
-            if toml_key in llm_section:
-                # 仅当环境变量未显式设置时才使用 TOML 值
-                env_key = f"SCIFORGE_{attr_name.upper()}"
-                if env_key not in os.environ:
-                    setattr(self, attr_name, llm_section[toml_key])
+        # default_provider_ref (顶层)
+        if "default_provider_ref" in data and self.default_provider_ref is None:
+            self.default_provider_ref = data["default_provider_ref"]
 
-        # [llm.tasks.*] per-task 覆写
-        tasks_section = llm_section.get("tasks", {})
+        # [tasks.*]
+        tasks_section = data.get("tasks", {})
         for task_name, task_cfg in tasks_section.items():
             if not isinstance(task_cfg, dict):
                 continue
-            if task_name not in self.task_llm:
-                self.task_llm[task_name] = TaskLLMConfig(**task_cfg)
-            else:
-                # 已有条目（例如从构造参数传入），仅填充 None 字段
-                existing = self.task_llm[task_name]
-                for k, v in task_cfg.items():
-                    if hasattr(existing, k) and getattr(existing, k) is None:
-                        setattr(existing, k, v)
+            interpolated = _interpolate_env(task_cfg)
+            try:
+                if task_name not in self.task_llm:
+                    self.task_llm[task_name] = TaskLLMConfig(**interpolated)
+                else:
+                    # 已有条目（如构造时传入），仅填充 None 字段
+                    existing = self.task_llm[task_name]
+                    for key, value in interpolated.items():
+                        if hasattr(existing, key) and getattr(existing, key) is None:
+                            setattr(existing, key, value)
+            except Exception as exc:
+                logger.warning("invalid_task_config", task=task_name, error=str(exc))
+
+        # [pipeline]
+        pipeline_section = data.get("pipeline", {})
+        self._apply_section(pipeline_section, "pipeline")
+
+        # [logging]
+        logging_section = data.get("logging", {})
+        self._apply_section(logging_section, "logging")
 
         logger.debug(
             "toml_config_loaded",
             file=str(self.llm_config_file),
-            tasks=list(tasks_section.keys()),
+            providers=list(self.providers.keys()),
+            tasks=list(self.task_llm.keys()),
         )
+
+    def _apply_section(self, section: dict[str, Any], section_name: str) -> None:
+        """把一个 TOML 段落的 key=value 对 setattr 到 AppConfig 同名字段上
+
+        仅当 AppConfig 定义了该字段时才赋值；未知字段记 warning。
+        Path 类字段自动从 str 转 Path。
+        """
+        for key, value in section.items():
+            if key not in type(self).model_fields:
+                logger.warning(
+                    "unknown_config_field",
+                    section=section_name,
+                    field=key,
+                )
+                continue
+            field_info = type(self).model_fields[key]
+            # 自动把 str 转 Path（若字段类型是 Path）
+            if field_info.annotation is Path and isinstance(value, str):
+                value = Path(value)
+            try:
+                setattr(self, key, value)
+            except Exception as exc:
+                logger.warning(
+                    "invalid_section_field",
+                    section=section_name,
+                    field=key,
+                    error=str(exc),
+                )
+
+    # ── 环境变量覆盖（高优先级）──────────────────────────
 
     def _load_from_env(self) -> None:
         """从 SCIFORGE_TASK_{TASK}_{FIELD} 环境变量加载（优先于 TOML）"""
@@ -209,3 +359,20 @@ class AppConfig(BaseSettings):
                         value=value,
                         field=field_name,
                     )
+
+    # ── Legacy 前缀检测 ───────────────────────────────────
+
+    def _warn_legacy_env_vars(self) -> None:
+        """检测 MATHFORGE_* 环境变量残留并打 deprecation warning"""
+        legacy_vars = sorted(key for key in os.environ if key.startswith("MATHFORGE_"))
+        if legacy_vars:
+            logger.warning(
+                "deprecated_env_prefix",
+                message=(
+                    "检测到 MATHFORGE_* 环境变量，这些变量已被废弃且不会被加载。"
+                    "请改用 SCIFORGE_* 前缀或对应的标准 vendor 变量 "
+                    "(ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / "
+                    "OPENROUTER_API_KEY 等)。"
+                ),
+                legacy_vars=legacy_vars,
+            )

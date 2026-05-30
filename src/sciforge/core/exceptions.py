@@ -21,6 +21,25 @@ class LLMTimeoutError(LLMError):
     """LLM 请求超时"""
 
 
+class LLMRateLimitError(LLMError):
+    """LLM 遇到速率限制或配额限制 (HTTP 429 等)。
+
+    这类错误是**临时性**的，调用方应当长睡后重试，而不是把任务标记为失败。
+    典型场景：
+    - OpenAI tokens-per-minute / requests-per-minute 触顶
+    - Anthropic rate_limit_error
+    - Minimax 5 小时 4500 次配额耗尽
+    - 商业代理层的 quota 限流
+
+    ``retry_after_seconds`` 若非 None 表示服务端建议的等待秒数（来自
+    HTTP ``Retry-After`` header 或错误消息解析），调用方应至少等待这个时长。
+    """
+
+    def __init__(self, message: str, retry_after_seconds: float | None = None) -> None:
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(message)
+
+
 class ParseError(SciForgeError):
     """解析异常"""
 

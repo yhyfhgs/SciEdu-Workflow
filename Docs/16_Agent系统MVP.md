@@ -22,10 +22,13 @@ SciForge 的 Agent 系统分为：
 | 4 | **Tag** | ✅ 完整 | `tag_agent.py` | 复用 `qgen/annotator.py` |
 | 5 | **DocAssembly** | ✅ Lite | `doc_agent.py` | 生成 markdown 讲义，无 LaTeX 编译 |
 | 6 | Recommend | 🔶 骨架 | `stub_agents.py::RecommendAgent` | 需用户系统，Post-MVP |
-| 7 | FormatAnalyzer | 🔶 骨架 | `stub_agents.py::FormatAnalyzerAgent` | 当前由 `pipeline/recognizers.py` 覆盖 |
-| 8 | ContentExtractor | 🔶 骨架 | `stub_agents.py::ContentExtractorAgent` | 当前由 `pipeline/vlm_converter.py` 覆盖 |
-| 9 | OcrCorrector | 🔶 骨架 | `stub_agents.py::OcrCorrectorAgent` | 当前内置于 `task1_extractor.py` |
-| 10 | ContentTagger | 🔶 骨架 | `stub_agents.py::ContentTaggerAgent` | 当前内置于 `task1_extractor.py` |
+| 7 | FormatAnalyzer | ✅ **内置** | 职责在 `pipeline/recognizers.py` | 非独立 Agent 类；`stub_agents.py::FormatAnalyzerAgent` 仅为 Post-MVP 骨架 |
+| 8 | ContentExtractor | ✅ **内置** | 职责在 `pipeline/vlm_converter.py` + `stages/stage1_extract.py` | 非独立 Agent 类 |
+| 9 | OcrCorrector | ✅ **内置** | 职责在 `stages/stage1_extract.py` + `stages/stage1_review.py`（两个 stage LLM） | 非独立 Agent 类 |
+| 10 | ContentTagger | ✅ **内置** | 职责在 `stages/stage2_annotate.py` + `stages/stage2_review.py`（两个 stage LLM） | 非独立 Agent 类 |
+
+> **术语澄清**：7-10 号"职责内置"不是 🔶 骨架；它们的逻辑已经以 pipeline 模块的形式
+> 完整实现，只是没有封装成 `BaseAgent` 子类。详见"Pipeline 与 Agent 系统分离原则"。
 
 ## 3. BaseAgent 抽象
 
@@ -194,7 +197,27 @@ CLI --discipline math
 
 新学科接入时，关键改动都在 `src/sciforge/disciplines/` 和 `_GENERATION_PROMPT_SUBSTITUTIONS`，**不需要改 Agent 代码**。参见 [`Docs/15_学科扩展指南.md`](./15_学科扩展指南.md)。
 
-## 9. Post-MVP 路线
+## 9. Pipeline 与 Agent 系统分离原则
+
+`src/sciforge/pipeline/` 和 `src/sciforge/agents/` 是**两个平行子系统**，MVP 阶段有意
+不互相继承：
+
+| 维度 | Pipeline | Agent 系统 |
+|---|---|---|
+| 入口形态 | async Producer-Consumer 流水线 + 双 asyncio.Queue | `BaseAgent.run(input) -> output` 单次调用 |
+| 典型场景 | 批量文档处理，背压 + checkpoint + 增量恢复 | 一次题目生成、一次讲义组装 |
+| LLM 调用特点 | Stage1/Stage2 共四类 LLM 调用，批量/并发处理，schema 严格重试 | 每次少量调用，可混合温度/重试策略 |
+| 状态管理 | `FileExtractionState`（磁盘 `state.json`） | `AgentState`（内存 dict） |
+| 基类 | 无统一基类（各 Task 独立） | `BaseAgent[TIn, TOut]`（discipline 注入） |
+| 编排器 | `PipelineOrchestrator` | `StateGraph`（手写）+ 直接串联 |
+
+**边界**：Task2（pipeline 标注） 在职责上和 Tag Agent 重叠，但 **Tag Agent 用于对已入库
+题目补标签，Task2 用于新入库的流式标注**。两者底层都调 `get_annotate_stage2_initial_template`
+但封装方式不同。
+
+---
+
+## 10. Post-MVP 路线
 
 - **Agent 1 KB**: 集成 `sqlite-vec` 做 embedding 检索 + 前置依赖图
 - **Agent 6 Recommend**: 需要先有用户系统

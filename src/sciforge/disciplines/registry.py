@@ -26,6 +26,8 @@ class DisciplineSpec:
         allowed_kp_types: 该学科允许的 kp_type 字符串白名单
         allowed_question_types: 该学科允许的 question_type 字符串白名单
         tag_root: tag 树的根段 (如 "math:数学")
+        allowed_branches: 该学科允许的主分支 english 名白名单（tags[1] 的 english 部分必须
+            属于此列表），用于阻止 LLM 跳过学科主分支直接写二级概念。空 tuple 表示不校验。
         prompt_vars: 注入到 prompt 模板的占位符 → 值映射
             value 中**禁止**出现单独的 `{` 或 `}`（会与后续 .format 冲突）；
             如需字面花括号，用 `{{` `}}` 预转义
@@ -37,6 +39,7 @@ class DisciplineSpec:
     allowed_question_types: tuple[str, ...]
     tag_root: str
     prompt_vars: Mapping[str, str]
+    allowed_branches: tuple[str, ...] = ()
 
     def kp_type_or(self, value: str, fallback: str = "theorem") -> str:
         """校验 kp_type 字符串；不在白名单时返回 fallback"""

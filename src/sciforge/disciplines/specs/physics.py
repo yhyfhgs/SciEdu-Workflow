@@ -29,6 +29,22 @@ PHYSICS_SPEC = DisciplineSpec(
         "fill_blank",
     ),
     tag_root="physics:物理",
+    allowed_branches=(
+        "mechanics",
+        "thermodynamics",
+        "electromagnetism",
+        "optics",
+        "quantum_mechanics",
+        "relativity",
+        "statistical_mechanics",
+        "solid_state",
+        "fluid_dynamics",
+        "acoustics",
+        "atomic_physics",
+        "nuclear_physics",
+        "particle_physics",
+        "astrophysics",
+    ),
     prompt_vars={
         "discipline_name": "物理",
         "discipline_document_expert": "物理文档结构化提取专家",
@@ -55,19 +71,32 @@ PHYSICS_SPEC = DisciplineSpec(
         "discipline_example_subject": "classical_mechanics:经典力学",
         "discipline_example_taxonomy": "physics.mechanics.newton_laws",
         "discipline_example_tag_root": "physics:物理",
+        "discipline_taxonomy_root": "physics",
         "discipline_tag_example": (
             '["physics:物理", "mechanics:力学", "newton_laws:牛顿定律", "second_law:第二定律"]'
         ),
         "discipline_example_theorem_content": (
             "质点在恒定外力作用下做匀变速直线运动时，$v^2 = v_0^2 + 2as$。"
         ),
-        # NOTE: LaTeX `\mathrm{kg}` / `\mathrm{m}` 里的单花括号必须转义为 `{{ }}`，
-        # 否则第二阶段 str.format() 会把 {kg}/{m} 当作占位符抛 KeyError
+        # _inject_discipline_vars 会自动把 value 中的 { } 转义为 {{ }}，
+        # 所以 spec 写裸 LaTeX 即可，不再需要手动写 {{ }}
         "discipline_example_question_content": (
-            "一质量 $m=2\\,\\mathrm{{kg}}$ 的物体自由下落 $h=5\\,\\mathrm{{m}}$，求其末速度。"
+            "一质量 $m=2\\,\\mathrm{kg}$ 的物体自由下落 $h=5\\,\\mathrm{m}$，求其末速度。"
         ),
         "discipline_block_format_hint": (
-            "定律/定义/公式/例题格式：`**定律 X.Y (名称)**` 或 `**Law X.Y**`"
+            "**所有知识点都要按统一粗体编号格式转写，不要遗漏**：\n"
+            "- 定义：`**定义 X.Y (名称)**` 或 `**Definition X.Y**`\n"
+            "- 定律：`**定律 X.Y (名称)**` 或 `**Law X.Y**`\n"
+            "- 原理：`**原理 X.Y**` 或 `**Principle X.Y**`\n"
+            "- 公式：`**公式 X.Y**` 或 `**Formula X.Y**`\n"
+            "- 定理：`**定理 X.Y**` 或 `**Theorem X.Y**`\n"
+            "- 推论：`**推论 X.Y**` 或 `**Corollary X.Y**`\n"
+            "- 实验：`**实验 X.Y**` 或 `**Experiment X.Y**`\n"
+            "- 模型：`**模型 X.Y**` 或 `**Model X.Y**`\n"
+            "- 性质：`**性质 X.Y**` 或 `**Property X.Y**`\n"
+            "- 例题：`**例 X.Y**` / `**例题 X.Y**` 或 `**Example X.Y**`\n"
+            "- 习题：`**习题 X**` / `**问题 X**` 或 `**Exercise X**` / `**Problem X**`\n"
+            "- 注记：`**注 X.Y**` 或 `**Remark X.Y**`"
         ),
         "discipline_reasoning_style": "推导过程或表述风格",
         "discipline_figure_caption": "图 3.1：斜面受力分析",

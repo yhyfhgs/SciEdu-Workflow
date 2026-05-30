@@ -98,20 +98,6 @@ class RelationType(StrEnum):
 # ── 来源元数据 ────────────────────────────────────────
 
 
-class QuestionSource(BaseModel):
-    """题目结构化来源信息"""
-
-    exam_name: str | None = None
-    exam_type: str | None = None  # 形如 "零试" / "一试" / "奥赛" 等，不限 enum
-    year: int | None = None
-    month: int | None = None
-    problem_number: int | None = None
-    book_title: str | None = None
-    chapter: str | None = None
-    page: int | None = None
-    exercise_number: str | None = None
-
-
 class KPSource(BaseModel):
     """知识点来源信息"""
 
@@ -127,31 +113,23 @@ class KPSource(BaseModel):
 
 
 class KnowledgePoint(BaseModel):
-    """知识点存储模型 — 与 DB schema 一一对应"""
+    """知识点存储模型 — 与 DB schema v7 一一对应"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    discipline: Discipline = Discipline.MATH  # 顶层学科（math/physics/...）
+    discipline: Discipline = Discipline.MATH
     kp_type: str = "theorem"  # 由 DisciplineSpec.allowed_kp_types 约束
     number: str = ""
-    content: str = ""  # LaTeX+文本混排，唯一内容字段
-    proof_content: str | None = None  # 证明文本（定理/引理/命题）
-    proof_methods: list[str] = Field(default_factory=list)
+    content: str = ""
+    proof_content: str | None = None
     difficulty: int = Field(ge=1, le=10, default=5)
     subject: str = ""
     taxonomy_path: str = ""
-    tags: list[str] = Field(default_factory=list)  # 有序段列表 ["math:数学", "algebra:代数", ...]
+    tags: list[str] = Field(default_factory=list)  # 有序段 ["math:数学", "algebra:代数", ...]
     relations: list[ItemRelation] = Field(default_factory=list)  # 内存字段，不持久化
-    source_file: str = ""
-    source_chapter: str = ""
-    source_section: str = ""
-    # 位置/顺序字段（pipeline 提取时填充）
-    start_line: int = 0  # 全局累计行号 (跨 mdblock)
+    source_file: str = ""  # 源 logical_document 的文件路径（首个分卷路径，便于追溯）
+    start_line: int = 0
     end_line: int = 0
-    order_index: int = 0  # 文件内全局递增序号 (从 0 起)
-    page_start: int | None = None  # 来自 mdblock 元数据 (1-based)
-    page_end: int | None = None
-    quality_grade: str = "B"
-    created_at: datetime = Field(default_factory=datetime.now)
+    order_index: int = 0
 
     model_config = ConfigDict(validate_assignment=True)
 
@@ -169,35 +147,23 @@ class Solution(BaseModel):
 
 
 class Question(BaseModel):
-    """题目存储模型 — solution 直接嵌入，不再有独立 solutions 表"""
+    """题目存储模型 — 与 DB schema v7 一一对应"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    discipline: Discipline = Discipline.MATH  # 顶层学科
+    discipline: Discipline = Discipline.MATH
     question_type: str = "proof"  # 由 DisciplineSpec.allowed_question_types 约束
     number: str = ""
-    content: str = ""  # 题目内容
-    solution_content: str | None = None  # 解答文本
-    solution_methods: list[str] = Field(default_factory=list)
-    answer: str = ""  # 简答（选择题答案、填空答案等）
+    content: str = ""
+    solution_content: str | None = None
     difficulty: int = Field(ge=1, le=10, default=5)
     subject: str = ""
     taxonomy_path: str = ""
-    tags: list[str] = Field(default_factory=list)  # 有序段列表 ["math:数学", "algebra:代数", ...]
+    tags: list[str] = Field(default_factory=list)
     relations: list[ItemRelation] = Field(default_factory=list)  # 内存字段，不持久化
-    source_file: str = ""
-    source_chapter: str = ""
-    exam_type: str | None = None
-    exam_year: int | None = None
-    # 位置/顺序字段（pipeline 提取时填充）
+    source_file: str = ""  # 源 logical_document 的文件路径（首个分卷路径，便于追溯）
     start_line: int = 0
     end_line: int = 0
     order_index: int = 0
-    page_start: int | None = None
-    page_end: int | None = None
-    quality_grade: str = "B"
-    is_generated: bool = False
-    parent_id: str | None = None
-    created_at: datetime = Field(default_factory=datetime.now)
 
     model_config = ConfigDict(validate_assignment=True)
 
@@ -397,6 +363,9 @@ class VerificationResult(BaseModel):
     checks: dict[str, bool] = Field(default_factory=dict)
     suggestions: str = ""
     numerical_verification: NumericalVerification | None = None
+    # Phase 6c：verdict=PASS 时可顺带返回 10 维难度评分（若 verifier 产出）
+    # 启用 QGenAgent(merge_difficulty_into_verify=True) 时跳过独立 annotator 调用
+    difficulty_score: DifficultyScore | None = None
 
     @property
     def has_suggestions(self) -> bool:
@@ -599,29 +568,53 @@ class MdBlockSource(BaseModel):
     md_path: str  # checkpoint dir 中的 page_XXX-XXX.md 路径（字符串以便 JSON 序列化）
     md_text: str  # 已读取的 markdown 内容
     block_index: int  # 在该 logical document 中的全局序号 (从 0 起)
+    # 结构化边界（Phase 2）：regex 预检得到的 section/chapter 行号
+    # 每项格式：(line_no, level, title) — line_no 是 block 内的 0-based 行号
+    section_boundaries: list[tuple[int, int, str]] = Field(default_factory=list)
 
 
 class FileExtractionState(BaseModel):
-    """Pipeline 断点续传的核心状态对象（Producer + Consumer 共用）"""
+    """Pipeline 断点续传的核心状态对象（Task0 + 5 Stage 共用）
+
+    5 阶段：Task0 → Stage1Extract → Stage1Review
+    → Stage2Annotate → Stage2Review → Stage3Persist
+    """
 
     file_path: str = ""
     file_hash: str = ""
     phase: Literal["running", "completed"] = "running"
+    schema_version: int = 2  # 2 = 5-stage pipeline; 旧值 1/缺失视为不兼容
 
     # ── Producer (Task0) 端 ──
-    # 已识别完成的 batch，元组 (file_idx, page_start, page_end)
     vlm_batches_done: list[tuple[int, int, int]] = Field(default_factory=list)
     failed_batches: list[tuple[int, int, int]] = Field(default_factory=list)
-    task0_completed: bool = False  # Producer 无错误完成所有批次后置 True，用于直通判定
+    task0_completed: bool = False
 
-    # ── Consumer (Task1) 端 ──
-    current_block_idx: int = 0  # 已完成入库的最后一个 block_index + 1
-    line_offset: int = 0  # 已消费 + commit 的全局行数
-    line_buffer_carry: list[str] = Field(default_factory=list)  # buffer 中已注入行号的剩余行
-    order_index_next: int = 0
-    tag_tree_json: str = ""
-    saved_item_count: int = 0
-    failed_blocks: list[int] = Field(default_factory=list)
+    # ── Stage1Extract 端 ──
+    current_block_idx: int = 0  # Stage1 已处理最后一个 block_index + 1
+    line_offset: int = 0
+    line_buffer_carry: list[str] = Field(default_factory=list)
+    next_item_id: int = 0  # 全局自增 item id 分配器
+    current_window_size: int = 500
+    consecutive_empty: int = 0  # 连续 0 条提取次数
+
+    # ── 各 Stage 计数/完成标记 ──
+    stage1_extracted_count: int = 0
+    stage1_reviewed_count: int = 0
+    stage2_annotated_count: int = 0
+    stage2_reviewed_count: int = 0
+    stage3_persisted_count: int = 0
+
+    stage1_completed: bool = False
+    stage2_completed: bool = False
+    stage3_completed: bool = False
+
+    last_persisted_item_id: int = -1  # Stage3 保序断言用；起始 -1 代表尚无入库
+    failed_blocks: list[int] = Field(default_factory=list)  # Stage1 LLM 失败的 block
+    out_of_order_items: list[int] = Field(default_factory=list)  # Stage3 乱序兜底
+
+    tag_tree_json: str = ""  # Stage3 维护，跨 item 累积
+
     errors: list[str] = Field(default_factory=list)
 
     started_at: datetime = Field(default_factory=datetime.now)
@@ -629,13 +622,100 @@ class FileExtractionState(BaseModel):
 
 
 class StoredItemBatch(BaseModel):
-    """Task1 一次循环提取并入库的产物（用于日志/进度追踪）"""
+    """Stage3 一次入库产物（日志/进度追踪）"""
 
     chunk_index: int = 0
     line_range: tuple[int, int] = (0, 0)
     kp_count: int = 0
     question_count: int = 0
     order_index_range: tuple[int, int] = (0, 0)
+
+
+# ── 5 Stage Pipeline Payloads ─────────────────────────
+# 注：这些类引用 pipeline.llm_schemas 中的 LLM schema 作为 item/annotation 字段。
+# 由于 llm_schemas 不反向依赖 core.models，不会循环。
+
+from sciforge.pipeline.llm_schemas import (  # noqa: E402
+    SingleAnnotationLLM,
+    SingleItemExtractLLM,
+)  # noqa: E501
+
+
+class ExtractedSingleItem(BaseModel):
+    """Stage1Extract → q_raw → Stage1Review 的 payload（旧版单条单元，保留兼容）
+
+    携带原始 window 行（含全局行号前缀）供 Stage1Review 对照校验。
+    source_file 从 MdBlockSource.file_path 透传，一直带到 Stage3Persist 入库。
+    """
+
+    item_id: int = Field(ge=0)
+    item: SingleItemExtractLLM
+    window_lines: list[str] = Field(default_factory=list)
+    window_line_range: tuple[int, int] = (0, 0)
+    window_last_line: int = 0  # 供 Stage1Review 再次触发 exercise near-tail 校验
+    block_index: int = 0
+    source_file: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+
+
+class ExtractedBatch(BaseModel):
+    """Stage1Extract → q_raw → Stage1Review 的**批量** payload（v3 单次提取多条）
+
+    一次 LLM 调用提取的 N 条 items 共享同一个 window 上下文。Stage1Review 用
+    单次 LLM 调用对全部 items 做批量审核，然后按 item_id 顺序拆分推 q_rev。
+
+    item_ids[i] 与 items[i] 一一对应。Stage1Extract 在分配 item_ids 时按
+    items 顺序连续递增 next_item_id。
+    """
+
+    item_ids: list[int] = Field(default_factory=list)
+    items: list[SingleItemExtractLLM] = Field(default_factory=list)
+    window_lines: list[str] = Field(default_factory=list)
+    window_line_range: tuple[int, int] = (0, 0)
+    window_last_line: int = 0  # 供 Stage1Review 再次触发 exercise near-tail 校验
+    block_index: int = 0
+    source_file: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+    # Phase 4 条件化 review：Stage1Extract 填入 LLM 的 stop_reason
+    # 默认 "all_complete" 以兼容老 checkpoint 回放（无 stop_reason）
+    stop_reason: str = "all_complete"
+
+
+class ReviewedItem(BaseModel):
+    """Stage1Review → q_rev → Stage2Annotate 的 payload"""
+
+    item_id: int = Field(ge=0)
+    item: SingleItemExtractLLM
+    block_index: int = 0
+    source_file: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+
+
+class AnnotatedItem(BaseModel):
+    """Stage2Annotate → q_ann → Stage2Review 的 payload"""
+
+    item_id: int = Field(ge=0)
+    item: SingleItemExtractLLM
+    annotation: SingleAnnotationLLM
+    block_index: int = 0
+    source_file: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+
+
+class ReviewedAnnotatedItem(BaseModel):
+    """Stage2Review → q_done → Stage3Persist 的 payload"""
+
+    item_id: int = Field(ge=0)
+    item: SingleItemExtractLLM
+    annotation: SingleAnnotationLLM
+    block_index: int = 0
+    source_file: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
 
 
 class DirectoryProgress(BaseModel):

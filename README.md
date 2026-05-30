@@ -8,14 +8,19 @@ AI 驱动的**理工科知识处理与生成平台**。从教材、讲义、试�
 
 ### 1. 数据处理 Pipeline
 
-Producer-Consumer 单管道，支持 PDF / DOCX / MD / TeX 等格式，按学科参数化：
+5 阶段并发 Producer-Consumer（6 Task × 4 stage queue × asyncio.gather），按学科参数化：
 
-- **Phase A**: 多模态视觉识别（VLM）每 5 页一批转 markdown，system prompt 按学科注入
-- **Phase B**: 200 行滑动窗口提取，单次 LLM 调用完成"提取 + 校正 + 分类 + 打标签 + 难度评估"；允许的 `kp_type` / `question_type` 由当前学科 spec 约束
-- **直通缓存重放**: Task0 已完成时直接从 `recognize/file_*/` 读取，跳过原始文件
-- **动态窗口扩展**: LLM 返回 incomplete 时窗口从 200 行逐步扩展到 `extract_max_window_lines` (默认 1000)
-- 行级断点恢复，跨调用 tag 树注入避免同义异名
-- 异常隔离 + 自动重试，单 batch / 单窗口失败不阻断整体
+- **Task0**: 多模态视觉识别（VLM）每 5 页一批转 markdown，system prompt 按学科注入
+- **Stage1Extract**: 500 行滑动窗口，每窗口一次 LLM 调用批量提取所有完整条目；0 条时扩窗口到 3000 行
+- **Stage1Review**: 原 window + 批量 items → LLM 批量校验修正（专门修复 exercise 漏 solution bug）
+- **Stage2Annotate**: 单条 item 打 tags/difficulty/subject/taxonomy_path
+- **Stage2Review**: 单条 annotation 审核 tag 格式/复用/校准
+- **Stage3Persist**: 合并 item+annotation → KP/Question 入库（无 LLM）
+- **Retry with feedback**: schema 校验失败时把错误文本注入下一轮 prompt
+- **严格保序**: 全局 item_id 自增 + FIFO queue；Stage2 并发时由 ReorderBuffer 恢复顺序
+- **直通缓存重放**: Task0 已完成时直接从 `recognize/file_*/` 读取跳过原始文件
+- 每条 item 镜像到 `items/<stage>/item_<id>.json` 供断点恢复
+- 异常隔离 + try/finally SENTINEL 传播避免死锁
 
 ### 2. 多 Agent 生成引擎
 
@@ -83,6 +88,10 @@ uv run sciforge parse audit "Raw Data" --db data/sciforge.db -o data/report.md
 
 # 数据库统计
 uv run sciforge parse db-stats data/sciforge.db
+
+# 配置诊断
+uv run sciforge config show
+uv run sciforge config validate
 ```
 
 #### 内容生成
@@ -119,10 +128,12 @@ src/sciforge/
 ├── core/        # 核心 Pydantic 模型 (models.py 含 Discipline/Lecture) + 异常
 ├── llm/         # LLM 客户端层（Anthropic / OpenAI / Gemini / OpenAI 兼容）
 ├── disciplines/ # 学科库：DisciplineSpec + DisciplineRegistry + specs/{math,physics}
-├── pipeline/    # Producer-Consumer 两阶段数据流水线
-│                #   orchestrator（含缓存直通重放）/ recognizers / vlm_converter
-│                #   task1_extractor（含动态扩窗）/ tag_tree / resume_state / retry
-│                #   audit（进度盘点）/ migrate（legacy 迁移）
+├── pipeline/    # 5 阶段并发数据流水线
+│                #   orchestrator（asyncio.gather 6 Task + 4 stage queue + 缓存直通）
+│                #   recognizers / vlm_converter
+│                #   stages/stage1_extract|stage1_review|stage2_annotate|stage2_review|stage3_persist
+│                #   llm_schemas (Batch*/Single* + exercise near-tail guard) / reorder_buffer / tag_tree / taxonomy_validator
+│                #   resume_state / retry (with_feedback) / audit（进度盘点）/ migrate
 ├── agents/      # 多 Agent 系统
 │                #   base/state/graph: BaseAgent + AgentState + StateGraph
 │                #   qgen/: 5 阶段闭环（retriever/generator/solver/verifier/annotator）

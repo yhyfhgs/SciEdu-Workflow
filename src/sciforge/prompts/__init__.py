@@ -1,15 +1,13 @@
 """SciForge 提示词模板包
 
-仅导出当前 pipeline 主线使用的提示词。未使用的旧模板文件 (.txt) 保留
-在 templates/ 目录下作为未来生成引擎重建时的参考。
+导出当前 5 阶段 pipeline 主线使用的默认 prompt 常量（数学学科，学科变量已注入）。
+其他学科请用 `get_*_template(discipline)` getter 按需加载。
 """
 
 from sciforge.prompts.templates import (
-    EXTRACT_AND_CLASSIFY_PROMPT,
     VLM_CONVERT_PROMPT,
 )
 
 __all__ = [
-    "EXTRACT_AND_CLASSIFY_PROMPT",
     "VLM_CONVERT_PROMPT",
 ]

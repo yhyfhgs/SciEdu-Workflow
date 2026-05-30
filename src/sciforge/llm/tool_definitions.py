@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+ToolSpec = dict[str, Any]
+
 # ── Solver 可用工具 ──────────────────────────────────────
 
-EXECUTE_PYTHON_TOOL = {
+EXECUTE_PYTHON_TOOL: ToolSpec = {
     "name": "execute_python",
     "description": (
         "在受限 Python 环境中执行代码。可用库: sympy, numpy, math, fractions, decimal。"
@@ -26,7 +30,7 @@ EXECUTE_PYTHON_TOOL = {
     },
 }
 
-SIMPLIFY_EXPRESSION_TOOL = {
+SIMPLIFY_EXPRESSION_TOOL: ToolSpec = {
     "name": "simplify_expression",
     "description": (
         "使用 sympy 化简数学表达式。输入 LaTeX 或 sympy 格式的表达式，返回化简后的结果。"
@@ -47,7 +51,7 @@ SIMPLIFY_EXPRESSION_TOOL = {
     },
 }
 
-VERIFY_NUMERICAL_TOOL = {
+VERIFY_NUMERICAL_TOOL: ToolSpec = {
     "name": "verify_numerical",
     "description": (
         "对给定表达式在指定测试点进行数值求值，验证等式或不等式是否成立。返回每个测试点的计算结果。"
@@ -76,18 +80,18 @@ VERIFY_NUMERICAL_TOOL = {
 
 # ── 工具集合 ─────────────────────────────────────────────
 
-SOLVER_TOOLS = [EXECUTE_PYTHON_TOOL]
+SOLVER_TOOLS: list[ToolSpec] = [EXECUTE_PYTHON_TOOL]
 
-SOLVER_TOOLS_FULL = [
+SOLVER_TOOLS_FULL: list[ToolSpec] = [
     EXECUTE_PYTHON_TOOL,
     SIMPLIFY_EXPRESSION_TOOL,
     VERIFY_NUMERICAL_TOOL,
 ]
 
-VERIFIER_TOOLS = [EXECUTE_PYTHON_TOOL]
+VERIFIER_TOOLS: list[ToolSpec] = [EXECUTE_PYTHON_TOOL]
 
 
-def get_tools_for_task(task: str) -> list[dict]:
+def get_tools_for_task(task: str) -> list[ToolSpec]:
     """根据任务类型返回可用工具列表"""
     match task:
         case "solve" | "solve_deep":
@@ -98,14 +102,14 @@ def get_tools_for_task(task: str) -> list[dict]:
             return []
 
 
-def to_anthropic_format(tools: list[dict]) -> list[dict]:
+def to_anthropic_format(tools: list[ToolSpec]) -> list[ToolSpec]:
     """转换工具定义为 Anthropic API 格式"""
     return tools  # Anthropic 原生格式即为 name/description/input_schema
 
 
-def to_openai_format(tools: list[dict]) -> list[dict]:
+def to_openai_format(tools: list[ToolSpec]) -> list[ToolSpec]:
     """转换工具定义为 OpenAI API 格式"""
-    result = []
+    result: list[ToolSpec] = []
     for tool in tools:
         result.append(
             {

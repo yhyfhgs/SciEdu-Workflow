@@ -1,6 +1,9 @@
 # SciForge 完整开发总览
 
-> 版本: v3.0 | 日期: 2026-03-31
+> 版本: v3.1 | 日期: 2026-04-15（Pipeline 5 阶段并发重构 + Agent 系统）
+>
+> 最新进度见 [`Docs/PROGRESS.md`](./PROGRESS.md)。
+> Pipeline 架构以 [`CLAUDE.md`](../CLAUDE.md) 的"Pipeline 架构（5 阶段并发 Producer-Consumer）"小节为准。
 
 ## 0. 系统愿景
 

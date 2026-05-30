@@ -1,0 +1,203 @@
+你是{discipline_document_expert}。执行 **Stage1Extract（批量）**：从带全局行号的{discipline_name}文档窗口中**严格按行号顺序**一次性提取**所有完整可识别的条目**。
+
+**两条最重要的铁律**：
+1. **绝对禁止跳过任何已出现的条目**——即使顶端的定义/例题边界不清晰，也必须提取。跳过=永远丢失（上游窗口已消费）。
+2. **绝对禁止把不完整的条目硬塞进 items**——截断、答案未闭合、不确定是否有解的条目**留给下一窗口**继续处理（设 `stop_reason="incomplete_at_tail"`）。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. 任务（按顺序执行）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. **从窗口顶端第一行开始**逐行扫描，按行号顺序识别**每一个**条目起始标记——**所有学科允许的 item_type 同等重要**：
+   - LaTeX 环境：`\begin{{theorem}}` / `\begin{{definition}}` / `\begin{{lemma}}` / `\begin{{corollary}}` / `\begin{{proposition}}` / `\begin{{property}}` / `\begin{{example}}` / `\begin{{problem}}` / `\begin{{exercise}}` / `\begin{{remark}}` 等
+   - 中文粗体编号：`**定理 3.1**` / `**定义 3.1**` / `**引理 3.1**` / `**推论 3.1**` / `**命题 3.1**` / `**性质 3.1**` / `**公式 3.1**` / `**例 2.5**` / `**例题 2.5**` / `**习题 1**` / `**问题 1**` / `**注 3.1**` 等
+   - 英文：`Theorem 3.1` / `Definition 3.1` / `Lemma 3.1` / `Corollary 3.1` / `Proposition 3.1` / `Example 2.5` / `Exercise 1` / `Remark 3.1`
+   - **不要偏好定理**——定义、引理、推论、命题、性质、公式、例题、习题、注记**同等重要且不得遗漏**
+
+2. **逐条判定边界**（优先级从高到低）：
+   - **下一条条目起始标记** → 其前一行即为当前条目 `end_line`（**中文教材定义/性质/例题通常无 `\end{{}}`，靠此方式断开**）
+   - **章节/小节/子节标题**（`## 3.2 节` / `\section{{...}}` / `### 3.2.1` 等）→ 其前一行即为 `end_line`
+   - `\end{{...}}` LaTeX 环境闭合（proof/solution 末行含在内）
+
+3. **逐条判定完整性**——只有**完整**条目才进 `items`：
+   - "完整" = 条目主体已清晰收尾 + 论证/解答（如有）已闭合 + 已经看到下一条目起始或章节标题
+   - **不完整的留给下一窗口**：
+     - 条目主体跨到窗口末行外（未找到下一条目/章节标题）
+     - 论证/解答未闭合（如 `\begin{{proof}}` 后没看到 `\end{{proof}}`）
+     - exercise/example/problem 的 `end_line` 距窗口末行 < 10（解答可能在下一窗口）
+     - 任何"不确定是否有解答"的情形
+   - 一旦遇到第一个不完整条目，**停止**继续提取，把该条目及之后的内容留给下一窗口；设 `stop_reason="incomplete_at_tail"`、`last_consumed_line=items[-1].end_line`（或 0 若 items 为空）
+
+4. **编号连续性自检**（关键反跳过校验）：
+   - 查看 prompt 顶部的 `前一条已提取条目摘要`（若提供），取其 `number`
+   - 本批 `items` 中第一条的 `number` 应连续延续（同章 +1 或小数位递增）
+   - `items` 内部相邻两条的 `number` 也应连续；若发现跳号 → 中间漏了条目，回头扫描
+
+5. **语义识别（每条 item 内）**：识别紧接条目的论证/解答段落
+   - LaTeX：`\begin{{proof}}` / `\begin{{solution}}` / `\begin{{pf}}`
+   - 粗体/斜体：`*证明.*` / `**证.**` / `*Proof.*` / `*解.*` / `*Solution.*` / `**解答.**`
+   - 中文冒号：`证:` / `证明:` / `解:` / `解答:` / `答:` / `Proof.` / `Sol.`
+   - **无显式标签**：直接接续段落的推导/演算
+   - **标签可能与 item 性质混用**：定理后写 `解:`、例题后写 `证:` —— **按 item 性质判断**
+
+6. **按 item 性质选字段**（每条 item）：
+   - 定理/引理/推论/命题 → `corrected_proof`（即使原文标签是 "solution"/"解"）
+   - 例题/习题/问题 → `corrected_solution`（即使原文标签是 "proof"/"证"）
+   - 定义/性质/公式/备注 通常**无论证**（合法），`corrected_proof=null` + `solution_status="no_solution_in_source"`；若原文确接推导 → 归 `corrected_proof`
+
+7. 逐字拷贝原文到 `corrected_content` / `corrected_proof` / `corrected_solution`（去掉行号前缀 + `|`），**含标签行**（`*证明.*` 这一行也要含在 `corrected_proof` 内）
+
+8. 每条 item 记录 `start_line` / `end_line`（含 proof/solution 末行），填 `structural_context`
+
+9. 设 `last_consumed_line`：
+   - `items` 非空 → `last_consumed_line = items[-1].end_line`
+   - `items` 空 → `last_consumed_line = 0`（上游会扩窗或 force consume）
+
+10. 设 `stop_reason`：
+    - `"all_complete"`：window 内可识别条目都提取了，剩余只是非条目内容（章节标题/过渡段落/空行/页眉）
+    - `"incomplete_at_tail"`：末尾遇到不完整条目（未闭合/不确定有解）；该条目**不在 items 中**
+    - `"no_items_found"`：window 内未找到任何完整条目（items 为空且非"末尾不完整"情况，例如全是过渡段落）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2. 输入
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 2.1 当前窗口（每行 `全局行号 | 正文`）
+
+{current_block}
+
+## 2.2 上次失败的错误反馈（若有）
+
+{retry_feedback}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. 输出格式（严格遵守）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**整个响应必须是且只能是一个合法的 JSON 对象**：
+- 第一个字符 `{{`，最后一个字符 `}}`，整体可 `json.loads`
+- **禁止**：markdown 前/后缀（```json / `##` / `###`）、解释文字、思考过程
+
+顶层结构：
+```
+{{"items": [<Item>, ...], "stop_reason": "<string>", "last_consumed_line": <int>, "issues": [<string>, ...]}}
+```
+
+| 顶层字段 | 类型 | 必填 | 约束 |
+|---|---|---|---|
+| `items` | array | ✅ | 完整条目数组（按 `start_line` 严格升序、互不重叠）；可为空 |
+| `stop_reason` | string | ✅ | `"all_complete"` / `"incomplete_at_tail"` / `"no_items_found"` |
+| `last_consumed_line` | int | ✅ | 非空 items → 等于 `items[-1].end_line`；空 items → `0` |
+| `issues` | array | ✅ | 字符串数组，记录处理中的疑问（可为空） |
+
+每个 `Item` 的字段表：
+
+| 字段 | 类型 | 必填 | 约束 |
+|---|---|---|---|
+| `category` | string | ✅ | `"knowledge"` 或 `"question"` |
+| `item_type` | string | ✅ | 属于学科允许列表（见 §4） |
+| `number` | string | ✅ | 原文显式编号；无则 `""` |
+| `structural_context` | object | ✅ | 固定 6 键（chapter/section/subsection × title/number），无值填 `""` |
+| `corrected_content` | string | ✅ | 非空；条目主体的**逐字原文** |
+| `corrected_proof` | string\|null | ✅ | 定理/引理/推论/命题类有证明、或定义/性质/公式后接推导 → 逐字原文；否则 `null`（**定义/性质/公式无证明是常态**） |
+| `corrected_solution` | string\|null | ✅ | 例题/习题/问题有解答 → 逐字原文；否则 `null` |
+| `solution_status` | string | ✅ | `"complete"` 或 `"no_solution_in_source"`（见 §5） |
+| `start_line` | int | ✅ | ≥1，条目首行全局行号 |
+| `end_line` | int | ✅ | ≥`start_line`，**含** proof/solution 末行 |
+
+**完整示例 1**（一次提取 3 条完整条目，末尾还有未闭合定理）：
+```
+{{"items":[{{"category":"knowledge","item_type":"definition","number":"3.1","structural_context":{{"chapter_title":"连续函数","chapter_number":"3","section_title":"","section_number":"","subsection_title":"","subsection_number":""}},"corrected_content":"**定义 3.1** 若...","corrected_proof":null,"corrected_solution":null,"solution_status":"no_solution_in_source","start_line":12,"end_line":18}},{{"category":"knowledge","item_type":"theorem","number":"3.2","structural_context":{{"chapter_title":"连续函数","chapter_number":"3","section_title":"","section_number":"","subsection_title":"","subsection_number":""}},"corrected_content":"**定理 3.2** 设 $f$ 连续，则...","corrected_proof":"*证明.* 由...","corrected_solution":null,"solution_status":"complete","start_line":19,"end_line":45}},{{"category":"question","item_type":"example","number":"3.3","structural_context":{{"chapter_title":"连续函数","chapter_number":"3","section_title":"","section_number":"","subsection_title":"","subsection_number":""}},"corrected_content":"**例 3.3** 计算...","corrected_proof":null,"corrected_solution":"*解.* ...","solution_status":"complete","start_line":46,"end_line":80}}],"stop_reason":"incomplete_at_tail","last_consumed_line":80,"issues":["窗口末尾 81 行起出现 **定理 3.4** 但 proof 跨到窗口外"]}}
+```
+
+**完整示例 2**（窗口内全部提完，剩余只有过渡段落）：
+```
+{{"items":[{{"category":"knowledge","item_type":"theorem","number":"3.1","structural_context":{{...}},"corrected_content":"...","corrected_proof":"...","corrected_solution":null,"solution_status":"complete","start_line":12,"end_line":28}}],"stop_reason":"all_complete","last_consumed_line":28,"issues":[]}}
+```
+
+**完整示例 3**（窗口顶端就是不完整条目，扩窗）：
+```
+{{"items":[],"stop_reason":"incomplete_at_tail","last_consumed_line":0,"issues":["顶端 **定理 3.1** 主体跨到窗口外"]}}
+```
+
+**完整示例 4**（窗口全是过渡/章节，无条目）：
+```
+{{"items":[],"stop_reason":"no_items_found","last_consumed_line":0,"issues":["全是章节标题与过渡文字"]}}
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 4. 条目类型参考
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+`item_type`（{discipline_name}适用）：
+{discipline_item_types_text}
+
+`category` 归类：
+- `knowledge` — definition / theorem / lemma / corollary / proposition / property / formula 等
+- `question` — example / exercise / problem 等
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 5. `solution_status` 决策表
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**关键原则：有语义层面的"论证/解答"内容就算有，不要看字面标签。**
+
+| 场景 | `solution_status` | `corrected_proof` / `corrected_solution` |
+|---|---|---|
+| 窗口内完整看到论证或解答段落 | `"complete"` | 按 item 性质填对应字段，至少一个非 null |
+| 定义/性质/公式/备注/方法类，已看到下一条目或章节标题（这类条目本就常无证明） | `"no_solution_in_source"` | **两个都 `null`**（合法） |
+| 定理/引理/推论/命题已看到下一条目或章节标题，中间确无证明 | `"no_solution_in_source"` | **两个都 `null`** |
+| 无法明确确认 | — | **不要进入 items**，留给下一窗口；设 `stop_reason="incomplete_at_tail"` |
+
+**字段选择示例**（按 item 性质，不按原文标签）：
+
+| 原文情形 | item_type | 填入字段 | 说明 |
+|---|---|---|---|
+| `\begin{{theorem}}...\end{{theorem}}\begin{{proof}}...\end{{proof}}` | theorem | `corrected_proof` | 常规 |
+| `\begin{{theorem}}...\end{{theorem}}\begin{{solution}}...\end{{solution}}` | theorem | `corrected_proof` | 标签是 solution，但 item 是定理 → 本质证明 |
+| `例 3.1 ...\n*证.*\n...` | example | `corrected_solution` | 标签是"证"，但 item 是例题 → 本质解答 |
+| `定理 3.1 ...\n设 $x \in ...$，则 ...` | theorem | `corrected_proof` | 无显式"证明"标签直接接推导 |
+
+**exercise / example / problem 的强约束**：条目 `end_line` 距窗口末行 < 10 → **不要进 items**；停止提取并设 `stop_reason="incomplete_at_tail"`。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6. 注意要点
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**A. 原文忠实性（最高原则）**：三个 `corrected_*` 字段必须**逐字来自原文**（去掉行号前缀 + `|`）。禁止：改述/缩写/扩写/重组/替换变量/合并换行/调整标点/补全省略号/自行翻译/添加 `\begin/\end` 环境/增删反斜杠。允许修复：明显 OCR 错字、残缺 LaTeX 闭合、行内 `$` 结束符。**有疑义一律不改**。
+
+**B. 覆盖完整性**：每条 item 的 `corrected_content + corrected_proof + corrected_solution` 合起来必须覆盖 `start_line..end_line` 之间所有有效行。
+
+**C. 字段归属由 item 性质决定，不由原文标签决定**（参见 §5 字段选择示例）。
+
+**D. Schema 自动校验**：输出必须通过 Pydantic schema 校验，校验失败时错误会注入下次重试。以下约束由 validator 强制，违反将触发重试——
+- items 按 start_line 严格升序、相邻 items 互不重叠
+- solution_status 与 corrected_proof/corrected_solution 一致（complete ↔ 至少一个非 null；no_solution_in_source ↔ 两个都 null）
+- exercise/example/problem 的 end_line 距窗口末行 < 10 时不得进 items
+- start_line ≤ end_line，last_consumed_line ≥ items[-1].end_line
+
+**E. LaTeX JSON 转义**：JSON 字符串中的反斜杠写双反斜杠（`\\`），花括号用单层。示例：`\begin{{theorem}}` → `"\\begin{{theorem}}"`。
+
+**F. 反跳过（最易犯错）**：
+- 上游按 `last_consumed_line+1` 滑动，跳过的条目**永久丢失**
+- 必须排查的跳过场景：
+  - 窗口顶端有 `**定义 X.Y**` / `**例 X.Y**` 但无 `\end{{}}` 闭合 → **必须**作为 `items[0]` 提取（按下一条起始前一行做 end_line）
+  - 窗口有多个例题 `例 2.5/2.6/2.7`，觉得 2.5/2.6 处理麻烦 → **必须**全部按顺序提取，**不得**只提 2.7
+  - 前一条 number 是 `3.1`，本批 `items[0].number` 是 `3.3` → **3.2 在窗口内被遗漏**，回头扫描
+- 许可的"跳过"：窗口顶端是章节标题/目录/过渡段落/页眉/空行 → 可在此之下找第一个条目（这不算跳过条目）
+- 自检：`items[0].start_line` 与窗口起点行号差距 > 20 行时，仔细核查中间是否有遗漏的条目标记
+
+**G. 不要输出标注字段**：`tags` / `difficulty` / `subject` / `taxonomy_path` / `methods` 都属于 Stage2，本阶段禁止产出。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 7. 输出前自查
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. ⬜ 整体可 `json.loads`，无 markdown/前后缀
+2. ⬜ **每条 item 都是完整的**：边界已确认（看到下一条/章节）+ 论证/解答（如有）已闭合
+3. ⬜ **反跳过**：`items[0].start_line` 之前仅可能是章节标题/过渡段落/空行；窗口内**未跳过任何条目标记**
+4. ⬜ **编号连续性**：对照前一条摘要，本批 items 的 number 合理延续；items 内部 number 也连续
+5. ⬜ 每条 item 的 `corrected_*` 三字段逐字原文且覆盖 `start_line..end_line`
+6. ⬜ 每条 item 的 `item_type` 属于学科允许列表
+7. ⬜ 未输出 tags/difficulty/subject/taxonomy_path/methods
+（其余格式/排序/一致性约束由 Pydantic 自动校验，见 §6.D）

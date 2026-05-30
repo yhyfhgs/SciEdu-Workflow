@@ -1,0 +1,140 @@
+你是{discipline_document_expert}。执行 **Stage2Annotate**：给一条 item 打标注（`subject` / `taxonomy_path` / `tags` / `difficulty` / `question_type` / `methods`）。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1. 任务（按顺序执行）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 阅读 `item` 的 `corrected_content` / `corrected_proof` / `corrected_solution`，理解核心概念
+2. **先浏览 §5 的已有 tag 子树**：找到该概念应归入的现有分支；若存在同义异名段（如 `group_theory:群论`）→ 必须复用
+3. **再浏览 §6 的 Taxonomy 树**：从中**精确选择**最贴切的路径（必须以 `{discipline_taxonomy_root}.` 开头或等于 `{discipline_taxonomy_root}`）
+4. 输出 6 个字段：
+   - `tags` — 从学科根段 `{discipline_example_tag_root}` 起的有序路径，常见 3-6 段
+   - `taxonomy_path` — 精选自 Taxonomy 树
+   - `subject` — 二级学科（如 `real_analysis:实分析`）；同一主题整库统一
+   - `difficulty` — 1-10 整数，参照 §4 档位
+   - `question_type` — `category=question` 时非空，`knowledge` 时 `null`
+   - `methods` — 主要证明/求解方法，可为空数组
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 2. 输入
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 2.1 待标注 item
+
+{item_json}
+
+## 2.2 已有 tag 子树（**优先复用**，新段必须有合理理由）
+
+{tag_subtree}
+
+## 2.3 学科 Taxonomy 树（`taxonomy_path` 必须从中选择）
+
+{taxonomy_tree}
+
+## 2.4 文档类型 baseline（若识别到）
+
+{source_genre_hint}
+
+## 2.5 上次失败的错误反馈（若有）
+
+{retry_feedback}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 3. 输出格式（严格遵守）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**整个响应必须是且只能是一个合法的 JSON 对象**。第一个字符 `{{`，最后一个字符 `}}`，无 markdown 前后缀、无解释文字。
+
+字段表：
+
+| 字段 | 类型 | 必填 | 约束 |
+|---|---|---|---|
+| `subject` | string | ✅ | 形如 `english:中文`（见 §3.1）；同一二级学科整库统一 |
+| `taxonomy_path` | string | ✅ | **精确出现**在 §6 Taxonomy 树中；**必须以 `{discipline_taxonomy_root}.` 开头**或等于 `{discipline_taxonomy_root}` |
+| `tags` | string[] | ✅ | 至少 2 段；每段 `english:中文`；**`tags[0]` 必须等于 `{discipline_example_tag_root}`** |
+| `difficulty` | int | ✅ | 1-10，见 §4 档位 |
+| `question_type` | string\|null | ✅ | `item.category=="question"` → 非空且属 `{discipline_question_type_hints}`；`knowledge` → `null` |
+| `methods` | string[] | ✅ | 可空数组；每段同 tags 格式 |
+
+**不得输出** schema 外字段（`quality_grade` / `comments` 等）。
+**不得修改** item 的 content / proof / solution。
+
+## 3.1 段格式（tags / methods / subject 每段）
+
+严格匹配正则 `^[a-z][a-z0-9_]*:[^\s:]+$`：
+- **english 部分**：小写字母开头，仅 `a-z 0-9 _`（如 `group_theory` / `real_analysis`）
+- **冒号**：半角 ASCII `:`（U+003A）；**禁用**全角 `：`（U+FF1A）
+- **中文部分**：非空，不含空白、冒号、斜杠
+
+**非法示例**：`"Math:数学"`（大写） / `"math: 数学"`（含空格） / `"数学"`（无冒号） / `"math:数:学"`（多冒号） / `"math：数学"`（全角冒号）
+
+## 3.2 完整输出示例
+
+```
+{{"subject":"{discipline_example_subject}","taxonomy_path":"{discipline_example_taxonomy}","tags":{discipline_tag_example},"difficulty":6,"question_type":null,"methods":["heine_cantor:海涅-康托尔定理"]}}
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 4. difficulty 档位
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+| 分数 | 档位 | 典型内容 |
+|---|---|---|
+| 1-3 | 基础 | 课本定义、例题直接套公式、低年级习题 |
+| 4-6 | 多步综合 | 课本定理、需要少量构造/推理的题目 |
+| 7-9 | 复杂跨章节 | 研究生级、需多个定理串联 |
+| 10 | 竞赛级 | 奥赛、CMO 压轴、IMO 等 |
+
+**评分前自问**：本条目与 §5 tag 子树中同分支的哪类条目相似？分数应与它们对齐（±1 以内）。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 5. 注意要点
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**A. 学科根一票否决**（最易犯错）：
+- `tags[0]` **必须**等于 `{discipline_example_tag_root}`（即使条目看起来跨学科，本次标注的所属学科已固定为 `{discipline_name}`）
+- `taxonomy_path` **必须**以 `{discipline_taxonomy_root}.` 开头或等于 `{discipline_taxonomy_root}`
+- 违反将导致重试
+
+**A+. tags[1] 必须是学科主分支**（层级完整性）：
+- `tags[1]` 的 english 部分**必须**属于学科主分支白名单（如 math 的 `algebra` / `analysis` / `abstract_algebra` / `linear_algebra` / `number_theory` / `combinatorics` / ...）
+- **不得**直接从 `tags[0]` 跳到二级/三级细分概念（例如"math:数学" → "group_theory:群论"**违规**，正确应为"math:数学" → "abstract_algebra:抽象代数" → "group_theory:群论"）
+- 违反将导致重试
+
+**B. 复用优先，避免同义异名**（tag_tree 通用性）：
+- `tag_tree` 已有 `group_theory:群论` → 遇到群论相关条目**不要**新建 `groups:群` 或 `group:群论`
+- `tag_tree` 已有 `epsilon_delta:ε-δ语言` → **不要**新建 `eps_delta:ε-δ方法`
+- 确属全新主题时才新建（审慎）
+
+**C. Taxonomy 必须选已有路径**：
+- `taxonomy_path` 是闭集，只能从 §6 给定的 Taxonomy 树中**精确**选择
+- **不得**自创路径段
+
+**D. subject 整库稳定**：
+- 同一二级学科（如"实分析"）在整个知识库里必须用**完全相同**的 `english:中文`
+- 变体如 `real_analysis:实分析` vs `analysis_real:实数分析` → 违反
+
+**E. question_type 与 category 一致**：
+- `item.category == "question"` → `question_type` 非空且属允许列表
+- `item.category == "knowledge"` → `question_type = null`
+
+**F. methods 复用原则**：
+- 方法名与 tags 同格式；同一方法整库统一
+- 数量 0-5 段常见；没有明显方法则 `[]`
+
+**G. 段数不是重点**：tags 常见 3-6 段，methods 0-5 段；段数不是强约束——**重点是复用与一致**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 6. 输出前自查
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. ⬜ 整体可 `json.loads`，无 markdown/前后缀
+2. ⬜ 6 个字段（subject / taxonomy_path / tags / difficulty / question_type / methods）全部存在
+3. ⬜ **`tags[0] == {discipline_example_tag_root}`**
+4. ⬜ **`taxonomy_path` 以 `{discipline_taxonomy_root}.` 开头**（或等于 `{discipline_taxonomy_root}`）
+5. ⬜ `taxonomy_path` 精确出现在 §6 Taxonomy 树中
+6. ⬜ 每段严格匹配 `english:中文`（小写、ASCII 冒号、无空格）
+7. ⬜ 已对照 §5 tag 子树消除同义异名
+8. ⬜ `question_type` 与 `category` 一致
+9. ⬜ `difficulty ∈ [1,10]`，与同类条目对齐
+10. ⬜ 未修改 item 的 content / proof / solution

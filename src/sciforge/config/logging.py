@@ -3,6 +3,7 @@
 import logging
 import sys
 from pathlib import Path
+from typing import Any, TextIO
 
 import structlog
 
@@ -19,7 +20,7 @@ def setup_logging(
         format: 输出格式 (console | json)
         log_file: 如果提供，同时写入该文件
     """
-    shared_processors = [
+    shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
@@ -27,24 +28,24 @@ def setup_logging(
     ]
 
     if format == "json":
-        renderer = structlog.processors.JSONRenderer(ensure_ascii=False)
+        renderer: Any = structlog.processors.JSONRenderer(ensure_ascii=False)
     else:
         renderer = structlog.dev.ConsoleRenderer()
 
     # 日志工厂：stdout + 可选文件
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handle = open(log_file, "a", encoding="utf-8")  # noqa: SIM115
+        file_handle: TextIO = open(log_file, "a", encoding="utf-8")  # noqa: SIM115
 
         class _TeeLogger:
-            def __init__(self, fh: object) -> None:
+            def __init__(self, fh: TextIO) -> None:
                 self._fh = fh
 
             def msg(self, message: str) -> None:
                 sys.stderr.write(message + "\n")
                 sys.stderr.flush()
-                self._fh.write(message + "\n")  # type: ignore[union-attr]
-                self._fh.flush()  # type: ignore[union-attr]
+                self._fh.write(message + "\n")
+                self._fh.flush()
 
             log = debug = info = warning = error = critical = fatal = msg
 
@@ -54,9 +55,9 @@ def setup_logging(
             def __call__(self, *args: object, **kwargs: object) -> _TeeLogger:
                 return _TeeLogger(file_handle)
 
-        logger_factory: structlog.types.WrappedLogger = _TeeLoggerFactory()  # type: ignore[assignment]
+        logger_factory: Any = _TeeLoggerFactory()
     else:
-        logger_factory = structlog.PrintLoggerFactory()  # type: ignore[assignment]
+        logger_factory = structlog.PrintLoggerFactory()
 
     structlog.configure(
         processors=[

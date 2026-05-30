@@ -30,6 +30,8 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+.claude/
+test_diag.py
 
 # Testing & linting
 .mypy_cache/

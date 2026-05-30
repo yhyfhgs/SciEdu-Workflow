@@ -21,9 +21,7 @@ class SolveEngine:
     def __init__(self, llm: LLMClient, discipline: Discipline = Discipline.MATH) -> None:
         self.llm = llm
         self.discipline = discipline
-        self._solve_template = get_generation_prompt_template(
-            "solving/solve.txt", discipline
-        )
+        self._solve_template = get_generation_prompt_template("solving/solve.txt", discipline)
 
     async def solve(
         self,
@@ -44,9 +42,7 @@ class SolveEngine:
         )
 
         try:
-            result = await call_llm_json_with_retry(
-                self.llm, prompt, max_attempts=2
-            )
+            result = await call_llm_json_with_retry(self.llm, prompt, max_attempts=2)
         except Exception as exc:
             logger.warning("solve_failed", error=str(exc)[:200])
             return None
@@ -55,9 +51,7 @@ class SolveEngine:
         if confidence_raw not in ("high", "medium", "low"):
             confidence_raw = "low"
 
-        solution_text = str(
-            result.get("solution_latex") or result.get("solution") or ""
-        )
+        solution_text = str(result.get("solution_latex") or result.get("solution") or "")
 
         logger.info(
             "solve_done",

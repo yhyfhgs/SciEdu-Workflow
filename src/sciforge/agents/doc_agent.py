@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from sciforge.agents.base import BaseAgent
 from sciforge.core.models import (

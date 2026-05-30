@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from sciforge.core.models import (
         ContextBundle,
         DifficultyScore,
-        GeneratedQuestion,
         GenerationRequest,
         Lecture,
         Question,

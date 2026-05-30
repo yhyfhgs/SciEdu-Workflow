@@ -72,8 +72,42 @@ def recognize_dir(checkpoint_root: Path, file_hash: str, file_idx: int, file_ste
 # ── 加载 / 保存 ────────────────────────────────────────
 
 
+_CURRENT_STATE_SCHEMA_VERSION = 2
+
+
+class StateSchemaMismatch(Exception):  # noqa: N818
+    """state.json schema 与当前代码不兼容（需 --restart）"""
+
+
+def is_state_complete(state: FileExtractionState | None) -> bool:
+    """判断一个 logical_document 是否已经完整跑完 pipeline。
+
+    关键：``failed_batches``（Task0/VLM 识别失败）和 ``failed_blocks``（Stage1
+    提取失败）都非空视为**未完成**，避免 429 / 临时错误导致大量跳过后被错误
+    标记为 completed，下次 resume 时略过 raw data 内容。
+
+    仅当 state.phase == "completed"（外部显式标记）时也视为完成，但这个显式
+    标记在 orchestrator 里只有 ``is_state_complete`` 返回 True 时才会被设置，
+    所以不会出现"phase=completed 但 failed_blocks 非空"的情况——除非人工
+    (或老版本代码) 误设，此时降级判定也能正确让 pipeline 重跑。
+    """
+    if state is None:
+        return False
+    full = (
+        state.task0_completed
+        and not state.failed_batches
+        and not state.failed_blocks
+        and state.stage1_completed
+        and state.stage3_completed
+    )
+    if full:
+        return True
+    # 显式 completed 标记仅在失败队列全空时认可
+    return state.phase == "completed" and not state.failed_batches and not state.failed_blocks
+
+
 def load_state(checkpoint_root: Path, file_hash: str) -> FileExtractionState | None:
-    """加载已有 state；不存在或损坏时返回 None"""
+    """加载已有 state；不存在返回 None；schema 不兼容则抛出 StateSchemaMismatch"""
     from sciforge.core.models import FileExtractionState
 
     f = state_file(checkpoint_root, file_hash)
@@ -81,10 +115,47 @@ def load_state(checkpoint_root: Path, file_hash: str) -> FileExtractionState | N
         return None
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
-        return FileExtractionState(**data)
-    except (json.JSONDecodeError, OSError, ValueError) as exc:
+    except (json.JSONDecodeError, OSError) as exc:
         logger.warning("state_load_failed", file_hash=file_hash, error=str(exc))
         return None
+
+    # 检测旧 schema（三段式 pipeline 留下的 state）
+    legacy_fields = (
+        "order_index_next",
+        "current_task2_block_idx",
+        "task1_saved_items",
+        "saved_item_count",
+        "format_spec_json",
+    )
+    has_legacy = any(k in data for k in legacy_fields)
+    data_version = data.get("schema_version", 1)
+    if has_legacy or data_version < _CURRENT_STATE_SCHEMA_VERSION:
+        raise StateSchemaMismatch(
+            f"检测到旧版 state.json (schema_version={data_version})，"
+            f"当前代码要求 v{_CURRENT_STATE_SCHEMA_VERSION}。请删除 checkpoint 后加 --restart：\n"
+            f"  rm -rf {checkpoint_root / file_hash}\n"
+            f"  uv run sciforge parse run ... --restart"
+        )
+
+    try:
+        state = FileExtractionState(**data)
+    except ValueError as exc:
+        logger.warning("state_validate_failed", file_hash=file_hash, error=str(exc))
+        return None
+
+    if is_state_complete(state) and state.phase != "completed":
+        state.phase = "completed"
+        try:
+            save_state(checkpoint_root, state)
+        except OSError as exc:
+            logger.warning(
+                "state_complete_autofix_save_failed",
+                file_hash=file_hash,
+                error=str(exc),
+            )
+        else:
+            logger.info("state_complete_autofix", file_hash=file_hash)
+    return state
 
 
 def save_state(checkpoint_root: Path, state: FileExtractionState) -> None:
@@ -118,7 +189,7 @@ _LOCKS = StateLockRegistry()
 
 
 async def save_state_locked(
-    checkpoint_root: Path,
+    checkpoint_root: Path | None,
     state: FileExtractionState,
     *,
     force: bool = False,
@@ -131,7 +202,11 @@ async def save_state_locked(
 
     force=True 用于：Producer 完成 / Consumer 完成 / 异常退出等关键点，
     保证至少丢失不超过 min_interval_sec 秒的状态。
+
+    checkpoint_root 为 None 时为 no-op（用于 dry-run / 单测）。
     """
+    if checkpoint_root is None:
+        return
     async with _LOCKS.get(state.file_hash):
         if not force:
             now = _time.monotonic()

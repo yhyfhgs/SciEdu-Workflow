@@ -68,7 +68,7 @@ def test_empty_prompt_file_returns_empty_string():
 
 class _WithPromptAgent(BaseAgent[_DummyIn, _DummyOut]):
     name = "with_prompt"
-    prompt_file = "pipeline/extract_and_classify.txt"  # 真实 prompt 文件
+    prompt_file = "pipeline/extract_stage1_initial.txt"  # 真实 prompt 文件
 
     async def run(self, input: _DummyIn) -> _DummyOut:
         return _DummyOut(doubled=input.value * 2)

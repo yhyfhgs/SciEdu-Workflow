@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 
@@ -17,6 +18,48 @@ if TYPE_CHECKING:
 
 parse_app = typer.Typer(name="parse", help="数据解析命令")
 
+# 允许的识别后端（显式枚举校验，避免 silent fallthrough）
+_ALLOWED_BACKENDS = ("vlm", "pymupdf")
+_DEFAULT_LLM_CONFIG = Path("config/sciforge.toml")
+
+
+def _validate_backend(backend: str) -> None:
+    """校验 --backend 值，非法值立即退出"""
+    if backend not in _ALLOWED_BACKENDS:
+        allowed = "/".join(_ALLOWED_BACKENDS)
+        raise typer.BadParameter(f"--backend 必须是 {allowed}；当前: {backend!r}")
+
+
+def _resolve_llm_config(p: Path | None) -> Path | None:
+    """统一解析 --llm-config：
+
+    - p 不为 None：若路径不存在，立即 fail-fast（用户显式指定的错误路径）
+    - p 为 None：fallback 到 `config/sciforge.toml` 若存在，否则 None
+    """
+    if p is not None:
+        if not p.exists():
+            error(f"--llm-config 路径不存在: {p}")
+            raise typer.Exit(1)
+        return p
+    return _DEFAULT_LLM_CONFIG if _DEFAULT_LLM_CONFIG.exists() else None
+
+
+def _resolve_provider_override(llm_provider: str | None) -> dict[str, str]:
+    """把 CLI --llm-provider 智能分派为 provider_ref 或 raw provider type
+
+    - 若值匹配已知的 LLMProvider 枚举（anthropic/openai/gemini/openai_compatible/
+      anthropic_compatible）→ 当作 raw type（适合 --skip-llm 或无 TOML 裸跑）
+    - 否则当作 provider_ref 别名（v2 TOML 路径）
+    """
+    from sciforge.llm.config import LLMProvider
+
+    if not llm_provider:
+        return {}
+    known_types = {e.value for e in LLMProvider}
+    if llm_provider in known_types:
+        return {"provider": llm_provider}
+    return {"provider_ref": llm_provider}
+
 
 def _build_llm_clients(
     config: AppConfig,
@@ -26,27 +69,49 @@ def _build_llm_clients(
     llm_provider: str | None,
     llm_model: str | None,
 ) -> tuple[LLMClient | None, dict[str, LLMClient]]:
-    """构建 per-task LLM 客户端字典"""
+    """构建 per-task LLM 客户端字典
+
+    并发限流两层：
+    - 全局 semaphore（max_concurrent_llm_calls）：跨所有 model 的总在途请求上限
+    - per-model semaphore（llm_model_concurrency[model_id]）：按 LLM model id 限流，
+      防止 Anthropic Token Plan 等 per-model quota 触发 429
+    """
     from sciforge.llm.client import LLMClient
     from sciforge.llm.config import LLMConfig
 
     if skip_llm:
         return None, {}
 
-    cli_overrides: dict[str, str] = {}
-    if llm_provider:
-        cli_overrides["provider"] = llm_provider
+    cli_overrides: dict[str, str] = _resolve_provider_override(llm_provider)
     if llm_model:
         cli_overrides["model"] = llm_model
 
-    task_names = ["extract_and_classify"]
+    task_names = ["extract_and_classify", "review", "tag", "annotate_review"]
     if backend == "vlm":
         task_names.append("vlm_convert")
 
     llm_clients: dict[str, LLMClient] = {}
+    request_semaphore = asyncio.Semaphore(max(1, int(config.max_concurrent_llm_calls)))
+
+    # 同 model id 共享同一个 per-model semaphore（跨 task）
+    model_semaphores: dict[str, asyncio.Semaphore] = {}
+
+    def _get_model_sem(model_id: str) -> asyncio.Semaphore | None:
+        limit = config.llm_model_concurrency.get(model_id)
+        if not limit or int(limit) <= 0:
+            return None
+        if model_id not in model_semaphores:
+            model_semaphores[model_id] = asyncio.Semaphore(int(limit))
+        return model_semaphores[model_id]
+
     for task_name in task_names:
         task_cfg = LLMConfig.from_app_config(config, task_name, **cli_overrides)
-        llm_clients[task_name] = LLMClient(task_cfg)
+        client = LLMClient(task_cfg)
+        client.set_request_semaphore(request_semaphore)
+        msem = _get_model_sem(task_cfg.model)
+        if msem is not None:
+            client.set_model_semaphore(msem)
+        llm_clients[task_name] = client
     return llm_clients["extract_and_classify"], llm_clients
 
 
@@ -94,9 +159,7 @@ def _parse_discipline(value: str) -> Discipline:
         return Discipline(value)
     except ValueError as exc:
         allowed = ", ".join(d.value for d in Discipline)
-        raise typer.BadParameter(
-            f"未知学科 {value!r}；允许值: {allowed}"
-        ) from exc
+        raise typer.BadParameter(f"未知学科 {value!r}；允许值: {allowed}") from exc
 
 
 def _load_book_manifest(path: Path) -> list[Path]:
@@ -151,13 +214,35 @@ def parse_run(
     output: Path = typer.Option(Path("data"), "--output", "-o", help="输出目录"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="SQLite 数据库路径"),
     backend: str = typer.Option("vlm", "--backend", "-b", help="文档识别后端 (vlm/pymupdf)"),
-    pages_per_batch: int = typer.Option(5, "--pages-per-batch", help="Phase A 每批页数"),
-    extract_window_lines: int = typer.Option(
-        200, "--extract-window-lines", help="Task1 滑动窗口行数"
+    pages_per_batch: int | None = typer.Option(
+        None, "--pages-per-batch", help="Task0 每批页数（默认读 TOML，fallback 5）"
     ),
-    max_retries: int = typer.Option(3, "--max-retries", help="LLM/VLM 调用重试次数"),
-    max_files: int = typer.Option(
-        4, "--max-files", "-j", help="目录模式下最大并发 logical_document 数"
+    extract_window_lines: int | None = typer.Option(
+        None,
+        "--extract-window-lines",
+        help="Stage1Extract 初始窗口行数（默认读 TOML，fallback 500）",
+    ),
+    extract_max_window_lines: int | None = typer.Option(
+        None,
+        "--extract-max-window-lines",
+        help="Stage1Extract 最大窗口行数（默认读 TOML，fallback 3000）",
+    ),
+    extract_expand_step: int | None = typer.Option(
+        None,
+        "--extract-expand-step",
+        help="Stage1Extract 每次扩窗口的步长（默认读 TOML，fallback 500）",
+    ),
+    max_retries: int | None = typer.Option(
+        None, "--max-retries", help="LLM/VLM 调用重试次数（默认读 TOML，fallback 3）"
+    ),
+    max_files: int | None = typer.Option(
+        None,
+        "--max-files",
+        "-j",
+        help=(
+            "目录模式下最大并发 logical_document 数（默认读 TOML，fallback 8）。"
+            "建议：≤16GB RAM 用 4-6；32GB 用 8-12；64GB+ 用 16-24"
+        ),
     ),
     skip_llm: bool = typer.Option(False, "--skip-llm", help="跳过 LLM 调用（仅做识别）"),
     dry_run: bool = typer.Option(False, "--dry-run", help="仅处理，不写入 DB"),
@@ -165,7 +250,9 @@ def parse_run(
     llm_provider: str | None = typer.Option(None, "--llm-provider", help="LLM 提供者"),
     llm_model: str | None = typer.Option(None, "--llm-model", help="LLM 模型"),
     llm_config_file: Path | None = typer.Option(
-        Path("config/sciforge.toml"), "--llm-config", help="LLM TOML 配置文件路径"
+        None,
+        "--llm-config",
+        help="LLM TOML 配置文件路径（未指定时默认读 config/sciforge.toml）",
     ),
     discipline: str = typer.Option(
         "math",
@@ -173,26 +260,44 @@ def parse_run(
         "-D",
         help="文档学科 (math/physics/chemistry/biology/other)",
     ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        help="Debug 模式：打印每轮窗口、LLM 回复和条目连续性",
+    ),
 ) -> None:
     """运行 Pipeline 处理文件"""
-    import asyncio
-
     from sciforge.config.settings import AppConfig
 
+    _validate_backend(backend)
     discipline_enum = _parse_discipline(discipline)
+    llm_config_file = _resolve_llm_config(llm_config_file)
 
-    if llm_config_file and not llm_config_file.exists():
-        llm_config_file = None
+    # CLI 仅覆盖显式传入（非 None）的字段，其余走 TOML → AppConfig 默认
+    overrides: dict[str, object] = {}
+    if pages_per_batch is not None:
+        overrides["pages_per_batch"] = pages_per_batch
+    if extract_window_lines is not None:
+        overrides["extract_window_lines"] = extract_window_lines
+    if extract_max_window_lines is not None:
+        overrides["extract_max_window_lines"] = extract_max_window_lines
+    if extract_expand_step is not None:
+        overrides["extract_window_expand_step"] = extract_expand_step
+    if max_retries is not None:
+        overrides["max_extract_retries"] = max_retries
+        overrides["stage1_extract_max_retries"] = max_retries
+        overrides["vlm_max_retries"] = max_retries
+    if max_files is not None:
+        overrides["max_concurrent_files"] = max_files
+    if debug:
+        overrides["pipeline_debug"] = True
 
-    config = AppConfig(
-        data_dir=output,
-        llm_config_file=llm_config_file,
-        pages_per_batch=pages_per_batch,
-        extract_window_lines=extract_window_lines,
-        max_extract_retries=max_retries,
-        vlm_max_retries=max_retries,
-        max_concurrent_files=max_files,
-    )
+    config_kwargs: dict[str, Any] = {
+        "data_dir": output,
+        "llm_config_file": llm_config_file,
+        **overrides,
+    }
+    config = AppConfig(**cast(Any, config_kwargs))
 
     orchestrator = _build_orchestrator(
         config,
@@ -216,7 +321,9 @@ def parse_run(
             result = await orchestrator.process_file(path)
             _display_result(result)
         else:
-            results = await orchestrator.process_directory(path, max_concurrent_files=max_files)
+            results = await orchestrator.process_directory(
+                path, max_concurrent_files=config.max_concurrent_files
+            )
             total_items = sum(r.items_saved for r in results)
             total_errors = sum(len(r.errors) for r in results)
             total_failed_blocks = sum(len(r.failed_blocks) for r in results)
@@ -239,17 +346,33 @@ def parse_run_book(
     manifest: Path | None = typer.Option(None, "--manifest", "-m", help="YAML/JSON 清单文件"),
     output: Path = typer.Option(Path("data"), "--output", "-o", help="输出目录"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="SQLite 数据库路径"),
-    extract_window_lines: int = typer.Option(
-        200, "--extract-window-lines", help="Task1 滑动窗口行数"
+    extract_window_lines: int | None = typer.Option(
+        None,
+        "--extract-window-lines",
+        help="Stage1Extract 初始窗口行数（默认读 TOML，fallback 500）",
     ),
-    max_retries: int = typer.Option(3, "--max-retries", help="LLM 调用重试次数"),
+    extract_max_window_lines: int | None = typer.Option(
+        None,
+        "--extract-max-window-lines",
+        help="Stage1Extract 最大窗口行数（默认读 TOML，fallback 3000）",
+    ),
+    extract_expand_step: int | None = typer.Option(
+        None,
+        "--extract-expand-step",
+        help="Stage1Extract 每次扩窗口的步长（默认读 TOML，fallback 500）",
+    ),
+    max_retries: int | None = typer.Option(
+        None, "--max-retries", help="LLM 调用重试次数（默认读 TOML，fallback 3）"
+    ),
     skip_llm: bool = typer.Option(False, "--skip-llm", help="跳过 LLM 调用（仅做识别）"),
     dry_run: bool = typer.Option(False, "--dry-run", help="仅处理，不写入 DB"),
     restart: bool = typer.Option(False, "--restart", help="忽略 checkpoint，从头开始"),
     llm_provider: str | None = typer.Option(None, "--llm-provider", help="LLM 提供者"),
     llm_model: str | None = typer.Option(None, "--llm-model", help="LLM 模型"),
     llm_config_file: Path | None = typer.Option(
-        Path("config/sciforge.toml"), "--llm-config", help="LLM TOML 配置文件路径"
+        None,
+        "--llm-config",
+        help="LLM TOML 配置文件路径（未指定时默认读 config/sciforge.toml）",
     ),
     discipline: str = typer.Option(
         "math",
@@ -265,11 +388,10 @@ def parse_run_book(
     2. 清单文件：`run-book --manifest book.yaml`
     3. 两者合并（先 manifest 再位置参数）
     """
-    import asyncio
-
     from sciforge.config.settings import AppConfig
 
     discipline_enum = _parse_discipline(discipline)
+    llm_config_file = _resolve_llm_config(llm_config_file)
 
     # 合并文件列表
     book_files: list[Path] = []
@@ -299,16 +421,24 @@ def parse_run_book(
     for i, f in enumerate(book_files, 1):
         console.print(f"  {i}. {f.name}")
 
-    if llm_config_file and not llm_config_file.exists():
-        llm_config_file = None
+    overrides: dict[str, object] = {}
+    if extract_window_lines is not None:
+        overrides["extract_window_lines"] = extract_window_lines
+    if extract_max_window_lines is not None:
+        overrides["extract_max_window_lines"] = extract_max_window_lines
+    if extract_expand_step is not None:
+        overrides["extract_window_expand_step"] = extract_expand_step
+    if max_retries is not None:
+        overrides["max_extract_retries"] = max_retries
+        overrides["stage1_extract_max_retries"] = max_retries
+        overrides["vlm_max_retries"] = max_retries
 
-    config = AppConfig(
-        data_dir=output,
-        llm_config_file=llm_config_file,
-        extract_window_lines=extract_window_lines,
-        max_extract_retries=max_retries,
-        vlm_max_retries=max_retries,
-    )
+    config_kwargs: dict[str, Any] = {
+        "data_dir": output,
+        "llm_config_file": llm_config_file,
+        **overrides,
+    }
+    config = AppConfig(**cast(Any, config_kwargs))
 
     orchestrator = _build_orchestrator(
         config,
@@ -370,6 +500,33 @@ def parse_audit(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report, encoding="utf-8")
     success(f"Report written to {output}")
+
+
+@parse_app.command("audit-tags")
+def parse_audit_tags(
+    db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="SQLite 数据库路径"),
+    max_english_distance: int = typer.Option(
+        2, "--max-english-distance", help="english 部分最大编辑距离"
+    ),
+    max_chinese_distance: int = typer.Option(
+        1, "--max-chinese-distance", help="中文部分最大编辑距离"
+    ),
+) -> None:
+    """扫描入库 tag 段，输出疑似同义异名的段对（人工合并参考）。"""
+    from rich.console import Console
+
+    from sciforge.pipeline.audit import audit_tag_similarity, print_tag_similarity_report
+
+    if not db.exists():
+        error(f"Database file not found: {db}")
+        raise typer.Exit(1)
+    console = Console()
+    pairs = audit_tag_similarity(
+        db,
+        max_english_distance=max_english_distance,
+        max_chinese_distance=max_chinese_distance,
+    )
+    print_tag_similarity_report(pairs, console)
 
 
 @parse_app.command("migrate-legacy")

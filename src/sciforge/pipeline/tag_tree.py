@@ -33,6 +33,10 @@ class TagTree:
 
     def __init__(self) -> None:
         self.root = TagNode(segment="")
+        self._generation: int = 0  # 每次 insert_path 递增，用于缓存失效
+        self._prompt_cache: str = ""
+        self._prompt_cache_gen: int = -1
+        self._prompt_cache_params: tuple[int, int] = (0, 0)
 
     # ── 插入 ───────────────────────────────────────────
 
@@ -40,6 +44,7 @@ class TagTree:
         """插入一条完整路径，segments 是有序的 'english:中文' 段列表"""
         if not segments:
             return
+        self._generation += 1
         node = self.root
         for raw in segments:
             seg = raw.strip()
@@ -81,15 +86,22 @@ class TagTree:
 
     # ── 序列化为 prompt 文本 ────────────────────────────
 
-    def serialize_for_prompt(
-        self, max_depth: int = 4, max_nodes: int = 200
-    ) -> str:
+    def serialize_for_prompt(self, max_depth: int = 4, max_nodes: int = 200) -> str:
         """输出为缩进 Markdown 列表，紧凑/人类可读/token 节省
 
         - max_depth: 限制最大展示深度
         - max_nodes: 限制总节点数（按 item_count 降序保留最热子树）
         - 被截断的位置用 '  - ...' 占位
+        - 缓存：参数和 generation 不变时直接返回缓存结果
         """
+        params = (max_depth, max_nodes)
+        if (
+            self._prompt_cache_gen == self._generation
+            and self._prompt_cache_params == params
+            and self._prompt_cache
+        ):
+            return self._prompt_cache
+
         if not self.root.children:
             return "(空，本次提取将创建第一批 tag)"
 
@@ -106,7 +118,11 @@ class TagTree:
         # 2. 递归输出（保留原始树结构，但只展示 allowed 中的节点）
         lines: list[str] = []
         self._render(self.root, 0, max_depth, allowed, lines)
-        return "\n".join(lines) if lines else "(空)"
+        result = "\n".join(lines) if lines else "(空)"
+        self._prompt_cache = result
+        self._prompt_cache_gen = self._generation
+        self._prompt_cache_params = params
+        return result
 
     def _collect_nodes(
         self,

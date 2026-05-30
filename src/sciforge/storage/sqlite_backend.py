@@ -23,6 +23,7 @@ from typing import Any
 
 import structlog
 
+from sciforge.core.exceptions import SciForgeError
 from sciforge.core.models import (
     Discipline,
     KnowledgePoint,
@@ -33,26 +34,28 @@ logger = structlog.get_logger()
 
 
 # ── SQL 常量（executemany 批量写入复用）──────────────────
+# schema v7：恢复 source_file 列
+_SCHEMA_VERSION = 7
 
 _KP_INSERT_SQL = """
 INSERT OR REPLACE INTO knowledge_points
-    (id, discipline, kp_type, number, content, proof_content, proof_methods,
-     difficulty, subject, taxonomy_path, tags,
-     source_file, source_chapter, source_section,
-     start_line, end_line, order_index, page_start, page_end,
-     quality_grade, content_hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (id, discipline, kp_type, number, content, proof_content,
+     difficulty, subject, taxonomy_path, tags, source_file,
+     start_line, end_line, order_index, content_hash)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _Q_INSERT_SQL = """
 INSERT OR REPLACE INTO questions
-    (id, discipline, question_type, number, content, solution_content, solution_methods,
-     answer, difficulty, subject, taxonomy_path, tags,
-     source_file, source_chapter, exam_type, exam_year,
-     start_line, end_line, order_index, page_start, page_end,
-     quality_grade, content_hash, is_generated, parent_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (id, discipline, question_type, number, content, solution_content,
+     difficulty, subject, taxonomy_path, tags, source_file,
+     start_line, end_line, order_index, content_hash)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
+
+
+class SchemaVersionMismatch(SciForgeError):  # noqa: N818
+    """DB schema 版本与当前代码不兼容"""
 
 
 def _content_hash(text: str) -> str:
@@ -82,20 +85,14 @@ def _kp_to_tuple(kp: KnowledgePoint) -> tuple[Any, ...]:
         kp.number,
         kp.content,
         kp.proof_content,
-        json.dumps(kp.proof_methods, ensure_ascii=False),
         kp.difficulty,
         kp.subject,
         kp.taxonomy_path,
         json.dumps(kp.tags, ensure_ascii=False),
         kp.source_file,
-        kp.source_chapter,
-        kp.source_section,
         kp.start_line,
         kp.end_line,
         kp.order_index,
-        kp.page_start,
-        kp.page_end,
-        kp.quality_grade,
         _content_hash(kp.content),
     )
 
@@ -109,25 +106,15 @@ def _question_to_tuple(q: Question) -> tuple[Any, ...]:
         q.number,
         q.content,
         q.solution_content,
-        json.dumps(q.solution_methods, ensure_ascii=False),
-        q.answer,
         q.difficulty,
         q.subject,
         q.taxonomy_path,
         json.dumps(q.tags, ensure_ascii=False),
         q.source_file,
-        q.source_chapter,
-        q.exam_type,
-        q.exam_year,
         q.start_line,
         q.end_line,
         q.order_index,
-        q.page_start,
-        q.page_end,
-        q.quality_grade,
         _content_hash(q.content),
-        int(q.is_generated),
-        q.parent_id,
     )
 
 
@@ -152,6 +139,21 @@ class SQLiteStorageBackend:
         self._init_schema()
 
     def _init_schema(self) -> None:
+        cur_version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        has_kp_table = (
+            self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_points'"
+            ).fetchone()
+            is not None
+        )
+        if has_kp_table and 0 < cur_version < _SCHEMA_VERSION:
+            raise SchemaVersionMismatch(
+                f"检测到 DB schema v{cur_version}，当前代码要求 v{_SCHEMA_VERSION}。"
+                f"v6 不提供自动迁移，请删除旧 DB 并加 --restart：\n"
+                f"  rm -rf {self.db_path} data/checkpoint/\n"
+                f"  uv run sciforge parse run ... --restart"
+            )
+
         schema_path = Path(__file__).parent / "schema.sql"
         schema_sql = schema_path.read_text(encoding="utf-8")
         self._conn.executescript(schema_sql)
@@ -193,9 +195,7 @@ class SQLiteStorageBackend:
             if kps:
                 self._conn.executemany(_KP_INSERT_SQL, [_kp_to_tuple(kp) for kp in kps])
             if questions:
-                self._conn.executemany(
-                    _Q_INSERT_SQL, [_question_to_tuple(q) for q in questions]
-                )
+                self._conn.executemany(_Q_INSERT_SQL, [_question_to_tuple(q) for q in questions])
         logger.info("storage_batch_saved", kps=len(kps), questions=len(questions))
         return len(kps) + len(questions)
 
@@ -212,9 +212,7 @@ class SQLiteStorageBackend:
     # ── 读取 ──────────────────────────────────────────
 
     def load_knowledge_point(self, id: str) -> KnowledgePoint:
-        row = self._conn.execute(
-            "SELECT * FROM knowledge_points WHERE id = ?", (id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM knowledge_points WHERE id = ?", (id,)).fetchone()
         if not row:
             raise FileNotFoundError(f"KnowledgePoint {id} not found")
         return self._row_to_kp(row)
@@ -260,6 +258,27 @@ class SQLiteStorageBackend:
     def question_count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM questions").fetchone()
         return row[0] if row else 0
+
+    def max_order_index(self, discipline: str | None = None) -> int:
+        """返回当前 DB 里最大的 order_index（跨 KP/Question 合并）
+
+        用于 resume 时同步 state.next_item_id 起点，避免新旧并存时 id 冲突。
+        """
+        cond = ""
+        params: list[Any] = []
+        if discipline:
+            cond = " WHERE discipline = ?"
+            params.append(discipline)
+
+        kp_row = self._conn.execute(
+            f"SELECT COALESCE(MAX(order_index), -1) FROM knowledge_points{cond}",  # noqa: S608
+            params,
+        ).fetchone()
+        q_row = self._conn.execute(
+            f"SELECT COALESCE(MAX(order_index), -1) FROM questions{cond}",  # noqa: S608
+            params,
+        ).fetchone()
+        return max(kp_row[0], q_row[0]) if kp_row and q_row else -1
 
     def stats(self) -> dict[str, int]:
         return {
@@ -312,6 +331,43 @@ class SQLiteStorageBackend:
 
         return results
 
+    # ── 学科全局 Tag Tree ──────────────────────────────
+
+    def load_discipline_tag_tree(self, discipline: str) -> str:
+        """加载学科的全局 tag tree JSON，不存在返回空串"""
+        row = self._conn.execute(
+            "SELECT tree_json FROM discipline_tag_trees WHERE discipline = ?",
+            (discipline,),
+        ).fetchone()
+        return str(row["tree_json"]) if row else ""
+
+    def save_discipline_tag_tree(self, discipline: str, tree: object) -> None:
+        """合并保存学科 tag tree（load→merge→save 事务）"""
+        from sciforge.pipeline.tag_tree import TagTree
+
+        with self._write_lock:
+            existing_json = self.load_discipline_tag_tree(discipline)
+            if existing_json:
+                global_tree = TagTree.from_json(existing_json)
+                global_tree.merge(tree)  # type: ignore[arg-type]
+            else:
+                global_tree = tree  # type: ignore[assignment]
+
+            self._conn.execute(
+                """INSERT INTO discipline_tag_trees (discipline, tree_json, updated_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(discipline) DO UPDATE
+                   SET tree_json = excluded.tree_json,
+                       updated_at = excluded.updated_at""",
+                (discipline, global_tree.to_json()),
+            )
+            self._conn.commit()
+            logger.info(
+                "discipline_tag_tree_saved",
+                discipline=discipline,
+                nodes=global_tree.total_nodes(),
+            )
+
     # ── 内部方法 ──────────────────────────────────────
 
     _ALLOWED_SEARCH_TABLES = {"knowledge_points", "questions"}
@@ -338,9 +394,6 @@ class SQLiteStorageBackend:
                 "kp_type",
                 "question_type",
                 "subject",
-                "exam_type",
-                "is_generated",
-                "quality_grade",
                 "source_file",
             ):
                 conditions.append(f"{key} = ?")
@@ -369,20 +422,14 @@ class SQLiteStorageBackend:
             number=row["number"] or "",
             content=row["content"],
             proof_content=row["proof_content"],
-            proof_methods=_safe_json_list(row, "proof_methods"),
             difficulty=row["difficulty"],
             subject=row["subject"] or "",
             taxonomy_path=row["taxonomy_path"] or "",
             tags=_safe_json_list(row, "tags"),
-            quality_grade=row["quality_grade"] or "B",
             source_file=row["source_file"] or "",
-            source_chapter=row["source_chapter"] or "",
-            source_section=row["source_section"] or "",
             start_line=row["start_line"] or 0,
             end_line=row["end_line"] or 0,
             order_index=row["order_index"] or 0,
-            page_start=row["page_start"],
-            page_end=row["page_end"],
         )
 
     @staticmethod
@@ -398,22 +445,12 @@ class SQLiteStorageBackend:
             number=row["number"] or "",
             content=row["content"],
             solution_content=row["solution_content"],
-            solution_methods=_safe_json_list(row, "solution_methods"),
-            answer=row["answer"] or "",
             difficulty=row["difficulty"],
             subject=row["subject"] or "",
             taxonomy_path=row["taxonomy_path"] or "",
             tags=_safe_json_list(row, "tags"),
-            quality_grade=row["quality_grade"] or "B",
             source_file=row["source_file"] or "",
-            source_chapter=row["source_chapter"] or "",
-            exam_type=row["exam_type"],
-            exam_year=row["exam_year"],
             start_line=row["start_line"] or 0,
             end_line=row["end_line"] or 0,
             order_index=row["order_index"] or 0,
-            page_start=row["page_start"],
-            page_end=row["page_end"],
-            is_generated=bool(row["is_generated"]),
-            parent_id=row["parent_id"],
         )

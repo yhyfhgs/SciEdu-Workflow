@@ -1,14 +1,16 @@
--- SciForge SQLite Schema v4
--- v4 变更：新增 discipline 列（math/physics/chemistry/biology/other）作为学科路由
---         分层的第一级字段；subject 继续作为二级字符串分类。
--- v3 变更：精简字段、proof/solution 嵌入主表、统一 tag 格式、删除
---         taxonomy_nodes/item_tree_placement/relations 表、新增
---         start_line/end_line/order_index/page_start/page_end 列
---
--- 升级路径：旧 DB 不做 ALTER 迁移；重新 `parse run --restart` 即可。
+-- SciForge SQLite Schema v7
+-- v7 变更：恢复 source_file 字段用于追溯来源
+--   knowledge_points / questions 新增 source_file 列（原 logical_document 的文件路径）
+--   idx_kp_order / idx_q_order 改回 (source_file, order_index)，便于按文件查询
+-- v6 变更（历史）：删除 source_file/source_chapter/exam_type/exam_year
+-- v5 变更（历史）：激进精简 quality_grade/created_at/page_* 等
+-- v4 变更：新增 discipline 列
+-- v3 变更：proof/solution 嵌入主表、统一 tag 格式
+-- 本版本不提供自动迁移：检测到 user_version < 7 → 启动时报错，要求用户 --restart 清库重跑
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+PRAGMA user_version = 7;
 
 -- ── 知识点 ──
 
@@ -19,25 +21,15 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     number TEXT DEFAULT '',
     content TEXT NOT NULL DEFAULT '',
     proof_content TEXT,
-    proof_methods TEXT DEFAULT '[]',
     difficulty INTEGER NOT NULL DEFAULT 5 CHECK(difficulty BETWEEN 1 AND 10),
     subject TEXT NOT NULL DEFAULT '',
     taxonomy_path TEXT DEFAULT '',
     tags TEXT DEFAULT '[]',
-    -- 来源
-    source_file TEXT DEFAULT '',
-    source_chapter TEXT DEFAULT '',
-    source_section TEXT DEFAULT '',
-    -- 位置/顺序（pipeline 提取时填充）
+    source_file TEXT NOT NULL DEFAULT '',
     start_line INTEGER NOT NULL DEFAULT 0,
     end_line INTEGER NOT NULL DEFAULT 0,
     order_index INTEGER NOT NULL DEFAULT 0,
-    page_start INTEGER,
-    page_end INTEGER,
-    -- 质量
-    quality_grade TEXT DEFAULT 'B',
-    content_hash TEXT DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    content_hash TEXT DEFAULT ''
 );
 
 -- ── 题目（solution 直接嵌入）──
@@ -49,30 +41,23 @@ CREATE TABLE IF NOT EXISTS questions (
     number TEXT DEFAULT '',
     content TEXT NOT NULL DEFAULT '',
     solution_content TEXT,
-    solution_methods TEXT DEFAULT '[]',
-    answer TEXT DEFAULT '',
     difficulty INTEGER NOT NULL DEFAULT 5 CHECK(difficulty BETWEEN 1 AND 10),
     subject TEXT NOT NULL DEFAULT '',
     taxonomy_path TEXT DEFAULT '',
     tags TEXT DEFAULT '[]',
-    -- 来源
-    source_file TEXT DEFAULT '',
-    source_chapter TEXT DEFAULT '',
-    exam_type TEXT,
-    exam_year INTEGER,
-    -- 位置/顺序
+    source_file TEXT NOT NULL DEFAULT '',
     start_line INTEGER NOT NULL DEFAULT 0,
     end_line INTEGER NOT NULL DEFAULT 0,
     order_index INTEGER NOT NULL DEFAULT 0,
-    page_start INTEGER,
-    page_end INTEGER,
-    -- 质量
-    quality_grade TEXT DEFAULT 'B',
-    content_hash TEXT DEFAULT '',
-    -- 生成
-    is_generated INTEGER NOT NULL DEFAULT 0,
-    parent_id TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    content_hash TEXT DEFAULT ''
+);
+
+-- ── 学科全局 Tag Tree ──
+
+CREATE TABLE IF NOT EXISTS discipline_tag_trees (
+    discipline TEXT PRIMARY KEY,
+    tree_json  TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- ── FTS5 全文检索 ──
@@ -96,17 +81,16 @@ CREATE INDEX IF NOT EXISTS idx_kp_type ON knowledge_points(kp_type);
 CREATE INDEX IF NOT EXISTS idx_kp_subject ON knowledge_points(subject);
 CREATE INDEX IF NOT EXISTS idx_kp_taxonomy ON knowledge_points(taxonomy_path);
 CREATE INDEX IF NOT EXISTS idx_kp_hash ON knowledge_points(content_hash);
+CREATE INDEX IF NOT EXISTS idx_kp_source ON knowledge_points(source_file);
 CREATE INDEX IF NOT EXISTS idx_kp_order ON knowledge_points(source_file, order_index);
-CREATE INDEX IF NOT EXISTS idx_kp_page ON knowledge_points(source_file, page_start);
 
 CREATE INDEX IF NOT EXISTS idx_q_discipline ON questions(discipline);
 CREATE INDEX IF NOT EXISTS idx_q_type ON questions(question_type);
 CREATE INDEX IF NOT EXISTS idx_q_subject ON questions(subject);
 CREATE INDEX IF NOT EXISTS idx_q_taxonomy ON questions(taxonomy_path);
-CREATE INDEX IF NOT EXISTS idx_q_exam ON questions(exam_type, exam_year);
 CREATE INDEX IF NOT EXISTS idx_q_hash ON questions(content_hash);
+CREATE INDEX IF NOT EXISTS idx_q_source ON questions(source_file);
 CREATE INDEX IF NOT EXISTS idx_q_order ON questions(source_file, order_index);
-CREATE INDEX IF NOT EXISTS idx_q_page ON questions(source_file, page_start);
 
 -- ── FTS 同步触发器 ──
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,6 +33,7 @@ class TestVisionBackendProtocol:
             assert isinstance(backend, VisionBackend)
 
     def test_gemini_is_vision_backend(self):
+        pytest.importorskip("google.genai")
         with patch("google.genai.Client"):
             from sciforge.llm.backends.gemini import GeminiBackend
 
@@ -179,3 +181,33 @@ class TestLLMClientVision:
 
         with pytest.raises(LLMVisionError):
             await client.generate_with_image("prompt", b"image")
+
+    @pytest.mark.asyncio
+    async def test_generate_respects_shared_request_semaphore(self):
+        from sciforge.llm.client import LLMClient
+
+        class _TrackedBackend:
+            def __init__(self) -> None:
+                self.inflight = 0
+                self.max_inflight = 0
+
+            async def generate(self, prompt: str, system: str, **kwargs) -> str:
+                self.inflight += 1
+                self.max_inflight = max(self.max_inflight, self.inflight)
+                await asyncio.sleep(0.01)
+                self.inflight -= 1
+                return prompt
+
+        cfg = LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test")
+        client = LLMClient.__new__(LLMClient)
+        client.config = cfg
+        client._backend = _TrackedBackend()
+        client._call_count = 0
+        client._log_interval = 10
+        client._log_dir = None
+        client._request_semaphore = asyncio.Semaphore(1)
+
+        results = await asyncio.gather(client.generate("a"), client.generate("b"))
+
+        assert results == ["a", "b"]
+        assert client._backend.max_inflight == 1

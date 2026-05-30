@@ -42,7 +42,8 @@ def test_kp_type_or_fallback():
     assert math_spec.kp_type_or("lemma") == "lemma"
     # 不在白名单：回退
     assert math_spec.kp_type_or("unknown_type") == "theorem"
-    assert math_spec.kp_type_or("law", fallback="definition") == "definition"  # 物理的 law 在数学里被回退
+    # 物理的 law 在数学里被回退
+    assert math_spec.kp_type_or("law", fallback="definition") == "definition"
     # 自定义 fallback
     assert math_spec.kp_type_or("xxx", fallback="example") == "example"
 
@@ -93,20 +94,23 @@ def test_question_default_discipline():
     assert q.discipline == Discipline.MATH
 
 
-def test_prompt_vars_no_bare_brace():
-    """检查 prompt_vars 的 value 里的花括号都是成对转义的 (避免 .format 冲突)"""
-    for disc in [Discipline.MATH, Discipline.PHYSICS]:
-        spec = DISCIPLINE_REGISTRY.get(disc)
-        for key, value in spec.prompt_vars.items():
-            # 如果有 `{`，必须是 `{{`；如果有 `}`，必须是 `}}`
-            # 简单检查：去掉所有 `{{` 和 `}}` 后，不应还有单独的 `{` 或 `}`
-            stripped = value.replace("{{", "").replace("}}", "")
-            assert "{" not in stripped, (
-                f"{disc.value}.{key} has unescaped `{{`: {value!r}"
-            )
-            assert "}" not in stripped, (
-                f"{disc.value}.{key} has unescaped `}}`: {value!r}"
-            )
+def test_prompt_vars_allow_bare_brace_and_inject_safely():
+    """prompt_vars 的 value 可以写裸 `{` `}`（含裸 LaTeX），
+    _inject_discipline_vars 会自动转义，下游 .format() 能还原。
+
+    （旧约定是要求 spec 手动把 `{` 写成 `{{`；现在改为由注入函数统一处理）
+    """
+    from sciforge.core.models import Discipline
+    from sciforge.prompts.templates import _inject_discipline_vars
+
+    # 不强制检查 value 里的花括号——任意裸 LaTeX 都应安全
+    template_raw = "EXAMPLE: {discipline_example_question_content}"
+    injected = _inject_discipline_vars(template_raw, Discipline.PHYSICS)
+    # .format() 不抛 KeyError
+    filled = injected.format()
+    # 原始裸 LaTeX 中的 {kg} {m} 应被保留
+    assert "\\mathrm{kg}" in filled or "mathrm{kg}" in filled
+    assert "\\mathrm{m}" in filled or "mathrm{m}" in filled
 
 
 def test_custom_registry():

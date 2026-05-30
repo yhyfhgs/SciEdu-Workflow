@@ -1,11 +1,19 @@
-"""PipelineOrchestrator — Producer-Consumer 流水线编排器
+"""PipelineOrchestrator — 5 阶段并发流水线编排器
 
 架构:
-  Task0 (Producer): 文档识别 → asyncio.Queue
-  Task1 (Consumer): 滑动窗口提取 + 校正 + 打标签 + 入库
+  Task0 (Producer): 文档识别 → q_md
+  Stage1Extract  : q_md  → q_raw   单条窗口提取
+  Stage1Review   : q_raw → q_rev   单条校验
+  Stage2Annotate : q_rev → q_ann   单条打标注
+  Stage2Review   : q_ann → q_done  单条标注审核
+  Stage3Persist  : q_done → DB     合并入库 + mirror + state
 
-两个 Task 通过单个 queue 串联，支持背压、断点恢复、异常重试。
-目录模式下，多个 logical_document 可以并发跑，每个 document 跑一对 Task0+Task1。
+6 个 asyncio.Task 由 asyncio.gather 并发启动，4 个 stage queue 连接各 stage。
+每个 Stage1Extract 批次由共享 OrderIndexAllocator 预留连续 item_id；
+Stage2 可启用 N-worker 并发，并通过 ReorderBuffer 恢复下游顺序。
+
+断点恢复：通过 state.stageN_completed + mirror items/<stage>/*.json，
+检测到中断时从最近完成的阶段起点重放；`--restart` 用于强制清 checkpoint 重跑。
 """
 
 from __future__ import annotations
@@ -20,22 +28,41 @@ from typing import TYPE_CHECKING
 import structlog
 
 from sciforge.core.models import (
-    Discipline,
+    AnnotatedItem,
     DirectoryProgress,
+    Discipline,
     DocumentFormat,
+    ExtractedBatch,
     FileExtractionState,
+    KnowledgePoint,
     MdBlockSource,
+    Question,
+    ReviewedAnnotatedItem,
+    ReviewedItem,
 )
-from sciforge.pipeline.recognizers import get_recognizer
+from sciforge.core.sentinel import SENTINEL
+from sciforge.pipeline.recognizers import (
+    detect_section_boundaries,
+    get_recognizer,
+    pdf_page_count,
+)
 from sciforge.pipeline.resume_state import (
     compute_file_hash,
     enum_cached_batches_for_file,
+    is_state_complete,
     load_state,
     recognize_dir,
     save_state_locked,
     state_dir,
 )
-from sciforge.pipeline.task1_extractor import SENTINEL, Task1Extractor
+from sciforge.pipeline.stages import (
+    Stage1Extract,
+    Stage1Review,
+    Stage2Annotate,
+    Stage2Review,
+    Stage3Persist,
+)
+from sciforge.pipeline.tag_tree import TagTree
 from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 if TYPE_CHECKING:
@@ -58,19 +85,99 @@ class PipelineResult:
     pages_recognized: int = 0
     blocks_pushed: int = 0
     items_saved: int = 0
+    completed: bool = False
     failed_batches: list[tuple[int, int, int]] = field(default_factory=list)
     failed_blocks: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     elapsed_sec: float = 0.0
 
 
+@dataclass
+class ResumeReplayState:
+    """各 stage mirror 的最新 item_id，用于恢复挂起队列。"""
+
+    stage1_last_item_id: int = -1
+    stage1_review_last_item_id: int = -1
+    stage2_last_item_id: int = -1
+    stage2_review_last_item_id: int = -1
+    persisted_last_item_id: int = -1
+
+
+class NoopStorageBackend:
+    """dry-run 存储后端：执行完整 pipeline，但不写入数据库。"""
+
+    def save_batch(self, kps: list[KnowledgePoint], questions: list[Question]) -> int:
+        return len(kps) + len(questions)
+
+    def find_duplicates(self, content: str, item_type: str = "all") -> list[str]:
+        del content, item_type
+        return []
+
+    def save_question(self, question: Question) -> str:
+        return question.id
+
+    def load_question(self, id: str) -> Question:
+        raise FileNotFoundError(f"Question {id} not found in dry-run storage")
+
+    def search_questions(self, filters: dict[str, object]) -> list[str]:
+        del filters
+        return []
+
+    def question_count(self) -> int:
+        return 0
+
+    def save_knowledge_point(self, kp: KnowledgePoint) -> str:
+        return kp.id
+
+    def load_knowledge_point(self, id: str) -> KnowledgePoint:
+        raise FileNotFoundError(f"KnowledgePoint {id} not found in dry-run storage")
+
+    def search_knowledge(self, filters: dict[str, object]) -> list[str]:
+        del filters
+        return []
+
+    def knowledge_count(self) -> int:
+        return 0
+
+
+# ── 全局 order_index 分配器 ───────────────────────────
+
+
+class OrderIndexAllocator:
+    """跨文件全局单调 order_index 分配器
+
+    在目录并发处理时，多个 process_file() 共享一个实例，
+    避免各文件从相同 max_order_index 起步导致 ID 重复。
+    """
+
+    def __init__(self, start: int) -> None:
+        self._next = start
+        self._lock = asyncio.Lock()
+
+    async def reserve(self, count: int) -> int:
+        """预留 *count* 个连续 ID，返回起始值。
+
+        count=0 时仍至少推进 1（用于获取初始起点）。
+        """
+        async with self._lock:
+            base = self._next
+            self._next += max(count, 1)
+            return base
+
+    @property
+    def current(self) -> int:
+        """当前下一个可用 ID（只读，不保证并发安全）"""
+        return self._next
+
+
 # ── Orchestrator ──────────────────────────────────────
 
 
 class PipelineOrchestrator:
-    """Producer-Consumer 流水线编排器"""
+    """5 阶段并发流水线编排器"""
 
     _PART_RE = re.compile(r"^(.+?)_part_(\d+)_(\d+)$", re.IGNORECASE)
+    _ITEM_FILE_RE = re.compile(r"^item_(\d+)\.json$")
 
     def __init__(
         self,
@@ -82,13 +189,6 @@ class PipelineOrchestrator:
         pdf_backend: str = "vlm",
         discipline: Discipline = Discipline.MATH,
     ) -> None:
-        """
-        Args:
-            storage: 共享 backend 实例（dry-run / 测试场景下传入）
-            db_path: SQLite 路径，每个 process_file 会在内部构造独立 backend
-                    （目录并发模式下避免多协程共享 sqlite3.Connection 的线程风险）
-            discipline: 文档所属学科，参数化 VLM prompt 和 Task1 提取 prompt
-        """
         self.config = config
         self.llm = llm_client
         self.storage = storage
@@ -96,6 +196,13 @@ class PipelineOrchestrator:
         self._llm_clients = llm_clients or {}
         self._pdf_backend = pdf_backend
         self.discipline = discipline
+
+        log_dir = str(config.llm_log_dir)
+        log_interval = config.llm_log_interval
+        for c in self._llm_clients.values():
+            c.enable_pipeline_logging(log_dir, log_interval)
+        if self.llm:
+            self.llm.enable_pipeline_logging(log_dir, log_interval)
 
     def _get_llm(self, task: str) -> LLMClient | None:
         return self._llm_clients.get(task) or self.llm
@@ -105,8 +212,15 @@ class PipelineOrchestrator:
     async def process_file(
         self,
         file_path: Path | list[Path],
+        *,
+        order_index_allocator: OrderIndexAllocator | None = None,
     ) -> PipelineResult:
-        """处理单个 logical_document（单文件或多个分卷）"""
+        """处理单个 logical_document（单文件或多个分卷）
+
+        Args:
+            order_index_allocator: 可选的全局 ID 分配器。process_directory() 并发处理
+                多文件时传入共享实例，确保跨文件 order_index 不重复。
+        """
         files = [file_path] if isinstance(file_path, Path) else list(file_path)
         if not files:
             raise ValueError("empty file list")
@@ -115,7 +229,7 @@ class PipelineOrchestrator:
         result = PipelineResult(file_path=str(primary_path))
         t0 = time.monotonic()
 
-        # 1. 计算 file_hash 并加载 state
+        # 1. file_hash + state
         file_hash = compute_file_hash(files)
         result.file_hash = file_hash
 
@@ -123,9 +237,13 @@ class PipelineOrchestrator:
         if state is None:
             state = FileExtractionState(file_path=str(primary_path), file_hash=file_hash)
 
-        if state.phase == "completed":
+        if is_state_complete(state):
+            if state.phase != "completed":
+                state.phase = "completed"
+                await save_state_locked(self.config.checkpoint_dir, state, force=True)
             logger.info("pipeline_file_already_done", file=primary_path.name)
-            result.items_saved = state.saved_item_count
+            result.items_saved = state.stage3_persisted_count
+            result.completed = True
             return result
 
         logger.info(
@@ -136,70 +254,223 @@ class PipelineOrchestrator:
             resume=bool(state.vlm_batches_done),
         )
 
-        # 2. 为本 logical_document 构造独立 storage（或复用共享实例）
+        # 2. storage
         local_backend: SQLiteStorageBackend | None = None
-        storage_for_task1: BatchStorageBackend | None = self.storage
-        if self.storage is None and self.db_path is not None:
+        storage_for_pipeline: BatchStorageBackend | None = self.storage
+        if storage_for_pipeline is None and self.db_path is not None:
             local_backend = SQLiteStorageBackend(self.db_path)
-            storage_for_task1 = local_backend
+            storage_for_pipeline = local_backend
+        elif storage_for_pipeline is None:
+            storage_for_pipeline = NoopStorageBackend()
 
-        # 3. 准备 queue
-        queue: asyncio.Queue[object] = asyncio.Queue(maxsize=self.config.pipeline_queue_size)
-
-        # 4. 启动 Producer + Consumer
-        # 如果所有文件的 Task0 缓存都完整，走直通 Producer（不打开原始文件，直接重放缓存 md）
-        if self._is_cache_complete(files, state):
-            logger.info(
-                "pipeline_task0_skip_replay",
-                file=primary_path.name,
-                reason="task0_completed" if state.task0_completed else "cache_scan",
-            )
-            producer_task = asyncio.create_task(
-                self._task0_replay_from_cache(files, state, queue, result)
-            )
-        else:
-            producer_task = asyncio.create_task(self._task0_producer(files, state, queue, result))
-
+        # 3. 各阶段 LLM（可按任务名配置独立 provider/model）
         extract_llm = self._get_llm("extract_and_classify")
-        consumer_task: asyncio.Task[None] | None = None
-        if extract_llm is None:
-            logger.warning("pipeline_no_llm_drain_queue", file=primary_path.name)
-            # 没有 LLM 时仍启动一个 drain consumer，避免 queue 背压死锁
-            # 典型场景：--skip-llm 只做 Task0 识别不做 Task1 条目提取
-            consumer_task = asyncio.create_task(self._drain_consumer(queue, result))
-        else:
-            extractor = Task1Extractor(
-                llm_client=extract_llm,
-                config=self.config,
-                storage=storage_for_task1,
-                checkpoint_root=self.config.checkpoint_dir,
-                discipline=self.discipline,
-            )
-            consumer_task = asyncio.create_task(
-                self._task1_consumer(extractor, queue, state, result)
-            )
+        review_llm = self._get_llm("review") or extract_llm
+        annotate_llm = self._get_llm("tag") or extract_llm
+        annotate_review_llm = self._get_llm("annotate_review") or annotate_llm
 
-        # 5. 等待两个任务
+        # 4. 构造共享 TagTree（从 DB 加载已有全局树）
+        shared_tag_tree = TagTree()
+        if state.tag_tree_json:
+            try:
+                shared_tag_tree = TagTree.from_json(state.tag_tree_json)
+            except Exception:
+                shared_tag_tree = TagTree()
+        elif isinstance(storage_for_pipeline, SQLiteStorageBackend):
+            tree_json = storage_for_pipeline.load_discipline_tag_tree(self.discipline.value)
+            if tree_json:
+                try:
+                    shared_tag_tree = TagTree.from_json(tree_json)
+                    logger.info(
+                        "pipeline_global_tag_tree_loaded",
+                        discipline=self.discipline.value,
+                        nodes=shared_tag_tree.total_nodes(),
+                    )
+                except Exception:
+                    shared_tag_tree = TagTree()
+
+        # 5. 同步 next_item_id 起点（优先用共享 allocator，避免并发重复）
+        if order_index_allocator is not None:
+            # 目录并发模式：Stage1Extract 按批次动态 reserve，文件启动时不抢占 ID。
+            pass
+        elif isinstance(storage_for_pipeline, SQLiteStorageBackend):
+            # 单文件模式：直接从 DB 读 max
+            try:
+                db_max = storage_for_pipeline.max_order_index(self.discipline.value)
+                if db_max + 1 > state.next_item_id:
+                    state.next_item_id = db_max + 1
+                    state.last_persisted_item_id = max(state.last_persisted_item_id, db_max)
+            except Exception:
+                pass
+
+        # 6. 构造 queue
+        q_md: asyncio.Queue[object] = asyncio.Queue(maxsize=self.config.pipeline_queue_size)
+        sq_size = int(getattr(self.config, "pipeline_stage_queue_size", 2))
+        q_raw: asyncio.Queue[object] = asyncio.Queue(maxsize=sq_size)
+        q_rev: asyncio.Queue[object] = asyncio.Queue(maxsize=sq_size)
+        q_ann: asyncio.Queue[object] = asyncio.Queue(maxsize=sq_size)
+        q_done: asyncio.Queue[object] = asyncio.Queue(maxsize=sq_size)
+
+        tasks: list[asyncio.Task[None]] = []
+        resume_state = self._build_resume_replay_state(state)
+        state.last_persisted_item_id = max(
+            state.last_persisted_item_id,
+            resume_state.persisted_last_item_id,
+        )
+
         try:
-            await producer_task
-            if consumer_task is not None:
-                await consumer_task
-        except Exception as exc:
+            # 7. 5 个 Stage（任一 LLM 缺失时走 drain 兜底）
+            if extract_llm is None:
+                logger.warning("pipeline_no_llm_drain_queue", file=primary_path.name)
+                tasks.append(
+                    asyncio.create_task(
+                        self._drain_queue_chain(q_md, [q_raw, q_rev, q_ann, q_done]),
+                        name="drain_chain",
+                    )
+                )
+            else:
+                s1_ex = Stage1Extract(
+                    llm_client=extract_llm,
+                    config=self.config,
+                    checkpoint_root=self.config.checkpoint_dir,
+                    discipline=self.discipline,
+                    order_index_allocator=order_index_allocator,
+                )
+                s1_rev = Stage1Review(
+                    llm_client=review_llm,  # type: ignore[arg-type]
+                    config=self.config,
+                    checkpoint_root=self.config.checkpoint_dir,
+                    discipline=self.discipline,
+                )
+                s2_an = Stage2Annotate(
+                    llm_client=annotate_llm,  # type: ignore[arg-type]
+                    config=self.config,
+                    checkpoint_root=self.config.checkpoint_dir,
+                    discipline=self.discipline,
+                    tag_tree=shared_tag_tree,
+                )
+                s2_rev = Stage2Review(
+                    llm_client=annotate_review_llm,  # type: ignore[arg-type]
+                    config=self.config,
+                    checkpoint_root=self.config.checkpoint_dir,
+                    discipline=self.discipline,
+                    tag_tree=shared_tag_tree,
+                )
+                s3 = Stage3Persist(
+                    storage=storage_for_pipeline,
+                    config=self.config,
+                    checkpoint_root=self.config.checkpoint_dir,
+                    discipline=self.discipline,
+                    tag_tree=shared_tag_tree,
+                )
+
+                tasks.append(asyncio.create_task(s3.run(q_done, state), name="stage3_persist"))
+                await self._replay_stage_outputs(
+                    state.file_hash,
+                    "stage2_review",
+                    ReviewedAnnotatedItem,
+                    resume_state.persisted_last_item_id,
+                    q_done,
+                )
+                tasks.append(
+                    asyncio.create_task(s2_rev.run(q_ann, q_done, state), name="stage2_review")
+                )
+                await self._replay_stage_outputs(
+                    state.file_hash,
+                    "stage2",
+                    AnnotatedItem,
+                    resume_state.stage2_review_last_item_id,
+                    q_ann,
+                )
+                tasks.append(
+                    asyncio.create_task(s2_an.run(q_rev, q_ann, state), name="stage2_annotate")
+                )
+                await self._replay_stage_outputs(
+                    state.file_hash,
+                    "stage1_review",
+                    ReviewedItem,
+                    resume_state.stage2_last_item_id,
+                    q_rev,
+                )
+                tasks.append(
+                    asyncio.create_task(s1_rev.run(q_raw, q_rev, state), name="stage1_review")
+                )
+                await self._replay_stage1_as_batches(
+                    state.file_hash,
+                    resume_state.stage1_review_last_item_id,
+                    q_raw,
+                )
+                tasks.append(
+                    asyncio.create_task(s1_ex.run(q_md, q_raw, state), name="stage1_extract")
+                )
+
+            # 8. Task0 Producer
+            if self._is_cache_complete(files, state):
+                logger.info(
+                    "pipeline_task0_skip_replay",
+                    file=primary_path.name,
+                    reason="task0_completed" if state.task0_completed else "cache_scan",
+                )
+                tasks.append(
+                    asyncio.create_task(
+                        self._task0_replay_from_cache(files, state, q_md, result),
+                        name="task0_replay",
+                    )
+                )
+            else:
+                tasks.append(
+                    asyncio.create_task(
+                        self._task0_producer(files, state, q_md, result),
+                        name="task0_producer",
+                    )
+                )
+
+            # 9. 等待全部 Task
+            await asyncio.gather(*tasks)
+
+            # 10. tag_tree 回写 DB
+            if (
+                isinstance(storage_for_pipeline, SQLiteStorageBackend)
+                and shared_tag_tree.total_nodes() > 0
+            ):
+                try:
+                    storage_for_pipeline.save_discipline_tag_tree(
+                        self.discipline.value, shared_tag_tree
+                    )
+                except Exception as exc:
+                    logger.warning("tag_tree_save_failed", error=str(exc))
+
+            # 11. 若 stage3 全部完成 → 标记 completed
+            if is_state_complete(state):
+                state.phase = "completed"
+                await save_state_locked(self.config.checkpoint_dir, state, force=True)
+
+        except BaseException as exc:
             logger.error("pipeline_task_exception", error=str(exc), exc_info=True)
             result.errors.append(str(exc))
-            # 异常退出时强制刷一次 state（覆盖 C.3 节流保存的漏洞）
+            # 兜底：所有 queue 塞 SENTINEL 避免剩余协程卡死
+            for q in (q_md, q_raw, q_rev, q_ann, q_done):
+                try:
+                    q.put_nowait(SENTINEL)
+                except Exception:
+                    pass
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
             try:
                 await save_state_locked(self.config.checkpoint_dir, state, force=True)
             except Exception:
                 pass
+            raise
         finally:
             if local_backend is not None:
                 local_backend.close()
 
-        # 6. 同步状态到 result
+        # 12. result 同步
         result.failed_batches = list(state.failed_batches)
         result.failed_blocks = list(state.failed_blocks)
-        result.items_saved = state.saved_item_count
+        result.items_saved = state.stage3_persisted_count
+        result.completed = is_state_complete(state)
         result.errors.extend(state.errors)
         result.elapsed_sec = time.monotonic() - t0
 
@@ -212,8 +483,8 @@ class PipelineOrchestrator:
             failed_batches=len(result.failed_batches),
             failed_blocks=len(result.failed_blocks),
             errors=len(result.errors),
+            completed=result.completed,
         )
-
         return result
 
     # ── Task0: Producer ───────────────────────────────
@@ -229,21 +500,13 @@ class PipelineOrchestrator:
         producer_had_error = False
         try:
             block_index = 0
-            # state 中 vlm_batches_done 序列化为 list[list]，转 set[tuple] 便于 O(1) lookup
             done_keys = {tuple(t) for t in state.vlm_batches_done}
 
             for file_idx, f in enumerate(files):
                 fmt = self._detect_format(f)
-
-                # 当前文件的识别 batch 输出目录
                 output_dir = recognize_dir(
-                    self.config.checkpoint_dir,
-                    state.file_hash,
-                    file_idx,
-                    f.stem,
+                    self.config.checkpoint_dir, state.file_hash, file_idx, f.stem
                 )
-
-                # 已识别的 (page_start, page_end)（针对当前 file_idx）
                 already_done_pairs: list[tuple[int, int]] = [
                     (ps, pe) for (fi, ps, pe) in done_keys if fi == file_idx
                 ]
@@ -284,6 +547,17 @@ class PipelineOrchestrator:
                     already_done=already_done_pairs,
                     max_retries=self.config.vlm_max_retries,
                 ):
+                    if batch.is_failed:
+                        failed_key = (file_idx, batch.page_start, batch.page_end)
+                        if failed_key not in {tuple(t) for t in state.failed_batches}:
+                            state.failed_batches.append(failed_key)
+                        producer_had_error = True
+                        result.failed_batches.append(failed_key)
+                        result.errors.append(
+                            f"batch_failed({f.name}): pages {batch.page_start}-{batch.page_end}"
+                        )
+                        continue
+
                     msb = MdBlockSource(
                         file_path=str(f),
                         page_start=batch.page_start,
@@ -291,19 +565,20 @@ class PipelineOrchestrator:
                         md_path=str(batch.md_path),
                         md_text=batch.md_text,
                         block_index=block_index,
+                        section_boundaries=detect_section_boundaries(
+                            batch.md_text.splitlines()
+                        ),
                     )
                     block_index += 1
                     result.blocks_pushed = block_index
                     result.pages_recognized = max(result.pages_recognized, batch.page_end)
 
-                    # 记录到 state.vlm_batches_done
                     key = (file_idx, batch.page_start, batch.page_end)
                     if key not in done_keys:
                         done_keys.add(key)
                         state.vlm_batches_done.append(key)
                         await save_state_locked(self.config.checkpoint_dir, state)
 
-                    # 推入 queue（背压）
                     await queue.put(msb)
 
         except Exception as exc:
@@ -311,11 +586,8 @@ class PipelineOrchestrator:
             result.errors.append(f"producer: {exc}")
             producer_had_error = True
         finally:
-            # 只有整个 Producer 跑完且无任何错误（包括 recognizer_init / batch-level）
-            # 才标记 Task0 完成，作为"已识别直通"的权威信号
             if not producer_had_error:
                 state.task0_completed = True
-            # SENTINEL 推送后强制刷盘，覆盖节流保存
             try:
                 await save_state_locked(self.config.checkpoint_dir, state, force=True)
             except Exception:
@@ -331,11 +603,8 @@ class PipelineOrchestrator:
         queue: asyncio.Queue[object],
         result: PipelineResult,
     ) -> None:
-        """不打开原始文件，直接从缓存 md 按顺序推入 queue
-
-        前提：调用方已通过 `_is_cache_complete` 确认所有分卷的缓存完整。
-        支持新旧两种 checkpoint 格式（见 `enum_cached_batches_for_file`）。
-        """
+        """不打开原始文件，直接从缓存 md 按顺序推入 queue"""
+        replay_had_error = False
         try:
             block_index = 0
             for file_idx, f in enumerate(files):
@@ -344,6 +613,7 @@ class PipelineOrchestrator:
                 )
                 if not batches:
                     logger.warning("task0_replay_cache_missing", file=f.name)
+                    replay_had_error = True
                     continue
 
                 for page_start, page_end, mdp in batches:
@@ -356,6 +626,7 @@ class PipelineOrchestrator:
                             md=mdp.name,
                             error=str(exc),
                         )
+                        replay_had_error = True
                         continue
                     if not text.strip():
                         continue
@@ -367,6 +638,7 @@ class PipelineOrchestrator:
                         md_path=str(mdp),
                         md_text=text,
                         block_index=block_index,
+                        section_boundaries=detect_section_boundaries(text.splitlines()),
                     )
                     block_index += 1
                     result.blocks_pushed = block_index
@@ -381,7 +653,10 @@ class PipelineOrchestrator:
         except Exception as exc:
             logger.error("task0_replay_failed", error=str(exc), exc_info=True)
             result.errors.append(f"replay: {exc}")
+            replay_had_error = True
         finally:
+            if not replay_had_error:
+                state.task0_completed = True
             try:
                 await save_state_locked(self.config.checkpoint_dir, state, force=True)
             except Exception:
@@ -393,17 +668,10 @@ class PipelineOrchestrator:
         files: list[Path],
         state: FileExtractionState,
     ) -> bool:
-        """判断所有输入文件的 Task0 缓存是否完整覆盖
-
-        权威来源：state.task0_completed（Producer 正常跑完时置 True）。
-        若未设置则按文件类型扫描 legacy 或新格式缓存：
-        - md/tex：刚好 1 个 page_*.md 即视为完整
-        - pdf：pymupdf 读总页数，batch 列表必须连续覆盖全部页面
-          （自动识别 0-based / 1-based）
-        - 其他格式：返回 False（走正常流程）
-        """
         if state.task0_completed:
             return True
+        if state.failed_batches:
+            return False
 
         for file_idx, f in enumerate(files):
             batches = [
@@ -421,14 +689,9 @@ class PipelineOrchestrator:
                     return False
                 continue
             if fmt == DocumentFormat.PDF:
-                try:
-                    import fitz
-
-                    with fitz.open(str(f)) as doc:
-                        total_pages = int(doc.page_count)
-                except Exception:
+                total_pages = pdf_page_count(f)
+                if total_pages is None:
                     return False
-                # 自动识别 0-based / 1-based
                 base = batches[0][0]
                 if base not in (0, 1):
                     return False
@@ -439,56 +702,30 @@ class PipelineOrchestrator:
                         return False
                     last_pe = pe
                     expected = pe + 1
-                # 1-based: 最后 pe 应 == total_pages
-                # 0-based: 最后 pe 应 == total_pages - 1
                 target = total_pages if base == 1 else total_pages - 1
                 if last_pe != target:
                     return False
                 continue
-            # 未知格式（DOCX/PPTX 等）：无法检查页数，保守返回 False
             return False
-
         return True
 
-    # ── Task1: Consumer ───────────────────────────────
+    # ── 兜底：无 LLM 场景 drain 整条 pipeline ───────────
 
-    async def _drain_consumer(
+    async def _drain_queue_chain(
         self,
-        queue: asyncio.Queue[object],
-        result: PipelineResult,
+        source: asyncio.Queue[object],
+        downstream: list[asyncio.Queue[object]],
     ) -> None:
-        """Dummy consumer: drain the queue until SENTINEL without doing anything
-
-        Used when no LLM is available (e.g. --skip-llm) so the producer doesn't
-        block on a full queue. Task0 output is still produced on disk.
-        """
+        """无 LLM 场景：把 source 的所有 msg 抛掉，然后给 downstream 依次 put SENTINEL"""
         drained = 0
         while True:
-            msg = await queue.get()
+            msg = await source.get()
             if msg is SENTINEL:
                 break
             drained += 1
+        for q in downstream:
+            await q.put(SENTINEL)
         logger.info("pipeline_drain_done", blocks_drained=drained)
-
-    async def _task1_consumer(
-        self,
-        extractor: Task1Extractor,
-        queue: asyncio.Queue[object],
-        state: FileExtractionState,
-        result: PipelineResult,
-    ) -> None:
-        """从 queue 取 mdblock，提取并入库"""
-        try:
-            async for batch in extractor.run(queue, state):
-                logger.debug(
-                    "task1_batch_yielded",
-                    kp=batch.kp_count,
-                    q=batch.question_count,
-                    order=batch.order_index_range,
-                )
-        except Exception as exc:
-            logger.error("task1_consumer_failed", error=str(exc), exc_info=True)
-            result.errors.append(f"consumer: {exc}")
 
     # ── 目录处理 ──────────────────────────────────────
 
@@ -497,14 +734,13 @@ class PipelineOrchestrator:
         dir_path: Path,
         max_concurrent_files: int = 4,
     ) -> list[PipelineResult]:
-        """处理目录下所有文件（按 logical_document 分组并发）"""
         files = sorted(self._collect_files(dir_path), key=self._natural_sort_key)
         grouped = self._group_part_files(files)
 
         dir_progress = self._load_directory_progress(dir_path)
 
-        # 过滤已完成的（按内容 hash 去重）
         work_items: list[tuple[int, Path | list[Path], str]] = []
+        progress_dirty = False
         for i, item in enumerate(grouped):
             pkey = str(item[0]) if isinstance(item, list) else str(item)
             try:
@@ -516,9 +752,20 @@ class PipelineOrchestrator:
                 and dir_progress.completed_files[pkey] == cur_hash
                 and cur_hash
             ):
-                logger.debug("pipeline_dir_skip_completed", file=pkey)
-                continue
+                if self._has_completed_checkpoint(cur_hash):
+                    logger.debug("pipeline_dir_skip_completed", file=pkey)
+                    continue
+                logger.warning(
+                    "pipeline_dir_stale_completed_entry",
+                    file=pkey,
+                    file_hash=cur_hash,
+                )
+                dir_progress.completed_files.pop(pkey, None)
+                progress_dirty = True
             work_items.append((i, item, pkey))
+
+        if progress_dirty:
+            self._save_directory_progress(dir_path, dir_progress)
 
         logger.info(
             "pipeline_directory_start",
@@ -529,6 +776,43 @@ class PipelineOrchestrator:
             max_concurrent=max_concurrent_files,
         )
 
+        # 全局 order_index 分配器：避免并发文件分配到重复 ID
+        allocator_start = 0
+        storage_for_dir: SQLiteStorageBackend | None = (
+            self.storage if isinstance(self.storage, SQLiteStorageBackend) else None
+        )
+        if storage_for_dir is None and self.db_path is not None:
+            storage_for_dir = SQLiteStorageBackend(self.db_path)
+        if storage_for_dir is not None:
+            try:
+                allocator_start = storage_for_dir.max_order_index(self.discipline.value) + 1
+            except Exception:
+                allocator_start = 0
+        for _, item, _ in work_items:
+            try:
+                item_hash = compute_file_hash(item if isinstance(item, list) else item)
+                item_state = load_state(self.config.checkpoint_dir, item_hash)
+                if item_state is not None:
+                    allocator_start = max(
+                        allocator_start,
+                        item_state.next_item_id,
+                        item_state.last_persisted_item_id + 1,
+                    )
+                for stage_dir in (
+                    "stage1",
+                    "stage1_review",
+                    "stage2",
+                    "stage2_review",
+                    "persisted",
+                ):
+                    allocator_start = max(
+                        allocator_start,
+                        self._latest_mirrored_item_id(item_hash, stage_dir) + 1,
+                    )
+            except Exception:
+                pass
+        allocator = OrderIndexAllocator(start=allocator_start)
+
         sem = asyncio.Semaphore(max_concurrent_files)
         results: list[PipelineResult] = [
             PipelineResult(file_path=pkey) for _, _, pkey in work_items
@@ -537,19 +821,24 @@ class PipelineOrchestrator:
         async def _process_one(idx: int, item: Path | list[Path], pkey: str) -> None:
             async with sem:
                 try:
-                    r = await self.process_file(item)
+                    r = await self.process_file(item, order_index_allocator=allocator)
                     results[idx] = r
-                    dir_progress.completed_files[pkey] = r.file_hash
+                    if r.completed:
+                        dir_progress.completed_files[pkey] = r.file_hash
+                        dir_progress.failed_files.pop(pkey, None)
+                    else:
+                        dir_progress.completed_files.pop(pkey, None)
+                        dir_progress.failed_files[pkey] = "incomplete"
                     self._save_directory_progress(dir_path, dir_progress)
                 except Exception as exc:
                     logger.error("pipeline_file_failed", file=pkey, error=str(exc))
                     results[idx] = PipelineResult(file_path=pkey, errors=[str(exc)])
+                    dir_progress.completed_files.pop(pkey, None)
                     dir_progress.failed_files[pkey] = str(exc)
                     self._save_directory_progress(dir_path, dir_progress)
 
         tasks = [_process_one(idx, item, pkey) for idx, (_, item, pkey) in enumerate(work_items)]
         await asyncio.gather(*tasks)
-
         return results
 
     # ── 工具方法 ──────────────────────────────────────
@@ -630,10 +919,156 @@ class PipelineOrchestrator:
         progress_file = self.config.checkpoint_dir / f"dir_{dir_hash}.json"
         progress_file.write_text(progress.model_dump_json(indent=2), encoding="utf-8")
 
+    def _build_resume_replay_state(self, state: FileExtractionState) -> ResumeReplayState:
+        persisted_mirror_last = self._latest_mirrored_item_id(state.file_hash, "persisted")
+        return ResumeReplayState(
+            stage1_last_item_id=self._latest_mirrored_item_id(state.file_hash, "stage1"),
+            stage1_review_last_item_id=self._latest_mirrored_item_id(
+                state.file_hash, "stage1_review"
+            ),
+            stage2_last_item_id=self._latest_mirrored_item_id(state.file_hash, "stage2"),
+            stage2_review_last_item_id=self._latest_mirrored_item_id(
+                state.file_hash, "stage2_review"
+            ),
+            persisted_last_item_id=max(state.last_persisted_item_id, persisted_mirror_last),
+        )
+
+    async def _replay_stage_outputs(
+        self,
+        file_hash: str,
+        stage_dir: str,
+        model_cls: type[object],
+        after_item_id: int,
+        out_queue: asyncio.Queue[object],
+    ) -> None:
+        replayed = 0
+        for item_id, payload_path in self._iter_mirrored_item_files(file_hash, stage_dir):
+            if item_id <= after_item_id:
+                continue
+            try:
+                payload_text = payload_path.read_text(encoding="utf-8")
+                payload = model_cls.model_validate_json(payload_text)  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.warning(
+                    "pipeline_resume_replay_failed",
+                    stage=stage_dir,
+                    item_id=item_id,
+                    path=str(payload_path),
+                    error=str(exc),
+                )
+                continue
+            await out_queue.put(payload)
+            replayed += 1
+
+        if replayed > 0:
+            logger.info(
+                "pipeline_resume_replay_done",
+                file_hash=file_hash,
+                stage=stage_dir,
+                after_item_id=after_item_id,
+                replayed=replayed,
+            )
+
+    async def _replay_stage1_as_batches(
+        self,
+        file_hash: str,
+        after_item_id: int,
+        out_queue: asyncio.Queue[object],
+    ) -> None:
+        """把 stage1 镜像（每 item 一个 dict 文件）按 item 包成单元素 ExtractedBatch 重放进 q_raw。
+
+        v3 批量化后 q_raw 单元为 ExtractedBatch；resume 时把每条已镜像但 stage1_review
+        尚未消费的 item 包成单元素 batch 推入。注意此路径下 review 拿不到原始 window_lines
+        （为节省镜像体积，stage1 mirror 不存 window 全文），review 会因原文比对不可用而
+        近似直通；这是 resume 边缘场景的可接受妥协。
+        """
+        import json as _json_mod
+
+        from sciforge.pipeline.llm_schemas import SingleItemExtractLLM
+
+        replayed = 0
+        for item_id, payload_path in self._iter_mirrored_item_files(file_hash, "stage1"):
+            if item_id <= after_item_id:
+                continue
+            try:
+                data = _json_mod.loads(payload_path.read_text(encoding="utf-8"))
+                # 兼容老格式（ExtractedSingleItem dump）和新格式（手写 dict）
+                if "item" in data and isinstance(data["item"], dict):
+                    item = SingleItemExtractLLM.model_validate(data["item"])
+                else:
+                    raise ValueError("snapshot 缺少 'item' 字段")
+                window_line_range = data.get("window_line_range") or [0, 0]
+                if isinstance(window_line_range, list):
+                    window_line_range_t = (
+                        int(window_line_range[0]),
+                        int(window_line_range[1]),
+                    )
+                else:
+                    window_line_range_t = (0, 0)
+                batch = ExtractedBatch(
+                    item_ids=[item_id],
+                    items=[item],
+                    window_lines=list(data.get("window_lines", [])),
+                    window_line_range=window_line_range_t,
+                    window_last_line=int(data.get("window_last_line", 0)),
+                    block_index=int(data.get("block_index", 0)),
+                    source_file=str(data.get("source_file", "")),
+                    page_start=data.get("page_start"),
+                    page_end=data.get("page_end"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "pipeline_resume_stage1_replay_failed",
+                    item_id=item_id,
+                    path=str(payload_path),
+                    error=str(exc),
+                )
+                continue
+            await out_queue.put(batch)
+            replayed += 1
+
+        if replayed > 0:
+            logger.info(
+                "pipeline_resume_replay_done",
+                file_hash=file_hash,
+                stage="stage1",
+                after_item_id=after_item_id,
+                replayed=replayed,
+            )
+
+    def _iter_mirrored_item_files(self, file_hash: str, stage_dir: str) -> list[tuple[int, Path]]:
+        target_dir = self.config.checkpoint_dir / file_hash / "items" / stage_dir
+        if not target_dir.exists():
+            return []
+
+        results: list[tuple[int, Path]] = []
+        for payload_path in sorted(target_dir.glob("item_*.json")):
+            match = self._ITEM_FILE_RE.match(payload_path.name)
+            if match is None:
+                continue
+            results.append((int(match.group(1)), payload_path))
+        return results
+
+    def _latest_mirrored_item_id(self, file_hash: str, stage_dir: str) -> int:
+        files = self._iter_mirrored_item_files(file_hash, stage_dir)
+        if not files:
+            return -1
+        return files[-1][0]
+
+    def _has_completed_checkpoint(self, file_hash: str) -> bool:
+        try:
+            return is_state_complete(load_state(self.config.checkpoint_dir, file_hash))
+        except Exception as exc:
+            logger.warning(
+                "pipeline_dir_progress_state_check_failed",
+                file_hash=file_hash,
+                error=str(exc),
+            )
+            return False
+
     # ── 清理 checkpoint（--restart 用）──────────────────
 
     def purge_checkpoint(self, file_path: Path | list[Path]) -> None:
-        """清空指定 logical_document 的 checkpoint"""
         files = [file_path] if isinstance(file_path, Path) else list(file_path)
         file_hash = compute_file_hash(files)
         d = state_dir(self.config.checkpoint_dir, file_hash)
@@ -644,7 +1079,6 @@ class PipelineOrchestrator:
             logger.info("checkpoint_purged", file_hash=file_hash, path=str(d))
 
     def purge_directory_checkpoints(self, dir_path: Path) -> None:
-        """清空目录下所有 logical_document 的 checkpoint 以及目录进度文件"""
         import hashlib
 
         files = sorted(self._collect_files(dir_path), key=self._natural_sort_key)

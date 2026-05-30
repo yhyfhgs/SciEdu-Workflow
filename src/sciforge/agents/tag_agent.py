@@ -48,9 +48,7 @@ class TagAgent(BaseAgent[TagInput, TagOutput]):
             solution = input.solution
 
         if input.solution is None and not input.question.solution_content:
-            raise AgentError(
-                "TagAgent 建议提供 solution，没有解答时难度评分会退化为启发式"
-            )
+            raise AgentError("TagAgent 建议提供 solution，没有解答时难度评分会退化为启发式")
 
         self._log_start(question_id=input.question.id)
         score = await self.annotator.annotate(input.question, solution)

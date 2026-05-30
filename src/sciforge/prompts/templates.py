@@ -3,21 +3,14 @@
 两阶段注入策略（避免与 JSON 示例的 `{{` `}}` 转义冲突）：
 - **阶段 1**：用 `str.replace()` 注入 `DisciplineSpec.prompt_vars` 里的学科变量。
   不经过 python `.format()`，不会消费 `{{` `}}` 转义对。
-- **阶段 2**：调用方（如 `Task1Extractor._extract_and_classify`）用 `.format(
-  current_block=..., tag_subtree=...)` 注入运行时内容，此时 JSON 示例里的
-  `{{` `}}` 会被正确消费为 `{` `}`。
+- **阶段 2**：调用方（各 Stage）用 `.format(current_block=..., retry_feedback=...)` 注入运行时内容，
+  此时 JSON 示例里的 `{{` `}}` 会被正确消费为 `{` `}`。
 
 模板文件中必须保证：
 - `{discipline_*}`（学科变量）是单括号占位符
-- `{current_block}` / `{tag_subtree}` / `{page_number}` 等运行时占位符是单括号
+- `{current_block}` / `{window_text}` / `{item_json}` / `{annotation_json}` /
+  `{tag_subtree}` / `{taxonomy_tree}` / `{retry_feedback}` / `{page_number}` 等运行时占位符是单括号
 - 所有其他字面花括号都要成对转义为 `{{` `}}`
-
-当前主线两个 prompt：
-- `EXTRACT_AND_CLASSIFY_PROMPT`（数学默认）: 由 Task1Extractor 消费
-- `VLM_CONVERT_PROMPT`（数学默认）: 由 VlmConverter 消费
-
-Pipeline 运行时应使用 `get_extract_prompt_template(discipline)` /
-`get_vlm_prompt_template(discipline)` 拿按学科注入后的模板。
 """
 
 from __future__ import annotations
@@ -26,8 +19,11 @@ from sciforge.core.models import Discipline
 from sciforge.disciplines import DISCIPLINE_REGISTRY
 from sciforge.prompts.loader import load_prompt
 
-_EXTRACT_TEMPLATE_RAW = load_prompt("pipeline/extract_and_classify.txt")
 _VLM_TEMPLATE_RAW = load_prompt("pipeline/vlm_convert.txt")
+_EXTRACT_STAGE1_INITIAL_RAW = load_prompt("pipeline/extract_stage1_initial.txt")
+_EXTRACT_STAGE1_REVIEW_RAW = load_prompt("pipeline/extract_stage1_review.txt")
+_ANNOTATE_STAGE2_INITIAL_RAW = load_prompt("pipeline/annotate_stage2_initial.txt")
+_ANNOTATE_STAGE2_REVIEW_RAW = load_prompt("pipeline/annotate_stage2_review.txt")
 
 
 def _inject_discipline_vars(template: str, discipline: Discipline) -> str:
@@ -35,46 +31,72 @@ def _inject_discipline_vars(template: str, discipline: Discipline) -> str:
 
     不触发 python format，所以 JSON 示例里的 `{{` `}}` 保持不动，
     等待调用方第二阶段 `.format()` 消费。
+
+    注意：注入的 value 中若含有 `{` `}`（例如学科示例里写了 JSON 片段），
+    会被阶段 2 的 `.format()` 误解为占位符，故在替换时对 value 做花括号转义。
     """
     spec = DISCIPLINE_REGISTRY.get(discipline)
     result = template
     for key, value in spec.prompt_vars.items():
-        result = result.replace("{" + key + "}", value)
+        safe_value = value.replace("{", "{{").replace("}", "}}")
+        result = result.replace("{" + key + "}", safe_value)
     return result
-
-
-def get_extract_prompt_template(discipline: Discipline) -> str:
-    """返回已注入学科变量的 extract_and_classify 模板
-
-    返回值仍含运行时占位符 `{current_block}` / `{tag_subtree}`，调用方用
-    `.format()` 填入具体内容。
-    """
-    return _inject_discipline_vars(_EXTRACT_TEMPLATE_RAW, discipline)
 
 
 def get_vlm_prompt_template(discipline: Discipline) -> str:
     """返回已注入学科变量的 vlm_convert 模板
 
-    返回值仍含运行时占位符 `{page_number}` / `{total_pages}` / `{previous_context}`
-    / `{figure_hint}`，调用方用 `.format()` 填入具体内容。
+    运行时占位符：`{page_number}` / `{total_pages}` / `{previous_context}` / `{figure_hint}`
     """
     return _inject_discipline_vars(_VLM_TEMPLATE_RAW, discipline)
 
 
+def get_extract_stage1_initial_template(discipline: Discipline) -> str:
+    """Stage1Extract prompt（单条提取）
+
+    运行时占位符：`{current_block}` / `{retry_feedback}`
+    输出 JSON schema：SingleItemExtractPayloadLLM
+    """
+    return _inject_discipline_vars(_EXTRACT_STAGE1_INITIAL_RAW, discipline)
+
+
+def get_extract_stage1_review_template(discipline: Discipline) -> str:
+    """Stage1Review prompt（单条校验）
+
+    运行时占位符：`{window_text}` / `{items_json}` / `{retry_feedback}`
+    输出 JSON schema：BatchReviewPayloadLLM
+    """
+    return _inject_discipline_vars(_EXTRACT_STAGE1_REVIEW_RAW, discipline)
+
+
+def get_annotate_stage2_initial_template(discipline: Discipline) -> str:
+    """Stage2Annotate prompt（单条标注）
+
+    运行时占位符：`{item_json}` / `{tag_subtree}` / `{taxonomy_tree}` / `{retry_feedback}`
+    输出 JSON schema：SingleAnnotationLLM
+    """
+    return _inject_discipline_vars(_ANNOTATE_STAGE2_INITIAL_RAW, discipline)
+
+
+def get_annotate_stage2_review_template(discipline: Discipline) -> str:
+    """Stage2Review prompt（单条标注审核）
+
+    运行时占位符：`{item_json}` / `{annotation_json}` /
+    `{tag_subtree}` / `{taxonomy_tree}` / `{retry_feedback}`
+    输出 JSON schema：SingleAnnotationLLM
+    """
+    return _inject_discipline_vars(_ANNOTATE_STAGE2_REVIEW_RAW, discipline)
+
+
 # 生成路径通用词语替换表（用于 generation/ solving/ verification/ 下的 prompt）
-# 这些 prompt 原文全是数学特化的词语，通过加载时 str.replace 做局部适配。
-# 运行时 LLM 看到的就是"物理家"、"物理专家"等——糙但够用，Post-MVP 可以为每个
-# 学科维护独立的 prompt 文件。
 _GENERATION_PROMPT_SUBSTITUTIONS: dict[Discipline, list[tuple[str, str]]] = {
     Discipline.PHYSICS: [
-        # 专家/家称谓
         ("资深大学数学教育专家", "资深大学物理教育专家"),
         ("数学教育评估专家", "物理教育评估专家"),
         ("数学教育评审专家", "物理教育评审专家"),
         ("数学家", "物理学家"),
         ("数学验证专家", "物理验证专家"),
         ("数学审稿人", "物理审稿人"),
-        # 内容描述
         ("原创数学题", "原创物理题"),
         ("数学严谨性", "物理严谨性"),
         ("数学对象", "物理对象"),
@@ -89,7 +111,6 @@ _GENERATION_PROMPT_SUBSTITUTIONS: dict[Discipline, list[tuple[str, str]]] = {
         ("纯数学与计算数学", "理论物理与计算物理"),
         ("数学归纳法", "数学归纳法"),  # 术语保留
         ("数学理由", "物理理由"),
-        # 兜底：独立"数学"（放最后避免前面规则被误伤）
         ("数学", "物理"),
     ],
     Discipline.CHEMISTRY: [
@@ -114,18 +135,10 @@ _GENERATION_PROMPT_SUBSTITUTIONS: dict[Discipline, list[tuple[str, str]]] = {
 
 
 def get_generation_prompt_template(path: str, discipline: Discipline) -> str:
-    """加载生成路径的 prompt 并按学科做词语替换
-
-    Args:
-        path: 相对 `prompts/templates/` 的 .txt 路径（如 "generation/free_generation.txt"）
-        discipline: 目标学科
-    Returns:
-        经过词语替换后的模板字符串。数学学科直接返回原文；其他学科按
-        _GENERATION_PROMPT_SUBSTITUTIONS 表做 str.replace 逐条替换。
-    """
+    """加载生成路径的 prompt 并按学科做词语替换"""
     template = load_prompt(path)
     if discipline == Discipline.MATH:
-        return template  # 数学是 prompt 原文，无需替换
+        return template
     substitutions = _GENERATION_PROMPT_SUBSTITUTIONS.get(discipline)
     if not substitutions:
         return template
@@ -135,6 +148,4 @@ def get_generation_prompt_template(path: str, discipline: Discipline) -> str:
 
 
 # 向后兼容常量：默认数学学科
-# （旧调用方可以继续 `from sciforge.prompts.templates import EXTRACT_AND_CLASSIFY_PROMPT`）
-EXTRACT_AND_CLASSIFY_PROMPT = get_extract_prompt_template(Discipline.MATH)
 VLM_CONVERT_PROMPT = get_vlm_prompt_template(Discipline.MATH)

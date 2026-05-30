@@ -78,7 +78,7 @@ class BaseAgent(ABC, Generic[TIn, TOut]):
     def _load_prompt(self) -> str:
         """加载 prompt_file 对应的模板文件；空 prompt_file 返回空字符串
 
-        子类可 override 返回按学科注入后的模板（例如 Task1Extractor 风格）。
+        子类可 override 返回按学科注入后的模板。
         """
         if not self.prompt_file:
             return ""

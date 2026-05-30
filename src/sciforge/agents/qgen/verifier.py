@@ -6,6 +6,7 @@ import structlog
 
 from sciforge.core.models import (
     ContextBundle,
+    DifficultyScore,
     Discipline,
     Question,
     Solution,
@@ -64,11 +65,38 @@ class VerificationPipeline:
         # Check 3: 非平凡性
         checks["non_trivial"] = len(candidate.content) > 30
 
+        # Phase 6c: 从 review 提取 difficulty_scores（若 prompt 按新模板输出）
+        difficulty_score: DifficultyScore | None = None
+        raw_scores = review.get("difficulty_scores")
+        if isinstance(raw_scores, dict) and checks["review_passed"]:
+            try:
+                difficulty_score = DifficultyScore(
+                    concept_count=int(raw_scores.get("concept_count", 5)),
+                    step_count=int(raw_scores.get("step_count", 5)),
+                    abstraction_level=int(raw_scores.get("abstraction_level", 5)),
+                    technique_novelty=int(raw_scores.get("technique_novelty", 5)),
+                    condition_parsing=int(raw_scores.get("condition_parsing", 5)),
+                    computation_load=int(raw_scores.get("computation_load", 5)),
+                    proof_structure=int(raw_scores.get("proof_structure", 5)),
+                    prerequisite_depth=int(raw_scores.get("prerequisite_depth", 5)),
+                    multi_representation=int(raw_scores.get("multi_representation", 5)),
+                    metacognition=int(raw_scores.get("metacognition", 5)),
+                    reasoning=str(review.get("difficulty_reasoning") or ""),
+                )
+                difficulty_score.compute_overall()
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "verify_difficulty_parse_failed",
+                    error=str(exc)[:200],
+                )
+                difficulty_score = None
+
         passed = all(checks.values())
         return VerificationResult(
             passed=passed,
             checks=checks,
             suggestions="\n".join(suggestions) if suggestions else "",
+            difficulty_score=difficulty_score,
         )
 
     async def _check_with_review_llm(self, question: Question) -> dict[str, object]:
@@ -76,14 +104,15 @@ class VerificationPipeline:
         prompt = self._review_template.format(question_latex=question.content)
 
         try:
-            result = await call_llm_json_with_retry(
-                self.review_llm, prompt, max_attempts=2
-            )
+            result = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)
             verdict = str(result.get("verdict", "FAIL")).upper()
             return {
                 "passed": verdict == "PASS",
                 "issues": list(result.get("issues") or []),
                 "suggestions": str(result.get("suggestions") or ""),
+                # Phase 6c: 透传难度评分字段，由调用方决定是否使用
+                "difficulty_scores": result.get("difficulty_scores"),
+                "difficulty_reasoning": result.get("difficulty_reasoning", ""),
             }
         except Exception as exc:
             logger.warning("review_failed", error=str(exc)[:200])

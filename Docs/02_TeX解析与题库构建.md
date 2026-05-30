@@ -1,6 +1,10 @@
 # TeX 解析与题库构建
 
-> 版本: v1.2 | 日期: 2026-03-31
+> 版本: v1.3 | 日期: 2026-04-15
+>
+> ⚠️ **已归档**：MVP 阶段 TeX 文件不再走独立快速通道，全部走通用 5 阶段 Pipeline
+> （见 [`Docs/01_数据处理Pipeline.md`](./01_数据处理Pipeline.md)），`MarkdownRecognizer`
+> 会把 .tex 作为单 batch 识别。本文档保留作为历史设计参考。
 
 > 本文档描述 TeX 文件的 **Python-first 快速通道**，是 MVP 阶段大学数学题库构建的核心组件。对于未知格式文件，请使用通用 Pipeline（见 `01_数据处理Pipeline.md`）。
 >
