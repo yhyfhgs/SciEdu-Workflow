@@ -17,6 +17,7 @@ venv/
 
 # Project data (generated/runtime)
 data/
+data_old/
 checkpoint/
 Raw Data/
 

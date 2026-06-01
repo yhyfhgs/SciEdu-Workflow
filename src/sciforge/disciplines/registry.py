@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sciforge.core.models import Discipline
 
@@ -36,18 +36,58 @@ class DisciplineSpec:
     discipline: Discipline
     display_name: str
     allowed_kp_types: tuple[str, ...]
+    # question_type = 认知类别（proof/calculation/construction/counterexample/...）
     allowed_question_types: tuple[str, ...]
     tag_root: str
     prompt_vars: Mapping[str, str]
     allowed_branches: tuple[str, ...] = ()
+    # tag 受控词表别名（#6）：变体 english → 规范 english，用于 TagCanonicalizer 归并同义异名。
+    # 仅需列出常见 LLM 变体；同中文/同英文的一致性由 canonicalizer 运行内自动处理。
+    tag_aliases: Mapping[str, str] = field(default_factory=dict)
+    # question_form = 题目形式（与 category 正交）：选择/填空/判断/解答 等。
+    # 由 Stage1 从题面识别（A/B/C/D 选项、下划线填空、判断正误）。空 = 不约束。
+    allowed_question_forms: tuple[str, ...] = (
+        "subjective",  # 主观解答题/大题（默认）
+        "fill_blank",  # 填空
+        "choice",  # 单选
+        "multiple_choice",  # 多选
+        "true_false",  # 判断
+        "short_answer",  # 简答
+    )
+    # 中文章节关键词 → 英文主分支（用于 Stage2 从 structural_context 推断 taxonomy 分支，
+    # 缩小注入的 taxonomy 子树体积、提升标注聚焦）。key 子串命中即映射。空 = 不推断。
+    branch_keywords: Mapping[str, str] = field(default_factory=dict)
+
+    def infer_branch(self, *texts: str) -> str | None:
+        """从中文章节文本推断英文主分支；无命中返回 None。
+
+        逐个 (关键词, 分支) 检查，关键词作为子串出现在任一文本中即命中。
+        优先匹配更长的关键词（更具体），命中的分支须在 allowed_branches 内。
+        """
+        if not self.branch_keywords:
+            return None
+        haystack = " ".join(t for t in texts if t)
+        if not haystack:
+            return None
+        best_kw = ""
+        best_branch: str | None = None
+        for kw, branch in self.branch_keywords.items():
+            if kw in haystack and len(kw) > len(best_kw):
+                if not self.allowed_branches or branch in self.allowed_branches:
+                    best_kw, best_branch = kw, branch
+        return best_branch
 
     def kp_type_or(self, value: str, fallback: str = "theorem") -> str:
         """校验 kp_type 字符串；不在白名单时返回 fallback"""
         return value if value in self.allowed_kp_types else fallback
 
     def question_type_or(self, value: str, fallback: str = "calculation") -> str:
-        """校验 question_type 字符串；不在白名单时返回 fallback"""
+        """校验 question_type（认知类别）字符串；不在白名单时返回 fallback"""
         return value if value in self.allowed_question_types else fallback
+
+    def question_form_or(self, value: str, fallback: str = "") -> str:
+        """校验 question_form（题目形式）字符串；不在白名单时返回 fallback（默认空）"""
+        return value if value in self.allowed_question_forms else fallback
 
 
 class DisciplineRegistry:

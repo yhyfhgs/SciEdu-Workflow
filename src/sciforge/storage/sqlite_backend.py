@@ -34,23 +34,27 @@ logger = structlog.get_logger()
 
 
 # ── SQL 常量（executemany 批量写入复用）──────────────────
-# schema v7：恢复 source_file 列
-_SCHEMA_VERSION = 7
+# schema v8：number_canonical / seq_* / question_form 新列 + content_hash 写入去重
+_SCHEMA_VERSION = 8
 
+# 用 INSERT OR IGNORE：content_hash 唯一索引命中（重复内容）或 id 冲突时静默跳过，
+# 保证重复窗口 / resume 重放 / 多次运行的幂等性（首次写入者胜出，不产生重复行）。
 _KP_INSERT_SQL = """
-INSERT OR REPLACE INTO knowledge_points
-    (id, discipline, kp_type, number, content, proof_content,
-     difficulty, subject, taxonomy_path, tags, source_file,
+INSERT OR IGNORE INTO knowledge_points
+    (id, discipline, kp_type, number, number_canonical,
+     seq_chapter, seq_section, seq_index,
+     content, proof_content, difficulty, subject, taxonomy_path, tags, source_file,
      start_line, end_line, order_index, content_hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _Q_INSERT_SQL = """
-INSERT OR REPLACE INTO questions
-    (id, discipline, question_type, number, content, solution_content,
-     difficulty, subject, taxonomy_path, tags, source_file,
+INSERT OR IGNORE INTO questions
+    (id, discipline, question_type, question_form, number, number_canonical,
+     seq_chapter, seq_section, seq_index,
+     content, solution_content, difficulty, subject, taxonomy_path, tags, source_file,
      start_line, end_line, order_index, content_hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -83,6 +87,10 @@ def _kp_to_tuple(kp: KnowledgePoint) -> tuple[Any, ...]:
         str(kp.discipline),
         str(kp.kp_type),
         kp.number,
+        kp.number_canonical,
+        kp.seq_chapter,
+        kp.seq_section,
+        kp.seq_index,
         kp.content,
         kp.proof_content,
         kp.difficulty,
@@ -103,7 +111,12 @@ def _question_to_tuple(q: Question) -> tuple[Any, ...]:
         q.id,
         str(q.discipline),
         str(q.question_type),
+        q.question_form,
         q.number,
+        q.number_canonical,
+        q.seq_chapter,
+        q.seq_section,
+        q.seq_index,
         q.content,
         q.solution_content,
         q.difficulty,
@@ -223,6 +236,33 @@ class SQLiteStorageBackend:
             raise FileNotFoundError(f"Question {id} not found")
         return self._row_to_question(row)
 
+    def load_questions_by_source(
+        self, source_file: str, discipline: str | None = None
+    ) -> list[Question]:
+        """加载某 source_file 的全部 Question（无 500 上限，供 answer_linker）。"""
+        cond = "source_file = ?"
+        params: list[Any] = [source_file]
+        if discipline:
+            cond += " AND discipline = ?"
+            params.append(discipline)
+        rows = self._conn.execute(
+            f"SELECT * FROM questions WHERE {cond} ORDER BY order_index",  # noqa: S608
+            params,
+        ).fetchall()
+        return [self._row_to_question(r) for r in rows]
+
+    def update_question_solution(self, qid: str, solution: str) -> None:
+        """回填题目的 solution_content（answer_linker 跨章节并答用）。"""
+        with self._write_lock, self.transaction():
+            self._conn.execute(
+                "UPDATE questions SET solution_content = ? WHERE id = ?", (solution, qid)
+            )
+
+    def delete_question(self, qid: str) -> None:
+        """删除一条 Question（回填后移除冗余答案条目；FTS 由触发器同步）。"""
+        with self._write_lock, self.transaction():
+            self._conn.execute("DELETE FROM questions WHERE id = ?", (qid,))
+
     def load_questions_by_ids(self, ids: list[str]) -> list[Question]:
         if not ids:
             return []
@@ -285,6 +325,239 @@ class SQLiteStorageBackend:
             "knowledge_points": self.knowledge_count(),
             "questions": self.question_count(),
         }
+
+    def validation_report(self) -> dict[str, Any]:
+        """只读体检报告：汇总各 phase 的正确性信号（供 `parse validate`）。
+
+        覆盖 #2/#3/#4/#5/#6/#8：提取总量与类型分布、题答绑定率、编号规范化覆盖与
+        "脏"规范化检测、content_hash 重复组（UNIQUE 应保证 0）、知识图谱边分布、
+        来源文件分布。纯聚合查询，不修改数据。
+        """
+        c = self._conn
+
+        def scalar(sql: str) -> int:
+            row = c.execute(sql).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+
+        def dist(sql: str) -> dict[str, int]:
+            return {(r[0] if r[0] not in (None, "") else "(空)"): r[1] for r in c.execute(sql)}
+
+        q_total = scalar("SELECT COUNT(*) FROM questions")
+        q_with_sol = scalar(
+            "SELECT COUNT(*) FROM questions "
+            "WHERE solution_content IS NOT NULL AND TRIM(solution_content) != ''"
+        )
+        # "脏"规范化题号：非空但含非 [0-9.] 字符（如残留 "第"/"题"/字母/空格）→ 违反 #4
+        dirty_canonical = scalar(
+            "SELECT COUNT(*) FROM ("
+            "  SELECT number_canonical AS nc FROM knowledge_points"
+            "  UNION ALL SELECT number_canonical FROM questions"
+            ") WHERE nc != '' AND nc GLOB '*[^0-9.]*'"
+        )
+        # 表内 content_hash 重复组（UNIQUE 部分索引应保证为 0）→ #8
+        dup_groups = scalar(
+            "SELECT COUNT(*) FROM (SELECT content_hash FROM knowledge_points"
+            " WHERE content_hash != '' GROUP BY content_hash HAVING COUNT(*) > 1)"
+        ) + scalar(
+            "SELECT COUNT(*) FROM (SELECT content_hash FROM questions"
+            " WHERE content_hash != '' GROUP BY content_hash HAVING COUNT(*) > 1)"
+        )
+
+        return {
+            "kp_total": scalar("SELECT COUNT(*) FROM knowledge_points"),
+            "q_total": q_total,
+            "kp_by_type": dist(
+                "SELECT kp_type, COUNT(*) FROM knowledge_points "
+                "GROUP BY kp_type ORDER BY 2 DESC"
+            ),
+            "q_by_type": dist(
+                "SELECT question_type, COUNT(*) FROM questions "
+                "GROUP BY question_type ORDER BY 2 DESC"
+            ),
+            "q_by_form": dist(
+                "SELECT question_form, COUNT(*) FROM questions "
+                "GROUP BY question_form ORDER BY 2 DESC"
+            ),
+            "q_with_solution": q_with_sol,
+            "q_missing_solution": q_total - q_with_sol,
+            "kp_canonical_cov": scalar(
+                "SELECT COUNT(*) FROM knowledge_points WHERE number_canonical != ''"
+            ),
+            "q_canonical_cov": scalar(
+                "SELECT COUNT(*) FROM questions WHERE number_canonical != ''"
+            ),
+            "dirty_canonical": dirty_canonical,
+            "dup_hash_groups": dup_groups,
+            "relations_total": scalar("SELECT COUNT(*) FROM item_relations"),
+            "relations_by_type": dist(
+                "SELECT relation_type, COUNT(*) FROM item_relations "
+                "GROUP BY relation_type ORDER BY 2 DESC"
+            ),
+            "source_files": dist(
+                "SELECT source_file, COUNT(*) FROM ("
+                "  SELECT source_file FROM knowledge_points"
+                "  UNION ALL SELECT source_file FROM questions"
+                ") GROUP BY source_file ORDER BY 2 DESC"
+            ),
+        }
+
+    def numbering_rows(
+        self, source_file: str, discipline: str | None = None
+    ) -> list[tuple[Any, ...]]:
+        """返回某 source_file 下所有条目的编号信息，供编号连续性 audit。
+
+        每行：(subject, seq_chapter, seq_section, seq_index, number_canonical, kind, id)
+        kind ∈ {"kp", "question"}。
+        """
+        out: list[tuple[Any, ...]] = []
+        for table, kind in (("knowledge_points", "kp"), ("questions", "question")):
+            cond = "source_file = ?"
+            params: list[Any] = [source_file]
+            if discipline:
+                cond += " AND discipline = ?"
+                params.append(discipline)
+            sql = (  # noqa: S608 — table 来自硬编码字面量元组
+                f"SELECT subject, seq_chapter, seq_section, seq_index, "
+                f"number_canonical, id FROM {table} WHERE {cond}"
+            )
+            for r in self._conn.execute(sql, params).fetchall():
+                out.append(
+                    (
+                        r["subject"],
+                        r["seq_chapter"],
+                        r["seq_section"],
+                        r["seq_index"],
+                        r["number_canonical"],
+                        kind,
+                        r["id"],
+                    )
+                )
+        return out
+
+    def relation_rows(
+        self, source_file: str, discipline: str | None = None
+    ) -> list[dict[str, Any]]:
+        """返回某 source_file 下所有条目的结构信息，供结构化关系推断（#6）。
+
+        每行 dict：``id`` / ``kind`` ("kp"|"question") / ``type`` (kp_type|question_type) /
+        ``subject`` / ``seq_chapter`` / ``seq_section`` / ``order_index``。按 order_index 升序。
+        """
+        out: list[dict[str, Any]] = []
+        for table, kind, type_col in (
+            ("knowledge_points", "kp", "kp_type"),
+            ("questions", "question", "question_type"),
+        ):
+            cond = "source_file = ?"
+            params: list[Any] = [source_file]
+            if discipline:
+                cond += " AND discipline = ?"
+                params.append(discipline)
+            sql = (  # noqa: S608 — table/type_col 来自硬编码字面量元组
+                f"SELECT id, {type_col} AS type, subject, seq_chapter, seq_section, "
+                f"order_index FROM {table} WHERE {cond}"
+            )
+            for r in self._conn.execute(sql, params).fetchall():
+                out.append(
+                    {
+                        "id": r["id"],
+                        "kind": kind,
+                        "type": r["type"],
+                        "subject": r["subject"],
+                        "seq_chapter": r["seq_chapter"],
+                        "seq_section": r["seq_section"],
+                        "order_index": r["order_index"] or 0,
+                    }
+                )
+        out.sort(key=lambda x: x["order_index"])
+        return out
+
+    def reconciliation_rows(
+        self, source_file: str, discipline: str | None = None
+    ) -> list[dict[str, Any]]:
+        """返回某 source_file 下条目的复核信息（#7）。
+
+        每行 dict：``id`` / ``kind`` / ``type`` / ``number_canonical`` / ``subject`` /
+        ``seq_chapter`` / ``seq_section`` / ``content_head``（正文前 40 字）/ ``content_hash``。
+        """
+        out: list[dict[str, Any]] = []
+        for table, kind, type_col in (
+            ("knowledge_points", "kp", "kp_type"),
+            ("questions", "question", "question_type"),
+        ):
+            cond = "source_file = ?"
+            params: list[Any] = [source_file]
+            if discipline:
+                cond += " AND discipline = ?"
+                params.append(discipline)
+            sql = (  # noqa: S608 — table/type_col 来自硬编码字面量元组
+                f"SELECT id, {type_col} AS type, number_canonical, subject, "
+                f"seq_chapter, seq_section, SUBSTR(content, 1, 40) AS content_head, "
+                f"content_hash, order_index FROM {table} WHERE {cond}"
+            )
+            for r in self._conn.execute(sql, params).fetchall():
+                out.append(
+                    {
+                        "id": r["id"],
+                        "kind": kind,
+                        "type": r["type"],
+                        "number_canonical": r["number_canonical"],
+                        "subject": r["subject"],
+                        "seq_chapter": r["seq_chapter"],
+                        "seq_section": r["seq_section"],
+                        "content_head": r["content_head"] or "",
+                        "content_hash": r["content_hash"] or "",
+                        "order_index": r["order_index"] or 0,
+                    }
+                )
+        out.sort(key=lambda x: x["order_index"])
+        return out
+
+    def save_relations(self, edges: list[dict[str, Any]], discipline: str = "math") -> int:
+        """批量写入关系边（INSERT OR IGNORE，UNIQUE(src,dst,type) 去重幂等）。
+
+        Args:
+            edges: 边 dict（src_id/dst_id/relation_type/confidence/source/note）
+            discipline: 学科标识，写入 discipline 列
+
+        Returns:
+            实际新增行数（rowcount）。
+        """
+        if not edges:
+            return 0
+        rows = [
+            (
+                e["src_id"],
+                e["dst_id"],
+                e.get("relation_type", "related"),
+                float(e.get("confidence", 1.0)),
+                e.get("source", "structural"),
+                discipline,
+                e.get("note", ""),
+            )
+            for e in edges
+        ]
+        with self._write_lock:
+            cur = self._conn.executemany(
+                "INSERT OR IGNORE INTO item_relations "
+                "(src_id, dst_id, relation_type, confidence, source, discipline, note) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            if not self._in_transaction:
+                self._conn.commit()
+            return cur.rowcount
+
+    def load_relations(self, src_id: str) -> list[dict[str, Any]]:
+        """加载某条目出发的所有关系边（供知识图谱查询/导出）。"""
+        rows = self._conn.execute(
+            "SELECT src_id, dst_id, relation_type, confidence, source, note "
+            "FROM item_relations WHERE src_id = ?",
+            (src_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def relation_count(self) -> int:
+        return int(self._conn.execute("SELECT COUNT(*) FROM item_relations").fetchone()[0])
 
     def search_fulltext(self, query: str, item_type: str = "all") -> list[str]:
         """FTS5 全文检索"""
@@ -420,6 +693,10 @@ class SQLiteStorageBackend:
             discipline=discipline,
             kp_type=row["kp_type"] or "theorem",
             number=row["number"] or "",
+            number_canonical=row["number_canonical"] or "",
+            seq_chapter=row["seq_chapter"],
+            seq_section=row["seq_section"],
+            seq_index=row["seq_index"],
             content=row["content"],
             proof_content=row["proof_content"],
             difficulty=row["difficulty"],
@@ -442,7 +719,12 @@ class SQLiteStorageBackend:
             id=row["id"],
             discipline=discipline,
             question_type=row["question_type"] or "proof",
+            question_form=row["question_form"] or "",
             number=row["number"] or "",
+            number_canonical=row["number_canonical"] or "",
+            seq_chapter=row["seq_chapter"],
+            seq_section=row["seq_section"],
+            seq_index=row["seq_index"],
             content=row["content"],
             solution_content=row["solution_content"],
             difficulty=row["difficulty"],

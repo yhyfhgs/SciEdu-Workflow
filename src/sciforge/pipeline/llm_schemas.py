@@ -41,21 +41,28 @@ class StructuralContextLLM(BaseModel):
 class SingleItemExtractLLM(BaseModel):
     """Stage1 输出的单条提取条目（纯内容+题答配对+位置信息）
 
-    solution_status 二态：
+    solution_status 三态：
     - complete: 有 proof/solution（两者至少一个非空）
-    - no_solution_in_source: 确认原文没有（两者都 null）
+    - no_solution_in_source: 确认原文此处及全文都没有（两者都 null）
+    - solution_deferred: 原文**明示**答案在他处（如"答案见附录/章末习题解答"），
+      此处无解答正文（两者都 null），但**不是无解**——留待 answer_linker 跨章节回填。
+      与 no_solution_in_source 的区别：deferred 表示"答案存在但不在此"，
+      因此**豁免** exercise near-tail 拒绝（这是有意为之，非截断）。
 
-    prompt 契约：若本窗口内无法确认条目是否有解答，LLM 应返回 payload.extracted=None
-    而不是在此字段填 truncated_skip。
+    prompt 契约：若本窗口内无法确认条目是否有解答，LLM 应返回 payload 不含该条
+    （留给下一窗口），而不是在此字段乱填。
     """
 
     category: Literal["knowledge", "question"]
     item_type: str = Field(min_length=1)
     number: str = ""
+    # 题目形式（题面可见即填，与认知类别正交）：choice/multiple_choice/fill_blank/
+    # true_false/short_answer/subjective；knowledge 或无法判定时留 ""。Stage1 识别。
+    question_form: str = ""
     corrected_content: str = Field(min_length=1)
     corrected_proof: str | None = None
     corrected_solution: str | None = None
-    solution_status: Literal["complete", "no_solution_in_source"]
+    solution_status: Literal["complete", "no_solution_in_source", "solution_deferred"]
     structural_context: StructuralContextLLM = Field(default_factory=StructuralContextLLM)
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
@@ -72,8 +79,8 @@ class SingleItemExtractLLM(BaseModel):
     def _check_solution_status_consistency(self) -> SingleItemExtractLLM:
         """题-答绑定的强制约束
 
-        complete              → proof 或 solution 必须非空
-        no_solution_in_source → proof/solution 都必须为 null
+        complete                              → proof 或 solution 必须非空
+        no_solution_in_source / solution_deferred → proof/solution 都必须为 null
         """
         status = self.solution_status
         has_payload = bool(self.corrected_proof) or bool(self.corrected_solution)
@@ -83,10 +90,10 @@ class SingleItemExtractLLM(BaseModel):
                 f"solution_status=complete 要求 corrected_proof 或 "
                 f"corrected_solution 至少一个非 null (number={self.number!r})"
             )
-        if status == "no_solution_in_source" and has_payload:
+        if status in ("no_solution_in_source", "solution_deferred") and has_payload:
             raise ValueError(
-                f"solution_status=no_solution_in_source 要求 corrected_proof 和 corrected_solution "
-                f"均为 null (number={self.number!r})"
+                f"solution_status={status} 要求 corrected_proof 和 corrected_solution "
+                f"均为 null（此处无解答正文）(number={self.number!r})"
             )
         return self
 

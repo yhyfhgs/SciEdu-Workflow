@@ -35,7 +35,11 @@ from sciforge.pipeline.retry import (
 from sciforge.pipeline.source_classifier import format_baseline_hint
 from sciforge.pipeline.tag_tree import TagTree
 from sciforge.pipeline.taxonomy_validator import TaxonomyValidator
-from sciforge.prompts.templates import get_annotate_stage2_review_template
+from sciforge.prompts.templates import (
+    build_pipeline_prompt_io,
+    get_annotate_stage2_review_parts,
+    get_annotate_stage2_review_template,
+)
 
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
@@ -67,7 +71,12 @@ class Stage2Review:
         self.checkpoint_root = checkpoint_root
         self.discipline = discipline
         self.discipline_spec = DISCIPLINE_REGISTRY.get(discipline)
-        self.prompt_template = get_annotate_stage2_review_template(discipline)
+        self.prompt_cache_enabled = bool(getattr(config, "pipeline_prompt_cache_enabled", True))
+        self.system_prompt, self.user_template = build_pipeline_prompt_io(
+            get_annotate_stage2_review_parts(discipline),
+            get_annotate_stage2_review_template(discipline),
+            self.prompt_cache_enabled,
+        )
         self.enabled: bool = bool(
             getattr(config, "stage2_review_enabled", True)
             and getattr(config, "annotate_stage2_review_enabled", True)
@@ -249,7 +258,7 @@ class Stage2Review:
             retry_block = ""
             if feedback:
                 retry_block = f"## 上一次输出被拒绝，错误信息（请修正）\n{feedback}\n"
-            return self.prompt_template.format(
+            return self.user_template.format(
                 item_json=item_json,
                 annotation_json=annotation_json,
                 tag_subtree=tag_subtree,
@@ -264,6 +273,7 @@ class Stage2Review:
                 self.llm,
                 build_prompt,
                 model=SingleAnnotationLLM,
+                system=self.system_prompt,
                 max_attempts=self.max_retries,
                 base_delay=self.retry_base_delay,
                 validation_context={

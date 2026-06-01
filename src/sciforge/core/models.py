@@ -7,7 +7,9 @@ from datetime import datetime
 from enum import StrEnum
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from sciforge.core.numbering import canonicalize_number, parse_number_components
 
 # ── 枚举 ──────────────────────────────────────────────
 
@@ -118,7 +120,11 @@ class KnowledgePoint(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH
     kp_type: str = "theorem"  # 由 DisciplineSpec.allowed_kp_types 约束
-    number: str = ""
+    number: str = ""  # 原文逐字题号（如 "例 3.2" / "第1题"）
+    number_canonical: str = ""  # 规范化题号（如 "3.2"）；由 number 自动派生
+    seq_chapter: int | None = None  # 结构化序号：章（编号连续性 audit 用）
+    seq_section: int | None = None  # 节
+    seq_index: int | None = None  # 章/节内运行序号
     content: str = ""
     proof_content: str | None = None
     difficulty: int = Field(ge=1, le=10, default=5)
@@ -132,6 +138,21 @@ class KnowledgePoint(BaseModel):
     order_index: int = 0
 
     model_config = ConfigDict(validate_assignment=True)
+
+    @model_validator(mode="after")
+    def _derive_numbering(self) -> KnowledgePoint:
+        """从原文 number 自动派生 number_canonical + seq_*（仅当未显式提供时）。
+
+        用 object.__setattr__ 绕过 validate_assignment 的递归校验。
+        """
+        if self.number and not self.number_canonical:
+            object.__setattr__(self, "number_canonical", canonicalize_number(self.number))
+        if self.number and self.seq_index is None:
+            ch, sec, idx = parse_number_components(self.number)
+            object.__setattr__(self, "seq_chapter", ch)
+            object.__setattr__(self, "seq_section", sec)
+            object.__setattr__(self, "seq_index", idx)
+        return self
 
 
 class Solution(BaseModel):
@@ -151,8 +172,17 @@ class Question(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH
-    question_type: str = "proof"  # 由 DisciplineSpec.allowed_question_types 约束
-    number: str = ""
+    # question_type = 认知类别（proof/calculation/construction/...），由 DisciplineSpec 约束
+    question_type: str = "proof"
+    # question_form = 题目形式（choice/fill_blank/true_false/short_answer/...）；
+    # 与 question_type 正交：一道选择题在形式上是 choice、认知类别上可能是 calculation。
+    # Phase 4 在提取阶段填充；Phase 0 仅建列，默认空。
+    question_form: str = ""
+    number: str = ""  # 原文逐字题号
+    number_canonical: str = ""  # 规范化题号；由 number 自动派生
+    seq_chapter: int | None = None
+    seq_section: int | None = None
+    seq_index: int | None = None
     content: str = ""
     solution_content: str | None = None
     difficulty: int = Field(ge=1, le=10, default=5)
@@ -166,6 +196,18 @@ class Question(BaseModel):
     order_index: int = 0
 
     model_config = ConfigDict(validate_assignment=True)
+
+    @model_validator(mode="after")
+    def _derive_numbering(self) -> Question:
+        """从原文 number 自动派生 number_canonical + seq_*（仅当未显式提供时）。"""
+        if self.number and not self.number_canonical:
+            object.__setattr__(self, "number_canonical", canonicalize_number(self.number))
+        if self.number and self.seq_index is None:
+            ch, sec, idx = parse_number_components(self.number)
+            object.__setattr__(self, "seq_chapter", ch)
+            object.__setattr__(self, "seq_section", sec)
+            object.__setattr__(self, "seq_index", idx)
+        return self
 
 
 class DifficultyScore(BaseModel):
@@ -604,6 +646,7 @@ class FileExtractionState(BaseModel):
     stage2_annotated_count: int = 0
     stage2_reviewed_count: int = 0
     stage3_persisted_count: int = 0
+    stage3_deduped_count: int = 0  # Stage3 因内容重复跳过入库的条目数（#8 可观测）
 
     stage1_completed: bool = False
     stage2_completed: bool = False

@@ -10,14 +10,20 @@ AI 驱动的**理工科知识处理与生成平台**。从教材、讲义、试�
 
 5 阶段并发 Producer-Consumer（6 Task × 4 stage queue × asyncio.gather），按学科参数化：
 
-- **Task0**: 多模态视觉识别（VLM）每 5 页一批转 markdown，system prompt 按学科注入
+- **Task0**: 多模态视觉识别（VLM）每 5 页一批转 markdown，system prompt 按学科注入；
+  内容审核误判（如 MiniMax 1026 sensitive）时**自动回退逐页识别**，只丢被误判页不丢整批
 - **Stage1Extract**: 500 行滑动窗口，每窗口一次 LLM 调用批量提取所有完整条目；0 条时扩窗口到 3000 行
 - **Stage1Review**: 原 window + 批量 items → LLM 批量校验修正（专门修复 exercise 漏 solution bug）
 - **Stage2Annotate**: 单条 item 打 tags/difficulty/subject/taxonomy_path
 - **Stage2Review**: 单条 annotation 审核 tag 格式/复用/校准
-- **Stage3Persist**: 合并 item+annotation → KP/Question 入库（无 LLM）
+- **Stage3Persist**: 合并 item+annotation → KP/Question 入库（无 LLM）+ tag 受控词表统一（#6）
+- **入库后确定性 post-pass**（无 LLM，可独立开关）：编号连续性 audit（#2）→ 跨章节题答回填（#3）
+  → 结构化关系边推断 `corollary_of/tests/successor`（#6 知识图谱）→ reconciliation 复核重复/类型误判（#7）
+- **Prompt caching（#9）**：各 stage 静态指令拆到可缓存 system 前缀；纯 Anthropic 自动缓存（省 ~90% 静态输入 token）
+- **思考预算分级（#9）**：推理模型（如 MiniMax-M3）按 stage 设 `thinking` budget——提取 1024、求解 16384，避免高频抄写任务过度推理
 - **Retry with feedback**: schema 校验失败时把错误文本注入下一轮 prompt
 - **严格保序**: 全局 item_id 自增 + FIFO queue；Stage2 并发时由 ReorderBuffer 恢复顺序
+- **单文档并行（#1，opt-in）**：按 section 分段 + 段级并发提取 + 段序保序重排（`document_segmenter` / `parallel_extract`）
 - **直通缓存重放**: Task0 已完成时直接从 `recognize/file_*/` 读取跳过原始文件
 - 每条 item 镜像到 `items/<stage>/item_<id>.json` 供断点恢复
 - 异常隔离 + try/finally SENTINEL 传播避免死锁
@@ -36,8 +42,12 @@ Agent 全部按 `Discipline` 参数化，可单独运行也可通过 StateGraph 
 
 ### 3. 存储与 CLI
 
-- **SQLite 存储** — FTS5 全文检索 + 内容哈希去重 + `discipline` 列按学科过滤；每个条目带 `order_index` 用于后续知识图谱构建
-- **CLI 接口** — 统一入口 `sciforge`（含 `sf` 短别名），Typer + Rich，支持 `parse run / run-book / audit / migrate-legacy / db-stats` 和 `generate free / solve / batch / lecture`
+- **SQLite 存储（schema v8）** — FTS5 全文检索 + `content_hash` UNIQUE 写入去重（#8）+ `discipline` CHECK；
+  条目带 `number_canonical` / `seq_chapter/section/index`（#4 字段规范化，消除 "1" vs "第1题"）、
+  `question_form`（#5 题目形式，与 `question_type` 认知类别正交）、`order_index`；`item_relations` 边表存知识图谱
+- **CLI 接口** — 统一入口 `sciforge`（含 `sf` 短别名），Typer + Rich，支持
+  `parse run / run-book / audit / validate / migrate-legacy / db-stats` 和 `generate free / solve / batch / lecture`
+  - `parse validate <db>` — 入库后只读体检：提取量/类型双维度分布/题答绑定率/编号规范化/去重/编号缺口/知识图谱边
 
 ## 快速开始
 

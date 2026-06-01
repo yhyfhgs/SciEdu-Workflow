@@ -36,7 +36,11 @@ from sciforge.pipeline.retry import (
 from sciforge.pipeline.source_classifier import format_baseline_hint
 from sciforge.pipeline.tag_tree import TagTree
 from sciforge.pipeline.taxonomy_validator import TaxonomyValidator
-from sciforge.prompts.templates import get_annotate_stage2_initial_template
+from sciforge.prompts.templates import (
+    build_pipeline_prompt_io,
+    get_annotate_stage2_initial_parts,
+    get_annotate_stage2_initial_template,
+)
 
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
@@ -61,7 +65,13 @@ class Stage2Annotate:
         self.checkpoint_root = checkpoint_root
         self.discipline = discipline
         self.discipline_spec = DISCIPLINE_REGISTRY.get(discipline)
-        self.prompt_template = get_annotate_stage2_initial_template(discipline)
+        # Prompt caching（#9）：静态指令放 system（稳定可缓存前缀），动态输入留 user。
+        self.prompt_cache_enabled = bool(getattr(config, "pipeline_prompt_cache_enabled", True))
+        self.system_prompt, self.user_template = build_pipeline_prompt_io(
+            get_annotate_stage2_initial_parts(discipline),
+            get_annotate_stage2_initial_template(discipline),
+            self.prompt_cache_enabled,
+        )
         self.tag_tree = tag_tree if tag_tree is not None else TagTree()
         self.taxonomy_validator = TaxonomyValidator()
 
@@ -230,7 +240,7 @@ class Stage2Annotate:
             retry_block = ""
             if feedback:
                 retry_block = f"## 上一次输出被拒绝，错误信息（请修正）\n{feedback}\n"
-            return self.prompt_template.format(
+            return self.user_template.format(
                 item_json=item_json,
                 tag_subtree=tag_subtree,
                 taxonomy_tree=taxonomy_tree,
@@ -245,6 +255,7 @@ class Stage2Annotate:
                 self.llm,
                 build_prompt,
                 model=SingleAnnotationLLM,
+                system=self.system_prompt,
                 max_attempts=self.max_retries,
                 base_delay=self.retry_base_delay,
                 validation_context={
@@ -281,35 +292,21 @@ class Stage2Annotate:
         )
 
     def _infer_branch(self, reviewed: ReviewedItem) -> str | None:
-        """尝试从 structural_context 推断 taxonomy 分支名。
+        """从 structural_context 的中文章节标题推断 taxonomy 英文主分支。
 
-        策略：
-        1. 从 structural_context.chapter/section 提取关键词
-        2. 与 discipline_spec.allowed_branches 匹配
-        3. 匹配失败返回 None（fallback 到全量 taxonomy）
+        修复历史 bug：旧实现读 ``sc.chapter/section``（实际字段是
+        ``chapter_title/section_title``，hasattr 永远 False），且用英文分支名
+        匹配中文标题 → 永远返回 None。现用真实字段 + DisciplineSpec.branch_keywords
+        中文关键词映射。命中失败返回 None（fallback 到全量 taxonomy，安全）。
         """
         sc = reviewed.item.structural_context
         if sc is None:
             return None
-
-        # 拼接章节信息作为搜索文本
-        hints: list[str] = []
-        if hasattr(sc, "chapter") and sc.chapter:
-            hints.append(str(sc.chapter).lower())
-        if hasattr(sc, "section") and sc.section:
-            hints.append(str(sc.section).lower())
-        if hasattr(sc, "subsection") and sc.subsection:
-            hints.append(str(sc.subsection).lower())
-        if not hints:
-            return None
-
-        combined = " ".join(hints)
-        # 在 allowed_branches 中查找匹配
-        for branch in self.discipline_spec.allowed_branches:
-            if branch.lower() in combined:
-                return branch
-
-        return None
+        return self.discipline_spec.infer_branch(
+            sc.chapter_title,
+            sc.section_title,
+            sc.subsection_title,
+        )
 
     def _fallback_annotation(self, reviewed: ReviewedItem) -> SingleAnnotationLLM:
         """LLM 重试耗尽时的兜底标注"""

@@ -48,12 +48,20 @@ class TestAnthropicParamRouting:
         assert call_kwargs["top_p"] == 0.9
         assert call_kwargs["top_k"] == 40
         assert call_kwargs["stop_sequences"] == ["<END>"]
-        assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+        # thinking 经 extra_body 透传（兼容老 SDK + anthropic 兼容网关），非 top-level
+        assert "thinking" not in call_kwargs
+        assert call_kwargs["extra_body"]["thinking"] == {
+            "type": "enabled",
+            "budget_tokens": 8192,
+        }
         assert call_kwargs["temperature"] == 0.7  # default
         assert call_kwargs["max_tokens"] == 16384  # default
 
-    def test_cache_control_not_passed_as_kwarg(self, backend):
-        """cache_control 不是 top-level kwarg（会被注入 content block）"""
+    def test_cache_control_on_system_block(self, backend):
+        """cache_control 不是 top-level kwarg；显式配置时注入到 **system block**（修复 D11）。
+
+        旧行为是注入 user message 末尾（动态 → 永不命中）；新行为缓存 system 前缀。
+        """
         backend.config = LLMConfig(
             provider=LLMProvider.ANTHROPIC,
             api_key="test",
@@ -67,11 +75,39 @@ class TestAnthropicParamRouting:
 
         call_kwargs = backend.client.messages.create.call_args.kwargs
         assert "cache_control" not in call_kwargs
-        # 但消息的最后一个 content block 应该含有 cache_control
-        messages = call_kwargs["messages"]
-        last_content = messages[-1]["content"]
-        assert isinstance(last_content, list)
-        assert last_content[-1]["cache_control"] == {"type": "ephemeral"}
+        # system 被包成带 cache_control 的 content block 列表
+        system = call_kwargs["system"]
+        assert isinstance(system, list)
+        assert system[-1]["cache_control"] == {"type": "ephemeral"}
+        assert system[-1]["text"] == "sys"
+        # user message 保持纯字符串（不再注入缓存）
+        assert call_kwargs["messages"][-1]["content"] == "hi"
+
+    def test_long_system_auto_cached(self, backend):
+        """纯 Anthropic + 长 system（≥阈值）自动缓存，无需显式配置。"""
+        backend.config = LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test")
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="ok")]
+        backend.client.messages.create.return_value = mock_response
+
+        long_system = "指令" * 400  # 800 字 > 阈值 500
+        backend.generate_sync(prompt="hi", system=long_system)
+
+        system = backend.client.messages.create.call_args.kwargs["system"]
+        assert isinstance(system, list)
+        assert system[-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_short_system_not_cached(self, backend):
+        """短 system（无显式配置）不主动缓存 → 仍是纯字符串。"""
+        backend.config = LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test")
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="ok")]
+        backend.client.messages.create.return_value = mock_response
+
+        backend.generate_sync(prompt="hi", system="短")
+
+        system = backend.client.messages.create.call_args.kwargs["system"]
+        assert system == "短"
 
     def test_unsupported_param_dropped(self, backend):
         """Anthropic 不支持 seed / response_format / frequency_penalty"""

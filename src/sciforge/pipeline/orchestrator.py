@@ -41,11 +41,15 @@ from sciforge.core.models import (
     ReviewedItem,
 )
 from sciforge.core.sentinel import SENTINEL
+from sciforge.pipeline.answer_linker import link_answers
+from sciforge.pipeline.numbering_audit import audit_numbering, write_numbering_report
 from sciforge.pipeline.recognizers import (
     detect_section_boundaries,
     get_recognizer,
     pdf_page_count,
 )
+from sciforge.pipeline.reconciliation import reconcile
+from sciforge.pipeline.relation_inference import infer_structural_relations
 from sciforge.pipeline.resume_state import (
     compute_file_hash,
     enum_cached_batches_for_file,
@@ -439,6 +443,98 @@ class PipelineOrchestrator:
                     )
                 except Exception as exc:
                     logger.warning("tag_tree_save_failed", error=str(exc))
+
+            # 10.5 编号连续性核对（#2/#8 召回兜底，不阻断入库）
+            if isinstance(storage_for_pipeline, SQLiteStorageBackend):
+                try:
+                    rows = storage_for_pipeline.numbering_rows(
+                        str(primary_path), self.discipline.value
+                    )
+                    report = audit_numbering(rows)
+                    write_numbering_report(report, self.config.checkpoint_dir, file_hash)
+                    if report["suspected_gaps"]:
+                        logger.warning(
+                            "pipeline_numbering_gaps",
+                            file=primary_path.name,
+                            gap_groups=len(report["suspected_gaps"]),
+                            sample=report["suspected_gaps"][:3],
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("numbering_audit_failed", error=str(exc))
+
+            # 10.6 跨章节题答回填（#3 不分离）：章末/附录答案并回题干
+            if isinstance(storage_for_pipeline, SQLiteStorageBackend) and getattr(
+                self.config, "answer_linking_enabled", True
+            ):
+                try:
+                    questions = storage_for_pipeline.load_questions_by_source(
+                        str(primary_path), self.discipline.value
+                    )
+                    link = link_answers(questions)
+                    for qid, sol in link.backfills:
+                        storage_for_pipeline.update_question_solution(qid, sol)
+                    for did in link.delete_ids:
+                        storage_for_pipeline.delete_question(did)
+                    if link.backfills:
+                        logger.info(
+                            "pipeline_answer_linked",
+                            file=primary_path.name,
+                            linked=len(link.backfills),
+                            removed=len(link.delete_ids),
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("answer_linking_failed", error=str(exc))
+
+            # 10.7 结构化关系推断（#6 知识图谱）：corollary_of / tests / successor 边
+            if isinstance(storage_for_pipeline, SQLiteStorageBackend) and getattr(
+                self.config, "relation_inference_enabled", True
+            ):
+                try:
+                    rel_rows = storage_for_pipeline.relation_rows(
+                        str(primary_path), self.discipline.value
+                    )
+                    edges = infer_structural_relations(rel_rows)
+                    if edges:
+                        added = storage_for_pipeline.save_relations(
+                            edges, self.discipline.value
+                        )
+                        logger.info(
+                            "pipeline_relations_inferred",
+                            file=primary_path.name,
+                            edges=len(edges),
+                            added=added,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("relation_inference_failed", error=str(exc))
+
+            # 10.8 文档级 reconciliation 复核（#7）：重复条目 + 类型误判，写报告不改库
+            if isinstance(storage_for_pipeline, SQLiteStorageBackend) and getattr(
+                self.config, "reconciliation_enabled", True
+            ):
+                try:
+                    rec_rows = storage_for_pipeline.reconciliation_rows(
+                        str(primary_path), self.discipline.value
+                    )
+                    report = reconcile(rec_rows)
+                    import json as _json
+
+                    rec_path = (
+                        self.config.checkpoint_dir / file_hash / "reconciliation_report.json"
+                    )
+                    rec_path.parent.mkdir(parents=True, exist_ok=True)
+                    rec_path.write_text(
+                        _json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    s = report["summary"]
+                    if s["duplicate_groups"] or s["type_mismatches"]:
+                        logger.warning(
+                            "pipeline_reconciliation_issues",
+                            file=primary_path.name,
+                            duplicate_groups=s["duplicate_groups"],
+                            type_mismatches=s["type_mismatches"],
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("reconciliation_failed", error=str(exc))
 
             # 11. 若 stage3 全部完成 → 标记 completed
             if is_state_complete(state):

@@ -30,6 +30,7 @@ from sciforge.core.sentinel import _Sentinel
 from sciforge.disciplines import DISCIPLINE_REGISTRY
 from sciforge.pipeline.llm_schemas import SingleAnnotationLLM
 from sciforge.pipeline.resume_state import save_state_locked
+from sciforge.pipeline.tag_canonicalizer import TagCanonicalizer
 from sciforge.pipeline.tag_tree import TagTree
 from sciforge.pipeline.taxonomy_validator import TaxonomyValidator
 
@@ -58,6 +59,9 @@ class Stage3Persist:
         self.discipline_spec = DISCIPLINE_REGISTRY.get(discipline)
         self.tag_tree = tag_tree if tag_tree is not None else TagTree()
         self.taxonomy_validator = TaxonomyValidator()
+        # tag 受控词表统一（#6）：用学科别名表初始化，并把已累积的 tag_tree 注册为既有规范
+        self.tag_canon = TagCanonicalizer(self.discipline_spec.tag_aliases)
+        self.tag_canon.seed_from_tree(self.tag_tree)
 
     async def run(
         self,
@@ -122,8 +126,38 @@ class Stage3Persist:
         annotation = msg.annotation
         item = msg.item
 
+        # ── 写入去重（#8 不多提取）──
+        # 内容已存在（重叠窗口/force-consume/resume 重放）→ 跳过入库，显式记账。
+        # DB 的 content_hash UNIQUE + INSERT OR IGNORE 是最终兜底；此处提前拦截以便观测。
+        dup_scope = "kp" if item.category == "knowledge" else "question"
+        dup_ids = await asyncio.to_thread(
+            self.storage.find_duplicates, item.corrected_content, dup_scope
+        )
+        if dup_ids:
+            state.stage3_deduped_count += 1
+            logger.info(
+                "stage3_dedup_skip",
+                item_id=msg.item_id,
+                category=item.category,
+                existing_id=dup_ids[0],
+                number=item.number,
+            )
+            # 仍推进游标 + 镜像，保证 resume 不重复处理、保序断言不误判
+            state.last_persisted_item_id = max(state.last_persisted_item_id, msg.item_id)
+            self._mirror(msg, state)
+            await save_state_locked(self.checkpoint_root, state)
+            return
+
         # 强制学科根（兜底防线 —— LLM 偶尔从中层概念起头）
         annotation = self._ensure_discipline_root(annotation, item_id=msg.item_id)
+
+        # tag 受控词表统一（#6）：归并同义异名，使全局 tag tree 一致细粒度
+        canon_updates: dict[str, object] = {
+            "tags": self.tag_canon.canonicalize_path(annotation.tags)
+        }
+        if annotation.methods:
+            canon_updates["methods"] = self.tag_canon.canonicalize_path(annotation.methods)
+        annotation = annotation.model_copy(update=canon_updates)
 
         # Taxonomy 校验 + 模糊匹配
         corrected_taxonomy, _ = self.taxonomy_validator.validate(annotation.taxonomy_path)
@@ -168,9 +202,14 @@ class Stage3Persist:
                     allowed=list(self.discipline_spec.allowed_question_types),
                 )
                 q_type = self.discipline_spec.allowed_question_types[0]
+            # 题目形式（#5 与认知类别正交）：Stage1 从题面识别，校验白名单
+            q_form = self.discipline_spec.question_form_or(
+                getattr(item, "question_form", "") or "", ""
+            )
             q = Question(
                 discipline=self.discipline,
                 question_type=q_type,
+                question_form=q_form,
                 number=item.number,
                 content=item.corrected_content,
                 solution_content=item.corrected_solution,

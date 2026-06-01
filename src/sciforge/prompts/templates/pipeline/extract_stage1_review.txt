@@ -72,7 +72,7 @@
 | `corrected_content` | string | 非空，逐字原文 |
 | `corrected_proof` | string \| null | 有证明 → 逐字原文；无 → `null` |
 | `corrected_solution` | string \| null | 有解答 → 逐字原文；无 → `null` |
-| `solution_status` | string | `"complete"` 或 `"no_solution_in_source"` |
+| `solution_status` | string | `"complete"` / `"no_solution_in_source"` / `"solution_deferred"`（答案明示在他处，豁免 near-tail） |
 | `start_line` | int | ≥1 |
 | `end_line` | int | ≥`start_line`，≤ 窗口最后一行 |
 
@@ -87,7 +87,7 @@
 
 **A0. 反跳过改写（优先级最高，严重影响完整性）**：
 - 机制：上游 Stage1Extract 提取一批后立即把 `line_buffer` 切到 `last_consumed_line+1`，被跳过的条目**永远不会再扫描**
-- 审核：对照原始窗口起点行号（`{window_text}` 第一行的全局行号），检查每个 gap 区域：
+- 审核：对照原始窗口（见 §2.1）起点行号（第一行的全局行号），检查每个 gap 区域：
   - `[窗口起点, items[0].start_line - 1]`
   - `[items[i].end_line + 1, items[i+1].start_line - 1]`，i=0..N-2
 - gap 内若有任何条目起始标记（`**定义 X.Y**` / `**例 X.Y**` / `**性质 X.Y**` / `**引理 X.Y**` / `**命题 X.Y**` / `**公式 X.Y**` / `**推论 X.Y**` / `**注 X.Y**` / `\begin{{definition}}` / `\begin{{example}}` / `Definition X.Y` / `Example X.Y` 等）→ **改写**对应位置或**插入**新条目

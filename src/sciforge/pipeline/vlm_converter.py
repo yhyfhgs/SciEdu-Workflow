@@ -454,6 +454,35 @@ class VlmConverter:
                         rate_limit_total_budget=self.rate_limit_total_budget,
                     )
                 except RetryExhausted as exc:
+                    err_str = str(getattr(exc, "last_exc", "") or "")
+                    # MiniMax 等 provider 的内容审核**误判**（单张图触发 1026/new_sensitive）：
+                    # 整批失败会把整批页全丢 → 回退**逐页识别**，只损失被误判的那一页。
+                    is_content_flag = any(
+                        s in err_str.lower() for s in ("sensitive", "new_sensitive", "1026")
+                    )
+                    if is_content_flag and len(batch_page_nums_0based) > 1:
+                        logger.warning(
+                            "vlm_batch_sensitive_fallback_perpage",
+                            file=file_path.name,
+                            pages=f"{page_start_1based}-{page_end_1based}",
+                            detail=err_str[:160],
+                        )
+                        async for tup in self._recognize_pages_individually(
+                            doc=doc,
+                            page_nums_0based=batch_page_nums_0based,
+                            total_pages=total_pages,
+                            output_dir=output_dir,
+                            prev_md_tail=prev_md_tail,
+                            file_path=file_path,
+                            assets_dir=assets_dir,
+                            max_retries=max_retries,
+                        ):
+                            if not tup[4] and tup[2].strip():
+                                prev_md_tail = self._tail_lines(tup[2])
+                            yield tup
+                        page_idx = batch_end_excl
+                        continue
+
                     logger.error(
                         "vlm_batch_failed",
                         file=file_path.name,
@@ -487,6 +516,79 @@ class VlmConverter:
 
         finally:
             doc.close()
+
+    async def _recognize_pages_individually(
+        self,
+        *,
+        doc: Any,
+        page_nums_0based: list[int],
+        total_pages: int,
+        output_dir: Path,
+        prev_md_tail: str,
+        file_path: Path,
+        assets_dir: Path,
+        max_retries: int,
+    ) -> AsyncGenerator[tuple[int, int, str, Path, bool], None]:
+        """整批被内容审核拒绝时的**逐页回退**：逐张图单独识别。
+
+        只让真正被误判的那一页 ``is_failed=True``，其余页正常恢复。每页落盘
+        ``page_NNN-NNN.md``（单页范围），resume 时可命中跳过。
+        """
+        from sciforge.pipeline.retry import RetryExhausted, with_retry
+
+        for pno in page_nums_0based:
+            p1 = pno + 1
+            cache_path = output_dir / f"page_{p1:03d}-{p1:03d}.md"
+            if cache_path.exists():
+                md_cached = cache_path.read_text(encoding="utf-8")
+                if md_cached.strip():
+                    prev_md_tail = self._tail_lines(md_cached)
+                    yield (p1, p1, md_cached, cache_path, False)
+                    continue
+
+            images = await asyncio.to_thread(self._render_batch_images, doc, [pno])
+
+            async def _call(_imgs: list[bytes] = images, _p: int = pno) -> str:
+                return await self._convert_batch(
+                    page_nums=[_p],
+                    images=_imgs,
+                    total_pages=total_pages,
+                    prev_context=prev_md_tail,
+                )
+
+            try:
+                raw_md = await with_retry(
+                    _call,
+                    max_attempts=max_retries,
+                    base_delay=2.0,
+                    on_retry=lambda i, e: logger.warning(
+                        "vlm_page_retry",
+                        file=file_path.name,
+                        page=p1,
+                        attempt=i,
+                        error=str(e)[:160],
+                    ),
+                    rate_limit_base_sleep=self.rate_limit_base_sleep,
+                    rate_limit_max_sleep=self.rate_limit_max_sleep,
+                    rate_limit_total_budget=self.rate_limit_total_budget,
+                )
+            except RetryExhausted as exc:
+                # 单页仍被拒（确属内容审核误判或图损坏）→ 只丢这一页
+                logger.error(
+                    "vlm_page_failed",
+                    file=file_path.name,
+                    page=p1,
+                    detail=str(getattr(exc, "last_exc", "") or "")[:160],
+                )
+                yield (p1, p1, "", cache_path, True)
+                continue
+
+            md_text = self._crop_figures_from_md(
+                raw_md, doc, [pno], file_path.stem, assets_dir
+            )
+            cache_path.write_text(md_text, encoding="utf-8")
+            prev_md_tail = self._tail_lines(md_text)
+            yield (p1, p1, md_text, cache_path, False)
 
     def _render_pdf_page_with_poppler(self, pdf_path: Path, page_number_1based: int) -> bytes:
         renderer = shutil.which("pdftocairo") or shutil.which("pdftoppm")

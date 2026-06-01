@@ -96,12 +96,13 @@
 |---|---|---|---|
 | `category` | string | ✅ | `"knowledge"` 或 `"question"` |
 | `item_type` | string | ✅ | 属于学科允许列表（见 §4） |
+| `question_form` | string | ⬜ | **题目形式**（与解题类别正交）：题面含 A/B/C/D 选项→`"choice"`（多选→`"multiple_choice"`）；含下划线/空格待填→`"fill_blank"`；"判断正误/是否成立"→`"true_false"`；一句话简答→`"short_answer"`；常规解答/证明大题→`"subjective"`。`knowledge` 或无法判定→`""` |
 | `number` | string | ✅ | 原文显式编号；无则 `""` |
 | `structural_context` | object | ✅ | 固定 6 键（chapter/section/subsection × title/number），无值填 `""` |
 | `corrected_content` | string | ✅ | 非空；条目主体的**逐字原文** |
 | `corrected_proof` | string\|null | ✅ | 定理/引理/推论/命题类有证明、或定义/性质/公式后接推导 → 逐字原文；否则 `null`（**定义/性质/公式无证明是常态**） |
 | `corrected_solution` | string\|null | ✅ | 例题/习题/问题有解答 → 逐字原文；否则 `null` |
-| `solution_status` | string | ✅ | `"complete"` 或 `"no_solution_in_source"`（见 §5） |
+| `solution_status` | string | ✅ | `"complete"` / `"no_solution_in_source"` / `"solution_deferred"`（见 §5） |
 | `start_line` | int | ✅ | ≥1，条目首行全局行号 |
 | `end_line` | int | ✅ | ≥`start_line`，**含** proof/solution 末行 |
 
@@ -147,6 +148,7 @@
 | 窗口内完整看到论证或解答段落 | `"complete"` | 按 item 性质填对应字段，至少一个非 null |
 | 定义/性质/公式/备注/方法类，已看到下一条目或章节标题（这类条目本就常无证明） | `"no_solution_in_source"` | **两个都 `null`**（合法） |
 | 定理/引理/推论/命题已看到下一条目或章节标题，中间确无证明 | `"no_solution_in_source"` | **两个都 `null`** |
+| 习题/例题，原文**明示**"答案见附录/章末/习题解答"（答案存在但不在此处） | `"solution_deferred"` | **两个都 `null`**；这是有意为之，**不触发** near-tail 拒绝，留待跨章节回填 |
 | 无法明确确认 | — | **不要进入 items**，留给下一窗口；设 `stop_reason="incomplete_at_tail"` |
 
 **字段选择示例**（按 item 性质，不按原文标签）：

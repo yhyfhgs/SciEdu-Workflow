@@ -27,7 +27,11 @@ from sciforge.pipeline.retry import (
     RetryExhausted,
     call_llm_json_with_schema_retry_with_feedback,
 )
-from sciforge.prompts.templates import get_extract_stage1_review_template
+from sciforge.prompts.templates import (
+    build_pipeline_prompt_io,
+    get_extract_stage1_review_parts,
+    get_extract_stage1_review_template,
+)
 
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
@@ -60,7 +64,12 @@ class Stage1Review:
         self.config = config
         self.checkpoint_root = checkpoint_root
         self.discipline = discipline
-        self.prompt_template = get_extract_stage1_review_template(discipline)
+        self.prompt_cache_enabled = bool(getattr(config, "pipeline_prompt_cache_enabled", True))
+        self.system_prompt, self.user_template = build_pipeline_prompt_io(
+            get_extract_stage1_review_parts(discipline),
+            get_extract_stage1_review_template(discipline),
+            self.prompt_cache_enabled,
+        )
         self.enabled: bool = bool(
             getattr(config, "stage1_review_enabled", True)
             and getattr(config, "extract_review_enabled", True)
@@ -158,7 +167,7 @@ class Stage1Review:
             retry_block = ""
             if feedback:
                 retry_block = f"## 上一次输出被拒绝，错误信息（请修正）\n{feedback}\n"
-            return self.prompt_template.format(
+            return self.user_template.format(
                 window_text=window_text,
                 items_json=items_json,
                 retry_feedback=retry_block,
@@ -170,6 +179,7 @@ class Stage1Review:
                 self.llm,
                 build_prompt,
                 model=BatchReviewPayloadLLM,
+                system=self.system_prompt,
                 max_attempts=self.max_retries,
                 base_delay=self.retry_base_delay,
                 validation_context={

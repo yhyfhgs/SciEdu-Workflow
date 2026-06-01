@@ -37,7 +37,11 @@ from sciforge.pipeline.retry import (
     RetryExhausted,
     call_llm_json_with_schema_retry_with_feedback,
 )
-from sciforge.prompts.templates import get_extract_stage1_initial_template
+from sciforge.prompts.templates import (
+    build_pipeline_prompt_io,
+    get_extract_stage1_initial_parts,
+    get_extract_stage1_initial_template,
+)
 
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
@@ -64,10 +68,29 @@ _ITEM_MARKER_RE = re.compile(
     r"(?:定[理义]|引理|推论|命题|性质|公式|例题?|习题|问题|注记?|备注|方法|"
     r"结论|法则|算法)"
     r"[\s\u00a0\u3000]{0,3}[\d\uff10-\uff19X]"
-    # 英文标题 + 编号
+    # 英文全称 + 编号（含物理 Law/Principle/Axiom）
     r"|(?:Theorem|Definition|Lemma|Corollary|Proposition|Property|"
-    r"Example|Exercise|Problem|Remark|Formula|Method|Algorithm)"
+    r"Example|Exercise|Problem|Remark|Formula|Method|Algorithm|Law|Principle|Axiom)"
     r"\s+[\d.]"
+    # 英文缩写 + 编号（Thm/Def/Prop/Cor/Lem/Pf/Rmk/Eg）
+    r"|(?:Thm|Def|Prop|Cor|Lem|Pf|Rmk|Eg)\.?\s*\d"
+    r")",
+    re.IGNORECASE,
+)
+
+# 条目**弱信号**（strict 模式：无强标记但任一弱信号命中 → 仍不跳窗，交 LLM 判定）。
+# 覆盖 OCR 把关键字彻底糊掉、或裸编号/选项/解答/章节标题等不含标准关键字的情形，
+# 是"绝不静默丢条目"的第二道防线（#8）。在已剥离行号前缀的窗口文本上匹配。
+_WEAK_SIGNAL_RE = re.compile(
+    r"(?:"
+    r"\d+\s*[.．]\s*\d+"  # 编号样式 3.2 / 3．2
+    r"|\\begin\{"  # 任意 LaTeX 环境
+    r"|\\underline|＿{2,}|_{3,}|[（(]\s*[）)]"  # 填空（下划线/空括号）
+    r"|证\s*明|证[:：.]|解\s*答|解[:：.]|答[:：.]|Proof|Solution|Sol[.:]"  # 解答/证明
+    r"|(?m:^\s*[(（]?[A-Da-d][)）.、])"  # 选择项 A. / (B)
+    r"|(?m:^\s*\d{1,3}\s*[.、．)）])"  # 行首裸编号习题 12. / 3、 / 5)
+    r"|(?m:^\s*#{1,6}\s)|\\(?:sub)*section\{"  # markdown / LaTeX 章节标题
+    r"|第\s*[0-9０-９一二三四五六七八九十]+\s*[章节]"  # 中文章节
     r")",
     re.IGNORECASE,
 )
@@ -89,7 +112,13 @@ class Stage1Extract:
         self.checkpoint_root = checkpoint_root
         self.discipline = discipline
         self.order_index_allocator = order_index_allocator
-        self.prompt_template = get_extract_stage1_initial_template(discipline)
+        # Prompt caching（#9）：~10k 字静态提取指令放 system（每窗口命中缓存），窗口正文留 user。
+        self.prompt_cache_enabled = bool(getattr(config, "pipeline_prompt_cache_enabled", True))
+        self.system_prompt, self.user_template = build_pipeline_prompt_io(
+            get_extract_stage1_initial_parts(discipline),
+            get_extract_stage1_initial_template(discipline),
+            self.prompt_cache_enabled,
+        )
 
         # Runtime 状态
         self.line_buffer: list[str] = []
@@ -124,6 +153,11 @@ class Stage1Extract:
         self._max_examples = 3
         self.fast_skip_enabled: bool = bool(
             getattr(config, "empty_window_fast_skip", True)
+        )
+        # strict（默认 True，高召回）：fast-skip 不仅看强标记，还须无弱信号才跳窗。
+        # 设 False 退回旧行为（仅强标记预检）。fast_skip_enabled=False 则完全不跳。
+        self.fast_skip_strict: bool = bool(
+            getattr(config, "extract_fast_skip_strict", True)
         )
 
     # ── 主循环 ─────────────────────────────────────────
@@ -226,10 +260,19 @@ class Stage1Extract:
             window_last_int = int(window_last_line) if isinstance(window_last_line, int) else 0
             window_start_int = self.line_offset + 1
 
-            # ── 第一层：条目标记预检（zero-cost 跳过无条目区域）────
-            has_markers = _ITEM_MARKER_RE.search("".join(window)) is not None
-            if self.fast_skip_enabled and not has_markers and not is_last:
-                # 无条目标记且不是最后窗口 → 直接跳过，不调 LLM
+            # ── 第一层：结构感知的条目预检（zero-cost 跳过真正空白区域）────
+            # 在剥离行号前缀的文本上匹配，避免前缀干扰 ^ 锚点。
+            clean_window = self._clean_window_text(window)
+            has_markers = _ITEM_MARKER_RE.search(clean_window) is not None
+            if has_markers:
+                window_empty = False
+            elif self.fast_skip_strict:
+                # strict：无强标记时还要确认无弱信号（裸编号/选项/解答/章节标题/填空）
+                window_empty = _WEAK_SIGNAL_RE.search(clean_window) is None
+            else:
+                window_empty = True  # 非 strict：退回旧行为（仅强标记预检）
+            if self.fast_skip_enabled and window_empty and not is_last:
+                # 无任何条目迹象且不是最后窗口 → 直接跳过，不调 LLM
                 slide = window_len  # 跳整个窗口（比只跳 base_window 更激进）
                 logger.info(
                     "stage1_window_fast_skip",
@@ -293,13 +336,13 @@ class Stage1Extract:
                 self.consecutive_empty += 1
                 at_max = self.current_window_size >= self.max_window
 
-                # ── 第三层：no_items_found + 无标记 → 快速跳过整个窗口 ──
+                # ── 第三层：no_items_found + 无任何信号 → 快速跳过整个窗口 ──
                 if (
                     self.fast_skip_enabled
                     and payload.stop_reason == "no_items_found"
-                    and not has_markers
+                    and window_empty
                 ):
-                    slide = window_len  # LLM 确认无条目 + regex 也无标记 → 跳整个窗口
+                    slide = window_len  # LLM 确认无条目 + regex 也无信号 → 跳整个窗口
                     logger.info(
                         "stage1_no_items_fast_skip",
                         window=self.current_window_size,
@@ -461,10 +504,11 @@ class Stage1Extract:
             retry_block = ""
             if feedback:
                 retry_block = f"## 上一次输出被拒绝，错误信息（请修正）\n{feedback}\n"
-            base = self.prompt_template.format(
+            base = self.user_template.format(
                 current_block=chunk_text,
                 retry_feedback=retry_block,
             )
+            # extra_sections（窗口行号基准/前序示例/编号连续性）是动态的，归入 user
             if extra_sections:
                 return "\n".join(extra_sections) + "\n\n" + base
             return base
@@ -474,6 +518,7 @@ class Stage1Extract:
             self.llm,
             build_prompt,
             model=BatchItemExtractPayloadLLM,
+            system=self.system_prompt,
             max_attempts=self.max_retries,
             base_delay=self.retry_base_delay,
             validation_context={"window_last_line": window_last_line},
@@ -568,6 +613,20 @@ class Stage1Extract:
         """给每行加全局行号前缀"""
         lines = md_text.splitlines(keepends=True)
         return [f"{start_line_no + i:>7d} | {ln}" for i, ln in enumerate(lines)]
+
+    @staticmethod
+    def _clean_window_text(window: list[str]) -> str:
+        """剥离每行的 `全局行号 | ` 前缀，返回纯正文（供标记/信号正则匹配）。
+
+        前缀会干扰 ^ 锚点（如选择项 `^A.`），故预检前先去掉。
+        """
+        parts: list[str] = []
+        for ln in window:
+            if "|" in ln:
+                parts.append(ln.split("|", 1)[1])
+            else:
+                parts.append(ln)
+        return "".join(parts)
 
     def _find_buffer_idx(self, global_line_no: int) -> int:
         if not self.line_buffer:

@@ -31,9 +31,21 @@
 - **Stage1Review** (`stages/stage1_review.py`)：原 window + 批量 items → LLM 批量校验修正（专门修复 exercise/example/problem 过早标 no_solution_in_source 的 bug）→ 拆成 `ReviewedItem` 推入 `q_rev`
 - **Stage2Annotate** (`stages/stage2_annotate.py`)：单条 item + tag_tree + taxonomy → LLM 打 tags/difficulty/subject/taxonomy_path → `q_ann`
 - **Stage2Review** (`stages/stage2_review.py`)：单条 annotation 审核（tag 格式/复用、taxonomy 存在、difficulty 校准）→ `q_done`
-- **Stage3Persist** (`stages/stage3_persist.py`)：合并 item + annotation → `KnowledgePoint` / `Question` → `storage.save_batch` + `tag_tree.insert_path`（无 LLM，按 item_id 严格递增入库）
+- **Stage3Persist** (`stages/stage3_persist.py`)：合并 item + annotation → `KnowledgePoint` / `Question` → `storage.save_batch` + `tag_tree.insert_path`（无 LLM，按 item_id 严格递增入库）。入库前经 `TagCanonicalizer` 做 tag 受控词表统一（#6）
 
-入口命令：`uv run sciforge parse run <path>`。
+**入库后确定性 post-pass**（`orchestrator` 块 10.5–10.8，无 LLM、可独立开关）：
+- `numbering_audit` → `numbering_report.json`（#2 编号连续性兜底）
+- `answer_linker`：章末/附录答案并回题干 `solution_content`（#3）
+- `relation_inference`：`corollary_of`/`tests`/`successor` 边 → `item_relations` 表（#6 知识图谱）
+- `reconciliation` → `reconciliation_report.json`：复核重复条目 + 类型误判（#7，不改库）
+
+**Task0 鲁棒性**：VLM 整批被内容审核误判（如 MiniMax 1026 sensitive）时自动回退**逐页识别**（`_recognize_pages_individually`），只丢被误判页不丢整批。
+
+**单文档内并行提取**（#1，opt-in，`intra_doc_parallel_extract`）：`document_segmenter` 按 section 分段（覆盖不变量断言）+ `parallel_extract.ParallelSegmentExtractor` 段级并发 + `assign_order_index` 按「段序+段内序」保序重排。
+
+**Prompt caching / 思考预算（#9）**：各 stage 静态指令拆到可缓存 system 前缀（`templates.split_static_dynamic`）；推理模型（MiniMax-M3 等）按 stage 设 `thinking` budget 控制思考长度，经 anthropic 兼容网关时走 `extra_body` 透传。
+
+入口命令：`uv run sciforge parse run <path>`；入库后只读体检：`uv run sciforge parse validate <db>`。
 
 **Pipeline 主线 LLM 任务**（可分别配置 provider / model）：
 

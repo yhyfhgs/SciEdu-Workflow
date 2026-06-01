@@ -1,7 +1,33 @@
 # SciForge 开发进度总览
 
-> 更新日期: 2026-05-31 CST
+> 更新日期: 2026-06-02 CST
 > 当前阶段: 本地 CLI MVP。主线是 **5 阶段并发 Pipeline** + **多 Agent 生成系统** + **学科参数化**。
+
+---
+
+## 0. 2026-06 提取质量重构（9 项诉求，已完成 #1–#9 核心）
+
+围绕用户 9 项诉求做了系统性重构，schema 升至 **v8**：
+
+- **#2 不漏 / #8 不重不分离**：结构感知 fast-skip（强标记+弱信号双层）杜绝静默丢条目；
+  `content_hash` UNIQUE 写入去重；`numbering_audit` 编号连续性兜底。
+- **#3 题答精准绑定**：`solution_status` 三态 + `answer_linker` 跨章节回填（习题在正文、答案在附录）。
+- **#4 字段规范化**：`number_canonical` + `seq_*` 自动派生（消除 "1" vs "第1题"）；DB CHECK 约束。
+- **#5 类型双维度**：`question_form`（选择/填空/判断/解答）与 `question_type`（认知类别，含
+  反例/构造性证明/存在性证明…）正交；`SingleItemExtractLLM.question_form` 由 Stage1 识别。
+- **#6 tag/知识图谱**：`tag_canonicalizer` 受控词表统一（别名表 + 双向一致性）；
+  `relation_inference` 确定性推断 `corollary_of/tests/successor` 边写 `item_relations`。
+- **#7 自动纠错**：`reconciliation` 复核重复条目 + 类型误判（报告式，不改库）。
+- **#9 token 效率**：prompt caching（静态指令拆可缓存 system 前缀）；推理模型 `thinking` 预算分级
+  （MiniMax-M3 实测单窗口 127s→3.7s）；经 `extra_body` 透传兼容老 SDK / anthropic 兼容网关。
+- **#1 单文档并行（opt-in）**：`document_segmenter`（覆盖不变量断言）+ `parallel_extract`
+  段级并发 + `assign_order_index` 段序保序重排。
+- **鲁棒性**：VLM 内容审核误判（MiniMax 1026）自动回退逐页识别；`parse validate` 只读体检命令。
+- **测试**：573 全量通过，ruff + mypy 干净（82 源文件）。
+
+> 注：真实教材端到端跑通受 provider 限制（MiniMax-M3 推理慢、需配 `thinking` budget；
+> 已验证组件级 + 直连提取产出正确）。生产建议提取/标注用快模型（Kimi K2 / 4o-mini），
+> MiniMax-M3 留给 generate/solve。
 
 ---
 
@@ -10,7 +36,7 @@
 | 模块 | 状态 | 当前进度 |
 |------|------|----------|
 | 项目脚手架 | ✅ 完成 | `uv` + Python 3.11+ + Pydantic v2 + Typer/Rich + structlog |
-| SQLite 存储 | ✅ 完成 | schema v7，`knowledge_points` / `questions` + FTS5 + `discipline_tag_trees` |
+| SQLite 存储 | ✅ 完成 | schema **v8**：`knowledge_points`/`questions`（+ number_canonical/seq_*/question_form/content_hash UNIQUE）+ FTS5 + `discipline_tag_trees` + `item_relations` 边表 |
 | Pipeline 主线 | ✅ 完成 | Task0 + 5 Stage + 4 queue；Stage1 已升级为**批量窗口提取**，Stage2 支持可选并发 |
 | LLM 配置 | ✅ 完成 | v2 TOML schema：`[providers.*]` + `[tasks.*]`，支持 provider_ref、env 插值、per-model 并发限流 |
 | 多学科参数化 | ✅ 完成 | 顶层 `Discipline` + `DisciplineSpec`；数学/物理 spec 已落地 |

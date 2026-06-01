@@ -658,3 +658,103 @@ def db_stats(
     for key, value in stats.items():
         table.add_row(key, str(value))
     console.print(table)
+
+
+@parse_app.command("validate")
+def validate(
+    db: Path = typer.Argument(..., help="SQLite 数据库路径", exists=True),
+) -> None:
+    """入库后只读体检：核对各 phase 的提取效果（#2/#3/#4/#5/#6/#8）。
+
+    跑完 `parse run` 后执行本命令，得到提取总量/类型双维度分布/题答绑定率/
+    编号规范化/去重/编号缺口/知识图谱边的结构化报告与逐项判定。不修改数据。
+    """
+    from rich.table import Table
+
+    from sciforge.pipeline.numbering_audit import audit_numbering
+    from sciforge.storage.sqlite_backend import SQLiteStorageBackend
+
+    backend = SQLiteStorageBackend(db)
+    rep = backend.validation_report()
+
+    # 编号缺口：逐 source_file 跑 numbering_audit 汇总
+    gap_groups = 0
+    gap_samples: list[dict[str, Any]] = []
+    for sf in rep["source_files"]:
+        if sf == "(空)":
+            continue
+        audit = audit_numbering(backend.numbering_rows(sf))
+        gap_groups += len(audit["suspected_gaps"])
+        gap_samples.extend(audit["suspected_gaps"][:2])
+    backend.close()
+
+    kp_t, q_t = rep["kp_total"], rep["q_total"]
+    total = kp_t + q_t
+
+    def _dist_str(d: dict[str, int], top: int = 8) -> str:
+        items = list(d.items())[:top]
+        more = f"  …(+{len(d) - top})" if len(d) > top else ""
+        return "  ".join(f"{k}:{v}" for k, v in items) + more if items else "(无)"
+
+    # ── 概览 ──
+    overview = Table(title=f"体检报告: {db.name}", show_header=True)
+    overview.add_column("维度", style="cyan", no_wrap=True)
+    overview.add_column("结果", style="white")
+    overview.add_row("条目总数", f"知识点 {kp_t} + 题目 {q_t} = {total}")
+    overview.add_row("来源文件数", str(len([s for s in rep["source_files"] if s != "(空)"])))
+    overview.add_row("[#5] 知识点类型", _dist_str(rep["kp_by_type"]))
+    overview.add_row("[#5] 题目认知类别", _dist_str(rep["q_by_type"]))
+    overview.add_row("[#5] 题目形式", _dist_str(rep["q_by_form"]))
+    rel_detail = _dist_str(rep["relations_by_type"])
+    overview.add_row("[#6] 知识图谱边", f"{rep['relations_total']}  ({rel_detail})")
+    console.print(overview)
+
+    # ── 逐项判定 ──
+    checks = Table(title="逐项判定", show_header=True)
+    checks.add_column("检查项", style="cyan", no_wrap=True)
+    checks.add_column("判定", no_wrap=True)
+    checks.add_column("明细", style="white")
+
+    def _verdict(ok: bool, warn: bool = False) -> str:
+        if ok:
+            return "[green]✅ PASS[/green]"
+        return "[yellow]⚠ WARN[/yellow]" if warn else "[red]❌ FAIL[/red]"
+
+    # #8 去重（UNIQUE 不变量，硬性）
+    checks.add_row(
+        "[#8] content_hash 去重",
+        _verdict(rep["dup_hash_groups"] == 0),
+        f"表内重复组 {rep['dup_hash_groups']}（应为 0）",
+    )
+    # #4 编号规范化格式
+    checks.add_row(
+        "[#4] 题号规范化",
+        _verdict(rep["dirty_canonical"] == 0, warn=True),
+        f"含非[0-9.]字符的 number_canonical: {rep['dirty_canonical']}；"
+        f"覆盖 KP {rep['kp_canonical_cov']}/{kp_t} · Q {rep['q_canonical_cov']}/{q_t}",
+    )
+    # #3 题答绑定
+    miss = rep["q_missing_solution"]
+    bind_pct = (rep["q_with_solution"] / q_t * 100) if q_t else 100.0
+    checks.add_row(
+        "[#3] 题答绑定率",
+        _verdict(miss == 0, warn=True),
+        f"{rep['q_with_solution']}/{q_t} 题有解答 ({bind_pct:.0f}%)；"
+        f"缺解答 {miss}（部分习题原文确无解答属正常，需人工抽查）",
+    )
+    # #2 编号连续性
+    checks.add_row(
+        "[#2] 编号连续性",
+        _verdict(gap_groups == 0, warn=True),
+        f"疑似缺号分组 {gap_groups}"
+        + (f"；样例 {gap_samples[:2]}" if gap_samples else ""),
+    )
+    console.print(checks)
+
+    if rep["dup_hash_groups"] == 0 and rep["dirty_canonical"] == 0 and gap_groups == 0:
+        success("核心不变量全部通过（去重/编号格式/编号连续性）")
+    else:
+        console.print(
+            "[yellow]存在 WARN 项：编号缺口/缺解答多为原文特性，"
+            "请结合 items/persisted/ 镜像与原文人工抽查少量样本确认。[/yellow]"
+        )

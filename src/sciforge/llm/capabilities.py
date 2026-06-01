@@ -40,6 +40,10 @@ PROVIDER_CAPABILITIES: dict[LLMProvider, frozenset[str]] = {
             "top_p",
             "top_k",
             "stop_sequences",
+            # thinking：Anthropic 格式网关（MiniMax / Kimi / DeepSeek 等）多支持。
+            # 关键用途：MiniMax-M3 等推理模型用 thinking={"type":"disabled"} 关思考，
+            # 提取/标注这类高频抄写任务可提速 3×+（实测 38s→11s，thinking 4276→0 字）。
+            "thinking",
             "extra_body",
         }
     ),

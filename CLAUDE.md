@@ -43,7 +43,7 @@ uv run mypy
 uv run sciforge --help   # 或 `uv run sf --help`
 
 # Pipeline（默认 VLM 后端 + 5 页/批 + 500 行/窗口，学科默认 math）
-# schema v7 DB：任何 v7 之前的旧 DB 不兼容 → 首次升级需加 --restart 重建 DB
+# schema v8 DB：任何 v8 之前的旧 DB 不兼容 → 首次升级需加 --restart 重建 DB
 uv run sciforge parse run path/to/file --db data/sciforge.db
 
 # 处理物理材料
@@ -95,9 +95,13 @@ src/sciforge/
 │                #   stages/stage1_review.py      (batch 校验 + 条件化跳过 low-risk batch),
 │                #   stages/stage2_annotate.py    (单条打标 + 可选 N-worker 并发 + 局部 taxonomy 注入),
 │                #   stages/stage2_review.py      (annotation 审核 + 条件化跳过 + N-worker 并发),
-│                #   stages/stage3_persist.py     (合并 KP/Question 入库，无 LLM),
-│                #   llm_schemas (Batch*/Single* Pydantic 强校验 + exercise near-tail guard),
-│                #   tag_tree (带 generation 缓存) / taxonomy_validator (支持 branch_filter),
+│                #   stages/stage3_persist.py     (合并 KP/Question 入库 + tag 受控词表统一，无 LLM),
+│                #   llm_schemas (Batch*/Single* Pydantic 强校验 + exercise near-tail guard + question_form),
+│                #   tag_tree (带 generation 缓存) / tag_canonicalizer (#6 受控词表) /
+│                #     taxonomy_validator (支持 branch_filter),
+│                #   入库后 post-pass(无 LLM): numbering_audit(#2) / answer_linker(#3) /
+│                #     relation_inference(#6 知识图谱边) / reconciliation(#7 复核),
+│                #   document_segmenter + parallel_extract (#1 单文档并行, opt-in),
 │                #   resume_state / retry (call_llm_json_with_schema_retry_with_feedback 带指标日志) /
 │                #     audit / migrate
 ├── agents/      # 多 Agent 协作系统（生成/推理，与 pipeline 分离）
@@ -109,9 +113,10 @@ src/sciforge/
 │                #   templates/pipeline|generation|solving|verification/*.txt
 ├── core/sentinel.py  # 共享 SENTINEL 单例（5 stage queue 通知流结束）
 ├── storage/     # 存储：protocol.py(StorageBackend),
-│                #   sqlite_backend.py(含 discipline 列 + filter + SchemaVersionMismatch),
-│                #   schema.sql (v7 — 保留 source_file 用于追溯来源；无 source_chapter/exam_*)
-├── cli/         # CLI: main.py + parse.py (run/run-book/audit/migrate-legacy/db-stats)
+│                #   sqlite_backend.py(discipline 列 + filter + SchemaVersionMismatch +
+│                #     relation_rows/save_relations/reconciliation_rows/validation_report),
+│                #   schema.sql (v8 — number_canonical/seq_*/question_form/content_hash UNIQUE/item_relations 边表)
+├── cli/         # CLI: main.py + parse.py (run/run-book/audit/validate/migrate-legacy/db-stats)
 │                #   + generate.py (free/solve/batch/lecture + variant/evolve/solve-deep 占位)
 │                #   + config_cmd.py (config show/validate)
 └── config/      # 配置：settings.py (env_prefix=SCIFORGE_), logging.py
@@ -182,7 +187,7 @@ logical_document  (单文件 or 多个分卷)
 - **OrderIndexAllocator**：目录并发处理多文件时，单一全局 counter + asyncio.Lock 保证跨文件 item_id 不重复
 - `tag` 是有序的 `english:中文` 段列表（如 `["math:数学","algebra:代数","group_theory:群论"]`）
 - 断点恢复：state.json 记录 `next_item_id / current_window_size / consecutive_empty / stageN_extracted_count / stageN_completed / last_persisted_item_id / tag_tree_json / vlm_batches_done`
-- **v7 之前的 DB / 旧 state.json 不兼容**：启动时检测 → raise SchemaVersionMismatch → 用户加 `--restart` 清库重跑
+- **v8 之前的 DB / 旧 state.json 不兼容**：启动时检测 → raise SchemaVersionMismatch → 用户加 `--restart` 清库重跑
 - 多文件分卷：`*_part_N_M.ext` 自动按页码分组，单个 logical_document 顺序识别
 - 目录并发：每 logical_document 独立 `SQLiteStorageBackend` 实例（WAL + busy_timeout）+ 共享 OrderIndexAllocator
 
@@ -191,6 +196,13 @@ logical_document  (单文件 or 多个分卷)
 - `review_conditional_enabled: bool = True` — Phase 4 条件化 review
 - `stage2_annotate_concurrency: int = 1` / `stage2_review_concurrency: int = 1` — Phase 5 并发 worker 数（>1 启用 ReorderBuffer）
 - `qgen_lightweight_prefilter: bool = True` / `qgen_merge_difficulty_into_verify: bool = True` — Phase 6 QGen 优化
+- `pipeline_prompt_cache_enabled: bool = True` — #9 静态指令拆到可缓存 system 前缀（纯 Anthropic 自动缓存）
+- `answer_linking_enabled / relation_inference_enabled / reconciliation_enabled: bool = True` — 入库后 post-pass 开关（#3/#6/#7）
+- `intra_doc_parallel_extract: bool = False` / `intra_doc_segment_concurrency: int = 4` — #1 单文档内并行（opt-in）
+
+**字段规范化与类型双维度（#4/#5）**：`KnowledgePoint/Question` 含 `number_canonical`（由 `number` 自动派生，消除 "1" vs "第1题"）+ `seq_chapter/seq_section/seq_index`；`Question.question_form`（选择/填空/判断/解答，与 `question_type` 认知类别正交，Stage1 从题面识别）。`DisciplineSpec` 含 `allowed_question_forms` / `tag_aliases`（受控词表别名）/ `branch_keywords`。
+
+**推理模型思考控制（#9）**：`thinking={"type":"disabled"}` 或 `{"type":"enabled","budget_tokens":N}` 经 `extra_body` 透传（兼容老 SDK + anthropic 兼容网关如 MiniMax/Kimi）；`ANTHROPIC_COMPATIBLE` 能力矩阵已放行 `thinking`。提取等高频任务务必设小 budget（MiniMax-M3 不限制会单窗口 >5 分钟）。
 
 **生成引擎（Agent 系统）**: `cli/generate.py` 的 `free/solve/batch/lecture` 子命令
 已接入多 Agent 系统：

@@ -62,12 +62,19 @@ class TestLLMConfigExtendedFields:
     def test_anthropic_compatible_enum_exists(self):
         assert LLMProvider.ANTHROPIC_COMPATIBLE.value == "anthropic_compatible"
 
-    def test_max_tokens_upper_bound_raised_to_200k(self):
-        # 旧限制 65536 → 新 200_000
+    def test_max_tokens_upper_bound_raised_to_1m(self):
+        # 65536 → 200_000 → 1_000_000（覆盖 MiniMax-M3 512K 输出区间）
         cfg = LLMConfig(
-            provider=LLMProvider.ANTHROPIC, api_key="test", max_tokens=100_000
+            provider=LLMProvider.ANTHROPIC, api_key="test", max_tokens=512_000
         )
-        assert cfg.max_tokens == 100_000
+        assert cfg.max_tokens == 512_000
+
+    def test_max_tokens_rejects_above_1m(self):
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test", max_tokens=2_000_000)
 
 
 # ── ProviderConfig ────────────────────────────────────────
@@ -168,13 +175,13 @@ class TestCapabilityMatrix:
         assert accepted == {"temperature": 0.5}
         assert dropped == []
 
-    def test_anthropic_compatible_excludes_thinking_metadata(self):
-        """中转通常不支持 extended thinking / metadata"""
+    def test_anthropic_compatible_caps(self):
+        """anthropic 兼容网关：放行 thinking（关思考用），仍不支持 metadata/cache_control"""
         caps = PROVIDER_CAPABILITIES[LLMProvider.ANTHROPIC_COMPATIBLE]
-        assert "thinking" not in caps
+        assert "thinking" in caps  # 现放行（经 extra_body 透传）
         assert "metadata" not in caps
         assert "cache_control" not in caps
-        # 但支持基础参数
+        # 基础参数
         assert "top_p" in caps
         assert "extra_body" in caps
 

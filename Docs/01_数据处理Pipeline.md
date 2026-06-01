@@ -515,7 +515,7 @@ uv run sciforge parse run <path> [options]
 
 ## 14. 数据模型
 
-### 14.1 KnowledgePoint / Question（DB schema v7）
+### 14.1 KnowledgePoint / Question（DB schema v8，详见 Docs/05 顶部 v8 变更）
 
 ```python
 class KnowledgePoint(BaseModel):
@@ -574,9 +574,12 @@ ls data/checkpoint/<file_hash>/recognize/file_000_*/
 # 3. DB 统计
 uv run sciforge parse db-stats data/sciforge.db
 
-# 4. order_index 单调递增 + schema v7 确认
-sqlite3 data/sciforge.db "PRAGMA user_version"  # 应为 7
-sqlite3 data/sciforge.db ".schema knowledge_points"  # 含 source_file，无 source_chapter/exam_*
+# 4. order_index 单调递增 + schema v8 确认
+sqlite3 data/sciforge.db "PRAGMA user_version"  # 应为 8
+sqlite3 data/sciforge.db ".schema knowledge_points"  # 含 number_canonical/seq_*/content_hash
+
+# 5. 入库后只读体检（提取量/类型双维度/题答绑定/编号/去重/知识图谱边）
+uv run sciforge parse validate data/sciforge.db
 sqlite3 data/sciforge.db "SELECT order_index, kp_type, number FROM knowledge_points ORDER BY order_index LIMIT 20"
 
 # 5. tag 格式

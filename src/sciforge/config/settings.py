@@ -192,7 +192,22 @@ class AppConfig(BaseSettings):
 
     # ── Pipeline 优化开关（Phase 2.5 / 4 / 5）──────────────
     empty_window_fast_skip: bool = True
+    # 结构感知 fast-skip（默认 True，高召回）：无强标记时还须无弱信号（裸编号/选项/
+    # 解答/章节/填空）才跳窗 → 杜绝静默丢条目（#8）。设 False 退回仅强标记预检。
+    extract_fast_skip_strict: bool = True
     review_conditional_enabled: bool = True
+    # 跨章节题答回填（#3）：入库后把章末/附录答案并回题干 solution_content
+    answer_linking_enabled: bool = True
+    # 结构化关系推断（#6 知识图谱）：入库后推断 corollary_of/tests/successor 边写 item_relations
+    relation_inference_enabled: bool = True
+    # 文档级 reconciliation 复核（#7）：入库后检测重复条目/类型误判，写报告不改库
+    reconciliation_enabled: bool = True
+    # 单文档内并行提取（#1 Phase 6）：按 section 分段并发提取 + 段序保序。默认关（流式串行）。
+    intra_doc_parallel_extract: bool = False
+    intra_doc_segment_concurrency: int = 4
+    # Prompt caching（#9）：各 stage 把静态指令放 system（稳定可缓存前缀），动态输入放 user。
+    # 默认 True；设 False 退回"全部塞 user message"的合并路径（应急回滚用）。
+    pipeline_prompt_cache_enabled: bool = True
     stage2_annotate_concurrency: int = 1
     stage2_review_concurrency: int = 1
 

@@ -158,6 +158,13 @@ temperature = 0.0
 max_tokens = 32768      # 批量输出 schema，建议 16k-32k
 response_format = { type = "json_object" }   # OpenAI/Gemini 生效；Anthropic 静默丢弃
 # seed = 42   # 可选：仅 OpenAI / Gemini 支持
+#
+# ⚠️ 推理模型（MiniMax-M3 / Claude extended thinking 等）做提取/标注这类**高频抄写**任务时，
+# 默认会生成大量 thinking → 极慢（实测 MiniMax-M3 单窗口 >5 分钟）。务必按 stage 设思考预算：
+#   thinking = { type = "enabled", budget_tokens = 1024 }   # 提取：轻量推理足矣
+# 也可 { type = "disabled" } 完全关闭。经 anthropic 兼容网关时该参数自动走 extra_body 透传。
+# 各阶段建议预算：extract 1024 / review·tag 2048 / generate 6144 / solve 8192 / solve_deep 16384。
+# 非推理模型（GPT-4o-mini / Kimi K2 / Qwen-instruct）无需此项，且通常更快更适合高频提取。
 
 
 # ─── 生成引擎任务 ───
@@ -270,6 +277,19 @@ seed = 42
 
 # retry with feedback（失败时把 schema error 注入下一轮 prompt）
 # retry_feedback_enabled = true
+
+# Prompt caching（#9）：各 stage 静态指令放可缓存 system 前缀（纯 Anthropic 自动缓存）。
+# 默认 true；设 false 退回"全部塞 user message"的合并路径。
+# pipeline_prompt_cache_enabled = true
+
+# 入库后确定性 post-pass（无 LLM，可独立开关）
+# answer_linking_enabled = true            # 跨章节题答回填：章末/附录答案并回题干（#3）
+# relation_inference_enabled = true        # 结构化关系边 corollary_of/tests/successor → item_relations（#6）
+# reconciliation_enabled = true            # 复核重复条目/类型误判，写 reconciliation_report.json 不改库（#7）
+
+# 单文档内并行提取（#1，opt-in）：按 section 分段 + 段级并发提取 + 段序保序重排
+# intra_doc_parallel_extract = false
+# intra_doc_segment_concurrency = 4
 
 # Tag 树 & Taxonomy 注入 prompt 的限制
 # tag_tree_max_depth = 4

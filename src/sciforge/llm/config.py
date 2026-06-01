@@ -98,7 +98,9 @@ class LLMConfig(BaseModel):
     provider: LLMProvider = LLMProvider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
     temperature: float = Field(ge=0.0, le=2.0, default=0.7)
-    max_tokens: int = Field(ge=1, le=200_000, default=16384)
+    # 上限是对**输出 token**的 sanity 边界（≠ 上下文窗口）。设为 1M 以覆盖大输出模型
+    # （如 MiniMax-M3 支持 512K 输出）；具体上限由各 provider 按模型强制（超限返回 4xx）。
+    max_tokens: int = Field(ge=1, le=1_000_000, default=16384)
     api_key: str | None = None
     base_url: str | None = None
     timeout: int = 120

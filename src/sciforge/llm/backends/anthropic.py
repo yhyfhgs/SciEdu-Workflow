@@ -8,9 +8,13 @@ from typing import Any, cast
 import structlog
 
 from sciforge.llm.backends.base import BaseBackend
-from sciforge.llm.config import LLMConfig
+from sciforge.llm.config import LLMConfig, LLMProvider
 
 logger = structlog.get_logger()
+
+# system prompt 自动缓存阈值（字符）。低于此不主动缓存（Anthropic 对 <1024 token 块
+# 本就忽略 cache_control）；中文指令很密，>500 字基本已超最小可缓存粒度。
+_AUTO_CACHE_MIN_CHARS = 500
 
 
 class AnthropicBackend(BaseBackend):
@@ -50,15 +54,46 @@ class AnthropicBackend(BaseBackend):
     def _to_sdk_params(self, neutral: dict[str, Any]) -> dict[str, Any]:
         """中性字段 → Anthropic Messages API kwargs
 
-        Anthropic SDK 的参数命名大多与中性命名一致（temperature/max_tokens/
-        top_p/top_k/stop_sequences/thinking/metadata/service_tier/extra_body），
-        但 cache_control 必须注入到 content block 里（不是 top-level kwarg），
-        在这里剔除。
+        - cache_control 必须注入到 content block 里（不是 top-level kwarg），这里剔除。
+        - thinking 经 ``extra_body`` 透传，而非 top-level kwarg：老版 anthropic SDK 的
+          ``messages.create()`` 没有 ``thinking`` 形参会直接 TypeError；且 anthropic 兼容
+          网关（MiniMax / Kimi 等）本就从请求 body 读 ``thinking``。extra_body 是 SDK 官方
+          逃生通道，版本无关。典型用途：``thinking={"type":"disabled"}`` 关闭 MiniMax-M3 推理。
         """
-        return {k: v for k, v in neutral.items() if k != "cache_control"}
+        params = {k: v for k, v in neutral.items() if k != "cache_control"}
+        thinking = params.pop("thinking", None)
+        if thinking is not None:
+            extra = dict(params.get("extra_body") or {})
+            extra.setdefault("thinking", thinking)
+            params["extra_body"] = extra
+        return params
+
+    def _system_param(self, system: str) -> Any:
+        """把 system prompt 包成**可缓存 content block**（prompt caching 的正确落点）。
+
+        修复 D11：旧实现把 cache_control 注入到动态 user message 末尾（永不命中）；
+        正确做法是缓存**稳定的 system 前缀**。pipeline 各 stage 把 ~4k-10k 字静态指令
+        放 system → 同一 (discipline, stage) 的每次调用都命中缓存，省 ~90% 输入 token。
+
+        触发条件：纯 Anthropic provider 且 system 够长（自动），或显式 config.cache_control。
+        兼容代理默认不缓存（其能力矩阵排除 cache_control），除非显式配置。
+        """
+        if not system:
+            return system
+        auto = (
+            self.config.provider == LLMProvider.ANTHROPIC
+            and len(system) >= _AUTO_CACHE_MIN_CHARS
+        )
+        if not (self.config.cache_control or auto):
+            return system
+        spec = self.config.cache_control or {"type": "ephemeral"}
+        return [{"type": "text", "text": system, "cache_control": spec}]
 
     def _maybe_inject_cache_control(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """若 config.cache_control 非空，把它注入到最后一个 user message 的末尾文本块"""
+        """（仅 vision 路径用）若 config.cache_control 非空，注入到最后一个 user message 末尾块。
+
+        文本生成路径已改用 ``_system_param`` 缓存 system 前缀，不再走此方法。
+        """
         if not self.config.cache_control:
             return messages
 
@@ -80,11 +115,11 @@ class AnthropicBackend(BaseBackend):
 
     async def generate(self, prompt: str, system: str, **kwargs: Any) -> str:
         sdk_params = self._to_sdk_params(self._resolve_params(**kwargs))
-        messages = self._maybe_inject_cache_control([{"role": "user", "content": prompt}])
+        messages = [{"role": "user", "content": prompt}]
         try:
             response = await self.async_client.messages.create(
                 model=self.config.model,
-                system=system,
+                system=cast(Any, self._system_param(system)),
                 messages=cast(Any, messages),
                 **sdk_params,
             )
@@ -94,11 +129,11 @@ class AnthropicBackend(BaseBackend):
 
     def generate_sync(self, prompt: str, system: str, **kwargs: Any) -> str:
         sdk_params = self._to_sdk_params(self._resolve_params(**kwargs))
-        messages = self._maybe_inject_cache_control([{"role": "user", "content": prompt}])
+        messages = [{"role": "user", "content": prompt}]
         try:
             response = self.client.messages.create(
                 model=self.config.model,
-                system=system,
+                system=cast(Any, self._system_param(system)),
                 messages=cast(Any, messages),
                 **sdk_params,
             )

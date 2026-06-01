@@ -138,8 +138,8 @@ class TestAnthropicCompatibleBackend:
             assert client.supports_vision is True
             assert client.supports_tools is True
 
-    def test_capability_matrix_drops_thinking(self):
-        """anthropic_compatible 不支持 thinking，_resolve_params 会丢弃"""
+    def test_capability_matrix_keeps_thinking_drops_metadata(self):
+        """anthropic_compatible 现保留 thinking（MiniMax-M3 关思考用），仍丢 metadata。"""
         with patch("anthropic.Anthropic"), patch("anthropic.AsyncAnthropic"):
             from sciforge.llm.backends.anthropic_compatible import (
                 AnthropicCompatibleBackend,
@@ -150,15 +150,19 @@ class TestAnthropicCompatibleBackend:
                     provider=LLMProvider.ANTHROPIC_COMPATIBLE,
                     api_key="test",
                     base_url="https://api.z.ai/...",
-                    thinking={"type": "enabled", "budget_tokens": 8192},
+                    thinking={"type": "disabled"},
                     metadata={"user_id": "foo"},
                     top_k=40,
                 )
             )
 
             resolved = backend._resolve_params()
-            assert "thinking" not in resolved
-            assert "metadata" not in resolved
-            # 但基础参数保留
+            assert resolved["thinking"] == {"type": "disabled"}  # 现放行
+            assert "metadata" not in resolved  # 仍不支持
             assert resolved["top_k"] == 40
             assert resolved["temperature"] == 0.7
+
+            # thinking 经 extra_body 透传（非 top-level，兼容老 SDK）
+            sdk = backend._to_sdk_params(resolved)
+            assert "thinking" not in sdk
+            assert sdk["extra_body"]["thinking"] == {"type": "disabled"}

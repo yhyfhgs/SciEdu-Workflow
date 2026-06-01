@@ -15,9 +15,14 @@
 
 from __future__ import annotations
 
+import re
+
 from sciforge.core.models import Discipline
 from sciforge.disciplines import DISCIPLINE_REGISTRY
 from sciforge.prompts.loader import load_prompt
+
+# pipeline 模板的小节分隔：━━━\n# N. 标题\n━━━
+_SECTION_DELIM_RE = re.compile(r"━{3,}\n#\s*\d+\.\s*([^\n]*)\n━{3,}")
 
 _VLM_TEMPLATE_RAW = load_prompt("pipeline/vlm_convert.txt")
 _EXTRACT_STAGE1_INITIAL_RAW = load_prompt("pipeline/extract_stage1_initial.txt")
@@ -41,6 +46,80 @@ def _inject_discipline_vars(template: str, discipline: Discipline) -> str:
         safe_value = value.replace("{", "{{").replace("}", "}}")
         result = result.replace("{" + key + "}", safe_value)
     return result
+
+
+def split_static_dynamic(template: str) -> tuple[str, str]:
+    """把已注入学科变量的 pipeline 模板拆成 (静态 system, 动态 user)。
+
+    动态 = 标题含"输入"的小节（其 ━━━/# N.输入/━━━ 头到下一个 # N. 头之前），
+    含全部运行时占位符；静态 = 其余全部（只含 ``{{ }}`` 转义，可安全 ``.format()`` 解转义）。
+    拆分点取在 ━━━ 小节分隔处，不会切断 ``{{ }}`` 对。
+
+    Returns:
+        (static, dynamic)。找不到"输入"段时返回 ``(template, "")``，
+        调用方据此回退到合并路径（不拆分）。
+    """
+    matches = list(_SECTION_DELIM_RE.finditer(template))
+    for i, m in enumerate(matches):
+        if "输入" in m.group(1):
+            seg_start = m.start()
+            seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(template)
+            dynamic = template[seg_start:seg_end].strip()
+            static = (template[:seg_start] + template[seg_end:]).strip()
+            return static, dynamic
+    return template, ""
+
+
+def build_pipeline_prompt_io(
+    parts: tuple[str, str], full_template: str, cache_enabled: bool
+) -> tuple[str | None, str]:
+    """统一各 stage 的 prompt 投递形态。
+
+    Args:
+        parts: ``(static_system, dynamic_user)``，来自 ``get_*_parts``
+        full_template: 旧的完整模板（合并回退用）
+        cache_enabled: 是否启用 prompt caching（拆分 system/user）
+
+    Returns:
+        ``(system, user_template)``：
+        - 启用且可拆分 → ``(static.format(), dynamic_user)``（system 已解转义、可缓存）
+        - 否则 → ``(None, full_template)``（全部走 user message，旧行为）
+    """
+    static, dynamic = parts
+    if cache_enabled and dynamic:
+        return static.format(), dynamic
+    return None, full_template
+
+
+def get_extract_stage1_initial_parts(discipline: Discipline) -> tuple[str, str]:
+    """Stage1Extract 的 (静态 system, 动态 user) 模板。
+
+    user 占位符：`{current_block}` / `{retry_feedback}`。system 须 `.format()` 解转义后使用。
+    无法拆分时 user 为 ""（回退合并）。
+    """
+    return split_static_dynamic(_inject_discipline_vars(_EXTRACT_STAGE1_INITIAL_RAW, discipline))
+
+
+def get_extract_stage1_review_parts(discipline: Discipline) -> tuple[str, str]:
+    """Stage1Review 的 (静态 system, 动态 user)。
+
+    user 占位符：`{window_text}` / `{items_json}` / `{retry_feedback}`。
+    """
+    return split_static_dynamic(_inject_discipline_vars(_EXTRACT_STAGE1_REVIEW_RAW, discipline))
+
+
+def get_annotate_stage2_initial_parts(discipline: Discipline) -> tuple[str, str]:
+    """Stage2Annotate 的 (静态 system, 动态 user)。
+
+    user 占位符：`{item_json}` / `{tag_subtree}` / `{taxonomy_tree}` /
+    `{source_genre_hint}` / `{retry_feedback}`。
+    """
+    return split_static_dynamic(_inject_discipline_vars(_ANNOTATE_STAGE2_INITIAL_RAW, discipline))
+
+
+def get_annotate_stage2_review_parts(discipline: Discipline) -> tuple[str, str]:
+    """Stage2Review 的 (静态 system, 动态 user)。"""
+    return split_static_dynamic(_inject_discipline_vars(_ANNOTATE_STAGE2_REVIEW_RAW, discipline))
 
 
 def get_vlm_prompt_template(discipline: Discipline) -> str:

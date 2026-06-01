@@ -19,15 +19,76 @@ MATH_SPEC = DisciplineSpec(
         "method",
         "proof_technique",
     ),
+    # 认知类别（与题目形式 question_form 正交）。含证明的细分类别。
     allowed_question_types=(
-        "proof",
-        "calculation",
-        "construction",
+        "proof",  # 一般证明
+        "constructive_proof",  # 构造性证明
+        "existence_proof",  # 存在性证明
+        "counterexample",  # 反例（举反例否定命题）
+        "calculation",  # 计算/求值
+        "construction",  # 构造（构造对象/例子）
+        "discrimination",  # 判别/判断成立性
+        "application",  # 应用题
+        "exploration",  # 探究/开放题
+        # —— 以下为兼容旧数据保留（形式类，已迁移到 question_form）——
         "true_false",
         "choice",
         "fill_blank",
     ),
     tag_root="math:数学",
+    # 常见同义 english 变体 → 规范（#6 受控词表）。同中文一致性由 canonicalizer 自动兜底。
+    tag_aliases={
+        "groups": "group_theory",
+        "group": "group_theory",
+        "rings": "ring_theory",
+        "ring": "ring_theory",
+        "fields": "field_theory",
+        "eps_delta": "epsilon_delta",
+        "epsilon_delta_method": "epsilon_delta",
+        "linear_alg": "linear_algebra",
+        "analysis_real": "real_analysis",
+        "prob": "probability",
+        "combinatorial": "combinatorics",
+        "diff_eq": "differential_equations",
+        "ode": "differential_equations",
+    },
+    # 中文章节关键词 → 英文主分支（Stage2 局部 taxonomy 注入用）
+    branch_keywords={
+        "实分析": "real_analysis",
+        "复分析": "complex_analysis",
+        "复变": "complex_analysis",
+        "泛函": "functional_analysis",
+        "数学分析": "analysis",
+        "分析": "analysis",
+        "极限": "analysis",
+        "连续": "analysis",
+        "微分方程": "differential_equations",
+        "微分": "analysis",
+        "积分": "analysis",
+        "级数": "analysis",
+        "线性代数": "linear_algebra",
+        "线性空间": "linear_algebra",
+        "矩阵": "linear_algebra",
+        "行列式": "linear_algebra",
+        "向量": "linear_algebra",
+        "抽象代数": "abstract_algebra",
+        "近世代数": "abstract_algebra",
+        "群": "abstract_algebra",
+        "环": "abstract_algebra",
+        "域": "abstract_algebra",
+        "高等代数": "algebra",
+        "代数": "algebra",
+        "数论": "number_theory",
+        "组合": "combinatorics",
+        "几何": "geometry",
+        "拓扑": "topology",
+        "概率": "probability",
+        "统计": "statistics",
+        "离散": "discrete_math",
+        "逻辑": "logic",
+        "集合": "set_theory",
+        "数值": "numerical_analysis",
+    },
     allowed_branches=(
         "analysis",
         "algebra",
