@@ -72,3 +72,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 pythonpath = ["src"]
 testpaths = ["tests"]
+# 忽略云同步（iCloud/OneDrive/Dropbox）生成的 "name 2.py" 冲突副本，
+# 否则 pytest 会把每个测试重复收集一遍（详见 .gitignore 同款模式）。
+addopts = "--ignore-glob='* [0-9].py'"

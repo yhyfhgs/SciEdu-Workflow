@@ -47,3 +47,14 @@ config/mathforge.toml
 
 # Binary / large files
 *.pdf
+
+# 云同步（iCloud/OneDrive/Dropbox）冲突副本（如 "settings 2.py" / "README 2.md"）。
+# 同步服务在 git 批量改写文件时自动生成的重复文件，绝不应提交；
+# pyproject 的 pytest --ignore-glob 也同步忽略它们，避免测试被重复收集。
+* [0-9].py
+* [0-9].md
+* [0-9].toml
+* [0-9].sql
+* [0-9].sh
+* [0-9].json
+* [0-9].txt
