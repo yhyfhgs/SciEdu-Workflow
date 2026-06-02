@@ -194,7 +194,12 @@ class Stage2Annotate:
         ]
 
         try:
-            # 分发主循环
+            # 分发主循环。
+            # 关键：上游（Stage1Review 拒绝、resume 重放）会产生缺失 item_id 形成 gap。
+            # in_queue 内 item_id 单调递增；分发器须对每个 gap 主动 buf.skip()，否则
+            # ReorderBuffer 的 _next_id 会卡在缺失 id 上，把后续所有 item 积压到 _pending
+            # 直到 close() 才一次性 flush——streaming 失效且大文档内存暴涨。
+            last_dispatched = start_id - 1
             while True:
                 msg = await in_queue.get()
                 if isinstance(msg, _Sentinel):
@@ -202,6 +207,11 @@ class Stage2Annotate:
                 if not isinstance(msg, ReviewedItem):
                     logger.warning("stage2_annotate_unexpected_msg", type=type(msg).__name__)
                     continue
+                if msg.item_id > last_dispatched + 1:
+                    for missing in range(last_dispatched + 1, msg.item_id):
+                        await buf.skip(missing)
+                if msg.item_id > last_dispatched:
+                    last_dispatched = msg.item_id
                 await task_queue.put(msg)
 
             # 通知所有 worker 终止

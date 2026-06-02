@@ -91,7 +91,9 @@ src/sciforge/
 │                #     detect_section_boundaries 识别章节结构）,
 │                #   reorder_buffer (Stage2 并发后按 item_id 恢复顺序),
 │                #   stages/stage1_extract.py     (批量滑动窗口提取 500→3000 行 +
-│                #     3 层防御：regex 预检 + 改进 force-consume + no_items_found 快速跳过),
+│                #     3 层防御：regex 预检 + 改进 force-consume + no_items_found 快速跳过;
+│                #     force-consume 对 regex 标记冲突只滑 base_window 不整窗丢弃(完整性);
+│                #     opt-in 时 run()→_run_parallel 走单文档内并行分段提取),
 │                #   stages/stage1_review.py      (batch 校验 + 条件化跳过 low-risk batch),
 │                #   stages/stage2_annotate.py    (单条打标 + 可选 N-worker 并发 + 局部 taxonomy 注入),
 │                #   stages/stage2_review.py      (annotation 审核 + 条件化跳过 + N-worker 并发),
@@ -101,7 +103,8 @@ src/sciforge/
 │                #     taxonomy_validator (支持 branch_filter),
 │                #   入库后 post-pass(无 LLM): numbering_audit(#2) / answer_linker(#3) /
 │                #     relation_inference(#6 知识图谱边) / reconciliation(#7 复核),
-│                #   document_segmenter + parallel_extract (#1 单文档并行, opt-in),
+│                #   document_segmenter + parallel_extract (#1 单文档并行,
+│                #     已接入 Stage1Extract._run_parallel; segment_extract_fn=carry-aware 滑窗),
 │                #   resume_state / retry (call_llm_json_with_schema_retry_with_feedback 带指标日志) /
 │                #     audit / migrate
 ├── agents/      # 多 Agent 协作系统（生成/推理，与 pipeline 分离）
@@ -198,7 +201,12 @@ logical_document  (单文件 or 多个分卷)
 - `qgen_lightweight_prefilter: bool = True` / `qgen_merge_difficulty_into_verify: bool = True` — Phase 6 QGen 优化
 - `pipeline_prompt_cache_enabled: bool = True` — #9 静态指令拆到可缓存 system 前缀（纯 Anthropic 自动缓存）
 - `answer_linking_enabled / relation_inference_enabled / reconciliation_enabled: bool = True` — 入库后 post-pass 开关（#3/#6/#7）
-- `intra_doc_parallel_extract: bool = False` / `intra_doc_segment_concurrency: int = 4` — #1 单文档内并行（opt-in）
+- `intra_doc_parallel_extract: bool = False` / `intra_doc_segment_concurrency: int = 4`
+  / `intra_doc_min_segment_lines: int = 40` — #1 单文档内并行（**已接入** Stage1Extract，opt-in）。
+  按 section 边界切段、段间并发、段内 carry-aware 滑窗（不在窗口边界切断条目）。
+  CLI：`parse run --parallel-extract [--segment-concurrency N]`。适合**单个超大文件**提速；
+  目录多文件已自带跨文件并行（`max_concurrent_files`）。注：opt-in 模式会先 drain 全部 block
+  再并行提取（失去 Task0↔Stage1 重叠），且中断 resume 为整段重提（靠 content_hash 去重兜底）。
 
 **字段规范化与类型双维度（#4/#5）**：`KnowledgePoint/Question` 含 `number_canonical`（由 `number` 自动派生，消除 "1" vs "第1题"）+ `seq_chapter/seq_section/seq_index`；`Question.question_form`（选择/填空/判断/解答，与 `question_type` 认知类别正交，Stage1 从题面识别）。`DisciplineSpec` 含 `allowed_question_forms` / `tag_aliases`（受控词表别名）/ `branch_keywords`。
 

@@ -159,6 +159,17 @@ class Stage1Extract:
         self.fast_skip_strict: bool = bool(
             getattr(config, "extract_fast_skip_strict", True)
         )
+        # #1 单文档内并行提取（opt-in）：按 section 边界切段、段间并发、段内 carry-aware 滑窗。
+        # 默认 False → 走原有逐块流式串行路径（本次改动不触碰默认行为）。
+        self.parallel_enabled: bool = bool(
+            getattr(config, "intra_doc_parallel_extract", False)
+        )
+        self.segment_concurrency: int = max(
+            1, int(getattr(config, "intra_doc_segment_concurrency", 4))
+        )
+        self.min_segment_lines: int = max(
+            1, int(getattr(config, "intra_doc_min_segment_lines", 40))
+        )
 
     # ── 主循环 ─────────────────────────────────────────
 
@@ -168,7 +179,19 @@ class Stage1Extract:
         out_queue: asyncio.Queue[Any],
         state: FileExtractionState,
     ) -> None:
-        """从 q_md 消费 MdBlockSource → 滑动窗口提取 → emit 到 q_raw"""
+        """按配置分流：默认逐块流式串行；opt-in 时走单文档内并行分段提取。"""
+        if self.parallel_enabled:
+            await self._run_parallel(in_queue, out_queue, state)
+        else:
+            await self._run_streaming(in_queue, out_queue, state)
+
+    async def _run_streaming(
+        self,
+        in_queue: asyncio.Queue[Any],
+        out_queue: asyncio.Queue[Any],
+        state: FileExtractionState,
+    ) -> None:
+        """从 q_md 消费 MdBlockSource → 滑动窗口提取 → emit 到 q_raw（默认串行路径）"""
         self._restore_state(state)
         sentinel_seen = False
         current_block: MdBlockSource | None = None
@@ -335,6 +358,11 @@ class Stage1Extract:
                 # 未提到条目 → 扩窗口或 force consume
                 self.consecutive_empty += 1
                 at_max = self.current_window_size >= self.max_window
+                # 窗口是否已覆盖整个剩余 buffer（扩窗也无法纳入更多行）
+                window_covers_buffer = window_len >= len(self.line_buffer)
+                # 文末尾部：最后一个 block 且窗口已覆盖全部剩余内容。此时扩窗纯属浪费——
+                # min() 卡在 buffer 长度，再扩窗只会对**同一段内容**重复调 LLM N 次。
+                terminal_tail = is_last and window_covers_buffer
 
                 # ── 第三层：no_items_found + 无任何信号 → 快速跳过整个窗口 ──
                 if (
@@ -356,7 +384,11 @@ class Stage1Extract:
                     continue
 
                 # ── 第二层：改进 force-consume ──
-                if at_max and self.consecutive_empty >= self.empty_force_limit:
+                # 触发：达 max 且连续空够多次，**或**文末尾部（内容不会再增长，
+                # 提前 force consume 省去对同一段内容的多次无效扩窗调用）。
+                if (
+                    at_max and self.consecutive_empty >= self.empty_force_limit
+                ) or terminal_tail:
                     # 判断是否有不完整尾部条目
                     if (
                         payload.stop_reason == "incomplete_at_tail"
@@ -365,15 +397,42 @@ class Stage1Extract:
                         # 只跳到已消费位置，保留不完整尾部给下一窗口
                         cut = self._find_buffer_idx(payload.last_consumed_line)
                         slide = (cut + 1) if 0 <= cut < window_len else window_len
+                    elif not window_empty and not terminal_tail:
+                        # **完整性优先**：regex 检测到条目标记/信号，但 LLM 反复返回空。
+                        # 此时整窗丢弃（最多 3000 行）可能静默漏掉真实条目。改为只滑
+                        # base_window，让被标记内容在后续窗口重新获得提取机会；升级为
+                        # error 级日志以便审计（窗口后仍有内容可承接被推迟的部分）。
+                        slide = min(self.base_window, window_len)
+                        logger.error(
+                            "stage1_force_consume_marker_conflict",
+                            line_range=f"{window_start_int}-{window_last_int}",
+                            window=self.current_window_size,
+                            slide=slide,
+                            note=(
+                                "regex 检测到条目标记但 LLM 返回空；"
+                                "改滑 base_window 重扫而非丢弃整窗"
+                            ),
+                        )
                     else:
-                        # 纯空 → 跳整个窗口（而非原来的 base_window）
+                        # 真空白区 或 文末尾部（无处可推迟）→ 跳整窗
                         slide = min(self.current_window_size, window_len)
+                        if not window_empty:
+                            logger.error(
+                                "stage1_force_consume_tail_markers_dropped",
+                                line_range=f"{window_start_int}-{window_last_int}",
+                                slide=slide,
+                                note=(
+                                    "文末尾部 regex 有标记但 LLM 无产出；"
+                                    "EOF 无处推迟，记录以便 numbering_audit 复核"
+                                ),
+                            )
                     logger.warning(
                         "stage1_force_consume",
                         window=self.current_window_size,
                         consecutive_empty=self.consecutive_empty,
                         slide=slide,
                         stop_reason=payload.stop_reason,
+                        terminal_tail=terminal_tail,
                         preserved_tail=payload.stop_reason == "incomplete_at_tail",
                     )
                     self.line_buffer = self.line_buffer[slide:]
@@ -538,6 +597,275 @@ class Stage1Extract:
         )
         return result
 
+    # ── 单文档内并行提取（opt-in）─────────────────────────
+
+    async def _run_parallel(
+        self,
+        in_queue: asyncio.Queue[Any],
+        out_queue: asyncio.Queue[Any],
+        state: FileExtractionState,
+    ) -> None:
+        """drain 全部 block → 按 section 边界切段 → 段间并发 carry-aware 提取
+        → 按文档(段)顺序连续分配 item_id → 逐段 emit ExtractedBatch。
+
+        完整性保证：
+        - 段**只在 section 边界**切（条目天然不跨章节），段内用与串行路径同款的
+          滑窗 + carry（``_extract_segment_windows``）→ 超大 section 不在 chunk 边界切断条目。
+        - item_id 在文档(段)顺序上连续递增 → 维持 ``order_index = item_id`` 不变量。
+        - resume：``stage1_completed`` 已为真则不重复提取（下游 replay 由 orchestrator 处理）。
+        """
+        from sciforge.pipeline.document_segmenter import DocSegment
+        from sciforge.pipeline.parallel_extract import ParallelSegmentExtractor
+
+        self._restore_state(state)
+        try:
+            if state.stage1_completed:
+                await self._drain_until_sentinel(in_queue)
+                logger.info("stage1_parallel_skip_completed", file_hash=state.file_hash)
+                return
+
+            all_lines, boundary_indices, block_map = await self._collect_blocks(in_queue, state)
+            if not all_lines:
+                logger.info("stage1_parallel_no_content")
+                state.stage1_completed = True
+                await self._sync_state(state, force=True)
+                return
+
+            # window_lines 设大阈值 → segment_document 仅按 section 切，不硬切条目；
+            # 段内由 _extract_segment_windows 自行滑窗 + carry。
+            big = max(self.max_window * 100, 10_000)
+            extractor = ParallelSegmentExtractor(
+                segment_extract_fn=self._extract_segment_windows,
+                window_lines=big,
+                concurrency=self.segment_concurrency,
+            )
+            grouped: list[tuple[DocSegment, list[Any]]] = await extractor.extract_grouped(
+                all_lines, boundary_indices, min_segment_lines=self.min_segment_lines
+            )
+
+            total = sum(len(items) for _, items in grouped)
+            logger.info(
+                "stage1_parallel_extracted",
+                segments=len(grouped),
+                total_lines=len(all_lines),
+                items=total,
+                concurrency=self.segment_concurrency,
+            )
+            if total == 0:
+                state.stage1_completed = True
+                await self._sync_state(state, force=True)
+                return
+
+            # 一次性预留连续 id（文档顺序），逐段切片分配 → order_index = item_id 连续递增
+            item_ids_all = await self._allocate_item_ids(total)
+            assert item_ids_all == list(
+                range(item_ids_all[0], item_ids_all[0] + total)
+            ), "并行路径 item_id 必须连续（order_index=item_id 不变量）"
+
+            cursor = 0
+            for seg, items in grouped:
+                if not items:
+                    continue
+                n = len(items)
+                ids = item_ids_all[cursor : cursor + n]
+                cursor += n
+
+                seg_lines = list(seg.lines)
+                first_no = self._line_no_int(seg_lines[0]) if seg_lines else 0
+                last_no = self._line_no_int(seg_lines[-1]) if seg_lines else 0
+                src_block = self._block_for_idx(block_map, seg.start_idx)
+
+                batch = ExtractedBatch(
+                    item_ids=ids,
+                    items=items,
+                    window_lines=seg_lines,
+                    window_line_range=(first_no, last_no),
+                    window_last_line=last_no,
+                    block_index=src_block.block_index if src_block else -1,
+                    source_file=src_block.file_path if src_block else "",
+                    page_start=src_block.page_start if src_block else None,
+                    page_end=src_block.page_end if src_block else None,
+                    stop_reason="all_complete",
+                )
+                self._mirror_batch(batch, state, stage_dir="stage1")
+                await out_queue.put(batch)
+                state.stage1_extracted_count += n
+                await self._sync_state(state)
+
+            assert cursor == total, f"emit 条目数 {cursor} != 提取总数 {total}"
+            state.stage1_completed = True
+            await self._sync_state(state, force=True)
+            logger.info(
+                "stage1_parallel_complete",
+                extracted=state.stage1_extracted_count,
+                next_item_id=self.next_item_id,
+            )
+        finally:
+            await out_queue.put(SENTINEL)
+
+    async def _collect_blocks(
+        self, in_queue: asyncio.Queue[Any], state: FileExtractionState
+    ) -> tuple[list[str], list[int], list[tuple[int, MdBlockSource]]]:
+        """drain q_md，把全部 block 拼成带全局行号前缀的行列表。
+
+        Returns:
+            (all_lines, boundary_indices, block_map)
+            - all_lines: 全文档带行号前缀的行（按 block_index 顺序）
+            - boundary_indices: section 边界在 all_lines 中的 0-based 下标（升序去重）
+            - block_map: [(buffer_start_idx, MdBlockSource), ...] 供按段反查源 block
+        """
+        blocks: list[MdBlockSource] = []
+        while True:
+            msg = await in_queue.get()
+            if isinstance(msg, _Sentinel):
+                break
+            if not isinstance(msg, MdBlockSource):
+                logger.warning("stage1_parallel_unexpected_msg", type=type(msg).__name__)
+                continue
+            if msg.block_index in state.failed_blocks:
+                continue
+            blocks.append(msg)
+
+        blocks.sort(key=lambda b: b.block_index)
+        all_lines: list[str] = []
+        boundary_indices: list[int] = []
+        block_map: list[tuple[int, MdBlockSource]] = []
+        line_no = 1
+        for b in blocks:
+            base_idx = len(all_lines)
+            new_lines = self._annotate(b.md_text, line_no)
+            all_lines.extend(new_lines)
+            block_map.append((base_idx, b))
+            for lb, _level, _title in b.section_boundaries:
+                bi = base_idx + int(lb)
+                if base_idx <= bi < len(all_lines):
+                    boundary_indices.append(bi)
+            line_no += len(new_lines)
+        return all_lines, sorted(set(boundary_indices)), block_map
+
+    async def _extract_segment_windows(self, seg_lines: list[str]) -> list[Any]:
+        """段内 carry-aware 滑窗提取，返回该段所有完整条目（SingleItemExtractLLM）。
+
+        与串行 ``_process_windows`` 同款逻辑，但操作**局部 buffer**、不触碰任何实例状态、
+        不分配 id、不 emit——因此可被多段并发安全调用。段在 section 边界切分，段尾即
+        section 结束，不完整尾部直接收尾（下一 section 重新开始，不存在跨段条目）。
+        """
+        items: list[Any] = []
+        buf = list(seg_lines)
+        window_size = self.base_window
+        consecutive_empty = 0
+
+        while buf:
+            window_len = min(window_size, len(buf))
+            window = buf[:window_len]
+            covers_all = window_len >= len(buf)
+            window_start_int = self._line_no_int(window[0])
+            window_last_int = self._line_no_int(window[-1])
+
+            clean = self._clean_window_text(window)
+            has_markers = _ITEM_MARKER_RE.search(clean) is not None
+            if has_markers:
+                window_empty = False
+            elif self.fast_skip_strict:
+                window_empty = _WEAK_SIGNAL_RE.search(clean) is None
+            else:
+                window_empty = True
+
+            # 真空白窗 + 段内后面还有内容 → 跳过（不调 LLM）
+            if self.fast_skip_enabled and window_empty and not covers_all:
+                buf = buf[window_len:]
+                window_size = self.base_window
+                consecutive_empty = 0
+                continue
+
+            try:
+                payload = await self._extract_batch(window, window_start_int, window_last_int)
+            except RetryExhausted:
+                logger.warning(
+                    "stage1_parallel_segment_window_failed",
+                    line_range=f"{window_start_int}-{window_last_int}",
+                )
+                slide = window_len if covers_all else min(self.base_window, window_len)
+                buf = buf[slide:]
+                window_size = self.base_window
+                consecutive_empty = 0
+                continue
+
+            if not payload.items:
+                consecutive_empty += 1
+                at_max = window_size >= self.max_window
+                if (
+                    self.fast_skip_enabled
+                    and payload.stop_reason == "no_items_found"
+                    and window_empty
+                    and not covers_all
+                ):
+                    buf = buf[window_len:]
+                    window_size = self.base_window
+                    consecutive_empty = 0
+                    continue
+                # force-consume：达 max 连续空够多次，或已到段尾（covers_all）
+                if (at_max and consecutive_empty >= self.empty_force_limit) or covers_all:
+                    if (
+                        payload.stop_reason == "incomplete_at_tail"
+                        and payload.last_consumed_line > 0
+                        and not covers_all
+                    ):
+                        cut = self._find_idx_in(buf, payload.last_consumed_line)
+                        slide = (cut + 1) if 0 <= cut < window_len else window_len
+                    elif not window_empty and not covers_all:
+                        # 完整性优先：regex 有标记但 LLM 空 → 只滑 base_window 重扫
+                        slide = min(self.base_window, window_len)
+                        logger.error(
+                            "stage1_parallel_marker_conflict",
+                            line_range=f"{window_start_int}-{window_last_int}",
+                            slide=slide,
+                        )
+                    else:
+                        slide = window_len
+                    buf = buf[slide:]
+                    window_size = self.base_window
+                    consecutive_empty = 0
+                    continue
+                if not at_max:
+                    window_size = min(window_size + self.expand_step, self.max_window)
+                    continue
+                # 达 max 但未到 force_limit 且段内仍有内容 → 推进一窗保证进展
+                buf = buf[window_len:]
+                window_size = self.base_window
+                consecutive_empty = 0
+                continue
+
+            # 提到条目 → 收集，滑到 last_consumed_line+1（保留不完整尾部给段内下一窗）
+            consecutive_empty = 0
+            items.extend(payload.items)
+            cut = self._find_idx_in(buf, payload.last_consumed_line)
+            consumed = (cut + 1) if 0 <= cut < window_len else window_len
+            buf = buf[consumed:]
+            window_size = self.base_window
+
+        return items
+
+    @staticmethod
+    async def _drain_until_sentinel(in_queue: asyncio.Queue[Any]) -> None:
+        while True:
+            msg = await in_queue.get()
+            if isinstance(msg, _Sentinel):
+                break
+
+    @staticmethod
+    def _block_for_idx(
+        block_map: list[tuple[int, MdBlockSource]], start_idx: int
+    ) -> MdBlockSource | None:
+        """返回 buffer 下标 start_idx 所在的源 block（block_map 按 base_idx 升序）。"""
+        chosen: MdBlockSource | None = None
+        for base_idx, b in block_map:
+            if base_idx <= start_idx:
+                chosen = b
+            else:
+                break
+        return chosen
+
     # ── 产出工具 ────────────────────────────────────────
 
     def _mirror_batch(
@@ -629,21 +957,29 @@ class Stage1Extract:
         return "".join(parts)
 
     def _find_buffer_idx(self, global_line_no: int) -> int:
-        if not self.line_buffer:
+        return self._find_idx_in(self.line_buffer, global_line_no)
+
+    @staticmethod
+    def _find_idx_in(buf: list[str], global_line_no: int) -> int:
+        """在带行号前缀的 buffer 中定位全局行号对应的下标；找不到返回 -1。
+
+        先按 first_no 偏移直接命中，未命中再 bisect 兜底（容忍前缀缺失行）。
+        无副作用、不依赖实例状态 → 并行段提取可安全复用。
+        """
+        if not buf:
             return -1
 
         def line_no_of(line: str) -> int:
             prefix = line.split("|", 1)[0].strip()
             return int(prefix) if prefix.isdigit() else -1
 
-        first_no = line_no_of(self.line_buffer[0])
+        first_no = line_no_of(buf[0])
         if first_no < 0:
             return -1
         idx = global_line_no - first_no
-        if 0 <= idx < len(self.line_buffer):
-            if line_no_of(self.line_buffer[idx]) == global_line_no:
-                return idx
-        line_numbers = [line_no_of(ln) for ln in self.line_buffer]
+        if 0 <= idx < len(buf) and line_no_of(buf[idx]) == global_line_no:
+            return idx
+        line_numbers = [line_no_of(ln) for ln in buf]
         pos = bisect.bisect_left(line_numbers, global_line_no)
         if 0 <= pos < len(line_numbers) and line_numbers[pos] == global_line_no:
             return pos
@@ -653,3 +989,8 @@ class Stage1Extract:
     def _line_no_of(line: str) -> int | str:
         prefix = line.split("|", 1)[0].strip()
         return int(prefix) if prefix.isdigit() else prefix
+
+    @staticmethod
+    def _line_no_int(line: str) -> int:
+        prefix = line.split("|", 1)[0].strip()
+        return int(prefix) if prefix.isdigit() else 0

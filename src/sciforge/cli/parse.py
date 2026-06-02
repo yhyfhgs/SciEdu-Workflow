@@ -260,6 +260,19 @@ def parse_run(
         "-D",
         help="文档学科 (math/physics/chemistry/biology/other)",
     ),
+    parallel_extract: bool = typer.Option(
+        False,
+        "--parallel-extract",
+        help=(
+            "单文档内并行提取：按 section 边界切段、段间并发（段内 carry-aware 滑窗不切断条目）。"
+            "适合**单个超大文件**提速；目录多文件已自带跨文件并行。"
+        ),
+    ),
+    segment_concurrency: int | None = typer.Option(
+        None,
+        "--segment-concurrency",
+        help="--parallel-extract 的段间并发度（默认读 TOML，fallback 4）",
+    ),
     debug: bool = typer.Option(
         False,
         "--debug",
@@ -289,6 +302,10 @@ def parse_run(
         overrides["vlm_max_retries"] = max_retries
     if max_files is not None:
         overrides["max_concurrent_files"] = max_files
+    if parallel_extract:
+        overrides["intra_doc_parallel_extract"] = True
+    if segment_concurrency is not None:
+        overrides["intra_doc_segment_concurrency"] = segment_concurrency
     if debug:
         overrides["pipeline_debug"] = True
 

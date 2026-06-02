@@ -34,13 +34,28 @@ class ParallelSegmentExtractor:
 
     def __init__(
         self,
-        extract_fn: ExtractFn,
+        extract_fn: ExtractFn | None = None,
         *,
         window_lines: int = 400,
         concurrency: int = 4,
         line_no_of: Callable[[str], int] | None = None,
+        segment_extract_fn: Callable[[list[str]], Awaitable[list[Any]]] | None = None,
     ) -> None:
+        """
+        Args:
+            extract_fn: **chunk 级**提取器 ``(window_lines, start, last) -> items``。
+                段 > window 时段内按 ``window_lines`` **无 carry** 顺序分块——仅适合
+                每段 ≤ window 或条目不跨 chunk 的场景（单测/简单路径）。
+            segment_extract_fn: **整段级**提取器 ``(seg_lines) -> items``（优先于
+                ``extract_fn``）。生产路径传入 carry-aware 的滑窗提取器，使**超大 section**
+                也能按滑动窗口 + carry 完整提取、不在 chunk 边界切断条目（完整性优先）。
+                提供它时 ``window_lines`` 只用于 :func:`segment_document` 的过大段硬切阈值，
+                生产应传较大值以**仅按 section 边界切段**。
+        """
+        if extract_fn is None and segment_extract_fn is None:
+            raise ValueError("extract_fn 与 segment_extract_fn 必须至少提供一个")
         self.extract_fn = extract_fn
+        self.segment_extract_fn = segment_extract_fn
         self.window_lines = max(1, window_lines)
         self.concurrency = max(1, concurrency)
         # 从 annotated 行取全局行号（默认解析 "NNN | text"）
@@ -60,6 +75,32 @@ class ParallelSegmentExtractor:
         min_segment_lines: int = 40,
     ) -> list[tuple[int, Any]]:
         """对整篇文档并行分段提取，返回 ``[(order_index, item), ...]``（文档顺序）。"""
+        grouped = await self.extract_grouped(
+            lines, boundary_indices, min_segment_lines=min_segment_lines
+        )
+        per_seg = [items for _, items in grouped]
+        result = assign_order_index(per_seg, start=start_order_index)
+        logger.info(
+            "parallel_extract_done",
+            segments=len(grouped),
+            total_lines=len(lines),
+            items=len(result),
+            concurrency=self.concurrency,
+        )
+        return result
+
+    async def extract_grouped(
+        self,
+        lines: list[str],
+        boundary_indices: list[int],
+        *,
+        min_segment_lines: int = 40,
+    ) -> list[tuple[Any, list[Any]]]:
+        """同 :meth:`extract`，但**保留每段分组** ``[(DocSegment, [items]), ...]``。
+
+        供需要按段携带 window 上下文 emit 的调用方（如 Stage1Extract 并行路径）使用：
+        ``extract`` 会把各段展平，丢失段→window 的对应关系。
+        """
         segments = segment_document(
             lines,
             boundary_indices,
@@ -79,19 +120,20 @@ class ParallelSegmentExtractor:
         per_seg: list[list[Any]] = await asyncio.gather(
             *(run_segment(s) for s in segments)
         )
-
-        result = assign_order_index(per_seg, start=start_order_index)
-        logger.info(
-            "parallel_extract_done",
-            segments=len(segments),
-            total_lines=len(lines),
-            items=len(result),
-            concurrency=self.concurrency,
-        )
-        return result
+        return list(zip(segments, per_seg, strict=True))
 
     async def _extract_segment(self, seg: Any) -> list[Any]:
-        """段内提取：段 ≤ window 时一次调用；更大段按 window 顺序分块（段内串行）。"""
+        """段内提取。
+
+        - 若提供 ``segment_extract_fn``（生产 carry-aware 路径）→ 整段交给它，
+          段内由其自行滑窗 + carry，**不在 chunk 边界切断条目**。
+        - 否则走 ``extract_fn`` chunk 路径：段 ≤ window 一次调用；更大段按
+          ``window_lines`` 顺序分块（段内串行、无 carry）。
+        """
+        if self.segment_extract_fn is not None:
+            return list(await self.segment_extract_fn(seg.lines))
+
+        assert self.extract_fn is not None  # __init__ 已保证二者不全空
         items: list[Any] = []
         seg_lines = seg.lines
         for chunk_start in range(0, len(seg_lines), self.window_lines):

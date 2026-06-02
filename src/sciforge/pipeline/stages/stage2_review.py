@@ -189,6 +189,9 @@ class Stage2Review:
         ]
 
         try:
+            # 分发主循环。in_queue 内 item_id 单调递增；对每个 gap（上游拒绝/重放缺口）
+            # 主动 buf.skip()，否则 ReorderBuffer 卡在缺失 id 上、后续 item 积压到 close()。
+            last_dispatched = start_id - 1
             while True:
                 msg = await in_queue.get()
                 if isinstance(msg, _Sentinel):
@@ -196,6 +199,11 @@ class Stage2Review:
                 if not isinstance(msg, AnnotatedItem):
                     logger.warning("stage2_review_unexpected_msg", type=type(msg).__name__)
                     continue
+                if msg.item_id > last_dispatched + 1:
+                    for missing in range(last_dispatched + 1, msg.item_id):
+                        await buf.skip(missing)
+                if msg.item_id > last_dispatched:
+                    last_dispatched = msg.item_id
                 await task_queue.put(msg)
 
             for _ in range(self.concurrency):

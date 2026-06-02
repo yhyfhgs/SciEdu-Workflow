@@ -205,6 +205,8 @@ class AppConfig(BaseSettings):
     # 单文档内并行提取（#1 Phase 6）：按 section 分段并发提取 + 段序保序。默认关（流式串行）。
     intra_doc_parallel_extract: bool = False
     intra_doc_segment_concurrency: int = 4
+    # 过小 section 合并阈值（行数）：相邻小段前向累积到 ≥ 此值才闭合，避免碎片化。
+    intra_doc_min_segment_lines: int = 40
     # Prompt caching（#9）：各 stage 把静态指令放 system（稳定可缓存前缀），动态输入放 user。
     # 默认 True；设 False 退回"全部塞 user message"的合并路径（应急回滚用）。
     pipeline_prompt_cache_enabled: bool = True

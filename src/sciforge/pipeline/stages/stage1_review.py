@@ -126,7 +126,7 @@ class Stage1Review:
 
                 await save_state_locked(self.checkpoint_root, state)
 
-            state.stage1_completed = state.stage1_completed  # 不覆盖（Stage1Extract 设置）
+            # 注：stage1_completed 由 Stage1Extract 设置，此处不覆盖。
             await save_state_locked(self.checkpoint_root, state, force=True)
             logger.info(
                 "stage1_review_complete",
