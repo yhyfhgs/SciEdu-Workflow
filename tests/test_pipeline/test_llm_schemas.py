@@ -143,9 +143,7 @@ class TestBatchItemExtractPayloadLLM:
             "last_consumed_line": 30,
             "issues": [],
         }
-        payload = BatchItemExtractPayloadLLM.model_validate(
-            data, context={"window_last_line": 120}
-        )
+        payload = BatchItemExtractPayloadLLM.model_validate(data, context={"window_last_line": 120})
         assert payload.last_consumed_line == 30
 
 

@@ -44,6 +44,10 @@ PROVIDER_CAPABILITIES: dict[LLMProvider, frozenset[str]] = {
             # 关键用途：MiniMax-M3 等推理模型用 thinking={"type":"disabled"} 关思考，
             # 提取/标注这类高频抄写任务可提速 3×+（实测 38s→11s，thinking 4276→0 字）。
             "thinking",
+            # REC-08：放行 cache_control（与 thinking 同款 opt-in）。是否真正包到 system
+            # 由 backend._system_param 据 config.supports_prompt_cache 决定；这里放行确保
+            # 显式配置时不被能力矩阵静默丢弃。
+            "cache_control",
             "extra_body",
         }
     ),

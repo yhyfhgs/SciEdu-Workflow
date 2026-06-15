@@ -153,6 +153,47 @@ def pdf_page_count(file_path: Path) -> int | None:
     return None
 
 
+def pdf_has_extractable_text_layer(
+    file_path: Path,
+    *,
+    min_chars_per_page: int = 100,
+    sample_pages: int = 5,
+) -> bool:
+    """探测 PDF 是否含可用的可提取文字层（REC-01）。
+
+    用 fitz 抽样前 ``sample_pages`` 页 ``get_text``，当平均字符/页 ≥
+    ``min_chars_per_page`` 且乱码（U+FFFD 替换符）占比低时判为有文字层。
+    用于把电子版教材 PDF 自动降级到 0-LLM 的 PyMuPdfRecognizer，扫描件
+    （文字层缺失或纯乱码）则保留 VLM。fitz 不可用或读取失败时返回 False
+    （保守：不误判扫描件，继续走 VLM）。
+    """
+    if not _has_fitz():
+        return False
+    try:
+        import fitz
+
+        with fitz.open(str(file_path)) as doc:
+            total = int(doc.page_count)
+            if total <= 0:
+                return False
+            n = min(sample_pages, total)
+            total_chars = 0
+            garbled = 0
+            for pn in range(n):
+                text = doc[pn].get_text("text")
+                total_chars += len(text)
+                garbled += text.count("�")
+    except Exception:
+        logger.debug("pdf_text_layer_probe_failed", file=str(file_path), exc_info=True)
+        return False
+
+    if total_chars <= 0:
+        return False
+    avg_chars = total_chars / max(1, n)
+    garbled_ratio = garbled / total_chars
+    return avg_chars >= min_chars_per_page and garbled_ratio < 0.05
+
+
 # ── 共享数据结构 ───────────────────────────────────────
 
 
@@ -213,9 +254,7 @@ class VlmRecognizer:
             discipline=discipline,
             rate_limit_base_sleep=float(getattr(config, "rate_limit_base_sleep", 300.0)),
             rate_limit_max_sleep=float(getattr(config, "rate_limit_max_sleep", 1800.0)),
-            rate_limit_total_budget=float(
-                getattr(config, "rate_limit_total_budget", 21600.0)
-            ),
+            rate_limit_total_budget=float(getattr(config, "rate_limit_total_budget", 21600.0)),
         )
 
     async def recognize_in_batches(
@@ -431,6 +470,7 @@ def get_recognizer(
     llm_client: LLMClient | None,
     config: AppConfig,
     discipline: Discipline = Discipline.MATH,
+    file_path: Path | None = None,
 ) -> Recognizer:
     """根据文件格式 + backend 选择 Recognizer
 
@@ -439,12 +479,34 @@ def get_recognizer(
         backend: 'vlm' / 'pymupdf' / 'auto'
         llm_client: vlm 后端必需
         discipline: 学科（仅 VLM 后端使用，用于参数化 VLM prompt）
+        file_path: 待识别文件路径；提供后可对 PDF 探测文字层（REC-01），
+            电子版 PDF 自动降级走 0-LLM 的 PyMuPdfRecognizer
     """
     if fmt in (DocumentFormat.MARKDOWN, DocumentFormat.TEX):
         return MarkdownRecognizer()
 
     if fmt == DocumentFormat.PDF:
         if backend == "vlm" and llm_client is not None and llm_client.supports_vision:
+            # REC-01：探测到可提取文字层（电子版教材）→ 自动走 0-LLM 文本提取，
+            # VLM 仅保留给扫描件/图表密集件。--force-vlm 关闭探测时跳过本分支。
+            if (
+                getattr(config, "vlm_auto_text_detect", False)
+                and file_path is not None
+                and _has_fitz()
+                and pdf_has_extractable_text_layer(
+                    file_path,
+                    min_chars_per_page=getattr(config, "vlm_text_layer_min_chars_per_page", 100),
+                    sample_pages=getattr(config, "vlm_text_layer_sample_pages", 5),
+                )
+            ):
+                logger.info(
+                    "recognizer_pdf_text_layer_autodowngrade",
+                    file=file_path.name,
+                    reason="extractable_text_layer_detected",
+                    backend_requested=backend,
+                    chosen="pymupdf",
+                )
+                return PyMuPdfRecognizer()
             if not _has_pdf_image_renderer():
                 logger.warning(
                     "recognizer_pdf_vlm_fallback",

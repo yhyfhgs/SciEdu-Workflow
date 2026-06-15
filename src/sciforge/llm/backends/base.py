@@ -27,6 +27,9 @@ class BaseBackend:
 
     def __init__(self, config: LLMConfig) -> None:
         self.config = config
+        # REC-08：最近一次调用的真实 token usage（含 cache_read/creation），由各 backend
+        # 在 generate 后写入；LLMClient.last_usage 暴露给 retry 的 llm_call_metrics 验证缓存。
+        self.last_usage: dict[str, int] = {}
 
     # ── 参数解析 ──────────────────────────────────────────
 
@@ -89,9 +92,7 @@ class BaseBackend:
             headers = getattr(resp, "headers", None)
             if headers is not None:
                 for key in ("retry-after", "Retry-After", "x-ratelimit-reset"):
-                    val = (
-                        headers.get(key) if hasattr(headers, "get") else None
-                    )
+                    val = headers.get(key) if hasattr(headers, "get") else None
                     if val:
                         try:
                             retry_after = float(val)

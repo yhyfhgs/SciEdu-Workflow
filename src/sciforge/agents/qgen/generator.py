@@ -113,9 +113,7 @@ class QuestionGenerator:
             return self._variant_template.format(
                 subject=subject_text,
                 source_question_latex=req.source_question.content,
-                strategy_instruction=self._strategy_templates.get(
-                    req.strategy, req.strategy.value
-                ),
+                strategy_instruction=self._strategy_templates.get(req.strategy, req.strategy.value),
                 target_difficulty=req.difficulty_target,
                 difficulty_calibration=difficulty_cal,
                 question_type=req.question_type,
@@ -127,9 +125,7 @@ class QuestionGenerator:
             topics=", ".join(req.topics),
             target_difficulty=req.difficulty_target,
             question_type=req.question_type,
-            strategy_instruction=self._strategy_templates.get(
-                req.strategy, req.strategy.value
-            ),
+            strategy_instruction=self._strategy_templates.get(req.strategy, req.strategy.value),
             difficulty_calibration=difficulty_cal,
             context_block=context_block,
         )

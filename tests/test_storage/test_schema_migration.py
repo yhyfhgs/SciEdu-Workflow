@@ -122,18 +122,21 @@ def test_defaults_for_non_generated(tmp_path: Path) -> None:
 
 
 def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
-    """旧 v8 库打开 → 自动 ALTER 升级到 v9，不删库、保留旧数据"""
+    """旧 v8 库打开 → 自动 ALTER 链式升级到当前版本(v10)，不删库、保留旧数据"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
 
     backend = SQLiteStorageBackend(db)
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 10
         # 旧数据保留，新列以默认值可读
         old = backend.load_question("q-old")
         assert old.content == "旧题内容"
         assert old.is_generated is False
         assert old.tenant_id == ""
+        # REC-19：v10 结构化题型列迁移后可写可读
+        assert old.options == []
+        assert old.correct_option is None
         # 迁移后能写入并读回带生成元数据的新题
         q = Question(
             discipline=Discipline.MATH,
@@ -148,13 +151,13 @@ def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
 
 
 def test_migration_idempotent_rerun(tmp_path: Path) -> None:
-    """已迁移到 v9 的库再次打开不报错、版本仍为 9"""
+    """已迁移到当前版本的库再次打开不报错、版本仍为 v10"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
     SQLiteStorageBackend(db).close()  # 首次迁移
     backend = SQLiteStorageBackend(db)  # 二次打开
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 10
     finally:
         backend.close()
 

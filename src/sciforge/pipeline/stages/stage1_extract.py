@@ -37,6 +37,7 @@ from sciforge.pipeline.retry import (
     RetryExhausted,
     call_llm_json_with_schema_retry_with_feedback,
 )
+from sciforge.pipeline.source_classifier import detect_genre
 from sciforge.prompts.templates import (
     build_pipeline_prompt_io,
     get_extract_stage1_initial_parts,
@@ -138,12 +139,8 @@ class Stage1Extract:
         self.max_retries: int = int(getattr(config, "stage1_extract_max_retries", 3))
         self.retry_base_delay: float = float(getattr(config, "extract_retry_base_delay", 2.0))
         # 429 rate limit 配置
-        self.rate_limit_base_sleep: float = float(
-            getattr(config, "rate_limit_base_sleep", 300.0)
-        )
-        self.rate_limit_max_sleep: float = float(
-            getattr(config, "rate_limit_max_sleep", 1800.0)
-        )
+        self.rate_limit_base_sleep: float = float(getattr(config, "rate_limit_base_sleep", 300.0))
+        self.rate_limit_max_sleep: float = float(getattr(config, "rate_limit_max_sleep", 1800.0))
         self.rate_limit_total_budget: float = float(
             getattr(config, "rate_limit_total_budget", 21600.0)
         )
@@ -151,19 +148,20 @@ class Stage1Extract:
         self._prev_tail_summary: str = ""
         self._recent_item_examples: list[str] = []
         self._max_examples = 3
-        self.fast_skip_enabled: bool = bool(
-            getattr(config, "empty_window_fast_skip", True)
-        )
+        self.fast_skip_enabled: bool = bool(getattr(config, "empty_window_fast_skip", True))
         # strict（默认 True，高召回）：fast-skip 不仅看强标记，还须无弱信号才跳窗。
         # 设 False 退回旧行为（仅强标记预检）。fast_skip_enabled=False 则完全不跳。
-        self.fast_skip_strict: bool = bool(
-            getattr(config, "extract_fast_skip_strict", True)
-        )
+        self.fast_skip_strict: bool = bool(getattr(config, "extract_fast_skip_strict", True))
+        # REC-14：文档体裁（book/exam_paper/lecture/unknown），首个 block 内容探测一次。
+        # 试卷/讲义关 fast-skip（卷末密集短题、讲义无编号要点易被 regex 预检误跳）→ 提召回。
+        self._genre: str = "unknown"
+        self._genre_detected: bool = False
+        # REC-20：当前 block 的确定性章节结构（detect_section_boundaries 产物），注入提取 prompt
+        # 作为 structural_context 的权威先验，消灭"串行路径白跑 section_boundaries"的死逻辑。
+        self._section_hint: str = ""
         # #1 单文档内并行提取（opt-in）：按 section 边界切段、段间并发、段内 carry-aware 滑窗。
         # 默认 False → 走原有逐块流式串行路径（本次改动不触碰默认行为）。
-        self.parallel_enabled: bool = bool(
-            getattr(config, "intra_doc_parallel_extract", False)
-        )
+        self.parallel_enabled: bool = bool(getattr(config, "intra_doc_parallel_extract", False))
         self.segment_concurrency: int = max(
             1, int(getattr(config, "intra_doc_segment_concurrency", 4))
         )
@@ -208,6 +206,25 @@ class Stage1Extract:
                         logger.warning("stage1_extract_unexpected_msg", type=type(msg).__name__)
                         continue
                     current_block = msg
+
+                    # REC-14：首个 block 内容探测体裁；试卷/讲义关 fast-skip 提召回
+                    if not self._genre_detected:
+                        self._genre_detected = True
+                        self._genre = detect_genre(current_block.md_text)
+                        if self._genre in ("exam_paper", "lecture"):
+                            self.fast_skip_enabled = False
+                        logger.info(
+                            "stage1_genre_detected",
+                            genre=self._genre,
+                            fast_skip_enabled=self.fast_skip_enabled,
+                        )
+
+                    # REC-20：用确定性章节边界作 structural_context 先验（取本 block 的标题）
+                    if current_block.section_boundaries:
+                        titles = [t for _, _, t in current_block.section_boundaries if t.strip()]
+                        self._section_hint = " / ".join(titles[:8])
+                    else:
+                        self._section_hint = ""
 
                     if current_block.block_index < state.current_block_idx:
                         logger.debug(
@@ -354,6 +371,28 @@ class Stage1Extract:
                 await self._sync_state(state, force=True)
                 break
 
+            # REC-12：文末/章末尾部 + regex 检测到条目标记但 LLM 返空 → 尽力强制再提取一次，
+            # 避免试卷最后几题/章末习题因 near-tail guard 反复推迟而在 EOF 永久漏失。
+            if (
+                not payload.items
+                and not window_empty
+                and is_last
+                and window_len >= len(self.line_buffer)
+            ):
+                try:
+                    forced = await self._extract_batch(
+                        window, window_start_int, window_last_int, force_extract=True
+                    )
+                except RetryExhausted:
+                    forced = None
+                if forced is not None and forced.items:
+                    logger.info(
+                        "stage1_terminal_tail_force_extracted",
+                        line_range=f"{window_start_int}-{window_last_int}",
+                        count=len(forced.items),
+                    )
+                    payload = forced
+
             if not payload.items:
                 # 未提到条目 → 扩窗口或 force consume
                 self.consecutive_empty += 1
@@ -380,15 +419,13 @@ class Stage1Extract:
                     self.line_offset += slide
                     self.current_window_size = self.base_window
                     self.consecutive_empty = 0
-                    await self._sync_state(state, force=True)
+                    await self._sync_state(state)  # REC-17：无条目快跳（未提取）→ 节流
                     continue
 
                 # ── 第二层：改进 force-consume ──
                 # 触发：达 max 且连续空够多次，**或**文末尾部（内容不会再增长，
                 # 提前 force consume 省去对同一段内容的多次无效扩窗调用）。
-                if (
-                    at_max and self.consecutive_empty >= self.empty_force_limit
-                ) or terminal_tail:
+                if (at_max and self.consecutive_empty >= self.empty_force_limit) or terminal_tail:
                     # 判断是否有不完整尾部条目
                     if (
                         payload.stop_reason == "incomplete_at_tail"
@@ -439,7 +476,9 @@ class Stage1Extract:
                     self.line_offset += slide
                     self.current_window_size = self.base_window
                     self.consecutive_empty = 0
-                    await self._sync_state(state, force=True)
+                    # REC-17：纯窗口管理（未提取任何条目）→ 走 3s 节流，不每窗强制刷盘。
+                    # crash 后 resume 从上次节流点重扫，Stage3 content_hash 去重幂等。
+                    await self._sync_state(state)
                     continue
                 if not at_max:
                     next_size = min(self.current_window_size + self.expand_step, self.max_window)
@@ -451,12 +490,12 @@ class Stage1Extract:
                         stop_reason=payload.stop_reason,
                     )
                     self.current_window_size = next_size
-                    await self._sync_state(state, force=True)
+                    await self._sync_state(state)  # REC-17：扩窗（未提取）→ 节流
                     if len(self.line_buffer) >= self.current_window_size or is_last:
                         continue
                     break
                 # 已达 max 但未到 force_limit，且非末尾 → 等下一 block
-                await self._sync_state(state, force=True)
+                await self._sync_state(state)  # REC-17：等待下一 block（未提取）→ 节流
                 if is_last:
                     continue
                 break
@@ -526,15 +565,38 @@ class Stage1Extract:
     # ── LLM 调用 ──────────────────────────────────────
 
     async def _extract_batch(
-        self, window: list[str], window_start_line: int, window_last_line: int
+        self,
+        window: list[str],
+        window_start_line: int,
+        window_last_line: int,
+        *,
+        force_extract: bool = False,
     ) -> BatchItemExtractPayloadLLM:
         """单次 LLM 调用，批量提取窗口内**所有完整**条目。
 
         不完整（截断/未闭合解答/不确定有解）的条目**不进 items**，留给下一窗口。
+
+        force_extract（REC-12）：文档/章节末尾的 last-resort 模式——指示 LLM 尽力提取剩余
+        条目（解答不完整就用 solution_deferred），并**关闭 near-tail guard**（不再因靠近
+        窗口末尾而拒绝），避免文末条目在 EOF 永久漏失。
         """
         chunk_text = "".join(window)
 
         extra_sections: list[str] = []
+        if self._section_hint:
+            extra_sections.append(
+                "## 文档章节结构（权威先验，来自确定性边界检测）\n"
+                f"{self._section_hint}\n"
+                "**要求**：填 `structural_context` 时优先与上述章节标题对齐"
+                "（chapter_title / section_title 取最贴近当前窗口的标题），不要臆造。"
+            )
+        if force_extract:
+            extra_sections.append(
+                "## 文档末尾强制提取（last resort）\n"
+                "这是文档/章节**末尾**窗口，后面没有更多内容承接。请**尽力提取剩余所有条目**，"
+                "即使解答看起来不完整/被截断；对习题/例题若解答可能在他处，用 "
+                "`solution_status=solution_deferred`（**不要**因靠近窗口末尾而推迟或留空）。"
+            )
         extra_sections.append(
             "## 当前窗口行号范围（**反跳过校验基准**）\n"
             f"- 起点行号：{window_start_line}\n"
@@ -580,8 +642,9 @@ class Stage1Extract:
             system=self.system_prompt,
             max_attempts=self.max_retries,
             base_delay=self.retry_base_delay,
-            validation_context={"window_last_line": window_last_line},
-            stage_name="stage1_extract",
+            # force_extract 时省略 window_last_line → near-tail guard 失效（允许文末条目入 items）
+            validation_context={} if force_extract else {"window_last_line": window_last_line},
+            stage_name="stage1_extract_force" if force_extract else "stage1_extract",
             rate_limit_base_sleep=self.rate_limit_base_sleep,
             rate_limit_max_sleep=self.rate_limit_max_sleep,
             rate_limit_total_budget=self.rate_limit_total_budget,
@@ -658,9 +721,9 @@ class Stage1Extract:
 
             # 一次性预留连续 id（文档顺序），逐段切片分配 → order_index = item_id 连续递增
             item_ids_all = await self._allocate_item_ids(total)
-            assert item_ids_all == list(
-                range(item_ids_all[0], item_ids_all[0] + total)
-            ), "并行路径 item_id 必须连续（order_index=item_id 不变量）"
+            assert item_ids_all == list(range(item_ids_all[0], item_ids_all[0] + total)), (
+                "并行路径 item_id 必须连续（order_index=item_id 不变量）"
+            )
 
             cursor = 0
             for seg, items in grouped:
@@ -882,6 +945,11 @@ class Stage1Extract:
                 snapshot = {
                     "item_id": item_id,
                     "item": item.model_dump(),
+                    # REC-11：存原 window 全文 + stop_reason，resume 重放时 Stage1Review 才能
+                    # 拿到原文做反跳过补齐/题答绑定/漏解校验（否则三道纠错防线在 resume 后空跑）。
+                    # checkpoint 为本地瞬态目录（--restart 清理），此处冗余可接受。
+                    "window_lines": list(batch.window_lines),
+                    "stop_reason": batch.stop_reason,
                     "window_line_range": list(batch.window_line_range),
                     "window_last_line": batch.window_last_line,
                     "block_index": batch.block_index,

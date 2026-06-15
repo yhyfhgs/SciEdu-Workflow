@@ -59,6 +59,11 @@ class SingleItemExtractLLM(BaseModel):
     # 题目形式（题面可见即填，与认知类别正交）：choice/multiple_choice/fill_blank/
     # true_false/short_answer/subjective；knowledge 或无法判定时留 ""。Stage1 识别。
     question_form: str = ""
+    # 结构化题型字段（REC-19，题面可见即填；非选择/填空留空）。choice 题填 options +
+    # correct_option，fill_blank 题填 blanks。供 Stage3 落库到 questions.options/... 列。
+    options: list[str] = Field(default_factory=list)
+    correct_option: str | None = None
+    blanks: int | None = None
     corrected_content: str = Field(min_length=1)
     corrected_proof: str | None = None
     corrected_solution: str | None = None
@@ -409,7 +414,22 @@ class SingleAnnotationLLM(BaseModel):
         return self
 
 
+class BatchAnnotationLLM(BaseModel):
+    """Stage2 批量标注输出（REC-04）：一次 LLM 调用给 N 条 item 打标。
+
+    ``annotations`` 与输入 items 严格 1:1（同序、同长度）。长度一致性由调用方
+    （Stage2Annotate）与输入 N 比对；不一致 → 降级逐条标注，单条失败不污染整批。
+    每个元素复用 ``SingleAnnotationLLM`` 的字段校验与学科根校验——pydantic 会把
+    validation context 传播到嵌套元素，故 tags[0]/taxonomy 前缀/主分支检查照常生效。
+    """
+
+    annotations: list[SingleAnnotationLLM] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="ignore")
+
+
 __all__ = [
+    "BatchAnnotationLLM",
     "BatchItemExtractPayloadLLM",
     "BatchReviewPayloadLLM",
     "SingleAnnotationLLM",

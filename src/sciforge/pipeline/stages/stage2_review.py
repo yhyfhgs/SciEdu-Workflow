@@ -33,7 +33,7 @@ from sciforge.pipeline.retry import (
     call_llm_json_with_schema_retry_with_feedback,
 )
 from sciforge.pipeline.source_classifier import format_baseline_hint
-from sciforge.pipeline.tag_tree import TagTree
+from sciforge.pipeline.tag_tree import TagTree, TagTreeReadable
 from sciforge.pipeline.taxonomy_validator import TaxonomyValidator
 from sciforge.prompts.templates import (
     build_pipeline_prompt_io,
@@ -48,11 +48,19 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 # 高危 item_type（与 Stage1Review 共享定义）
-_HIGH_RISK_TYPES = frozenset({
-    "theorem", "lemma", "corollary", "proposition",
-    "exercise", "example", "problem",
-    "property", "formula",
-})
+_HIGH_RISK_TYPES = frozenset(
+    {
+        "theorem",
+        "lemma",
+        "corollary",
+        "proposition",
+        "exercise",
+        "example",
+        "problem",
+        "property",
+        "formula",
+    }
+)
 
 
 class Stage2Review:
@@ -64,7 +72,7 @@ class Stage2Review:
         config: AppConfig,
         checkpoint_root: Path | None = None,
         discipline: Discipline = Discipline.MATH,
-        tag_tree: TagTree | None = None,
+        tag_tree: TagTreeReadable | None = None,
     ) -> None:
         self.llm = llm_client
         self.config = config
@@ -83,25 +91,22 @@ class Stage2Review:
         )
         self.max_retries: int = int(getattr(config, "stage2_review_max_retries", 2))
         self.retry_base_delay: float = float(getattr(config, "extract_retry_base_delay", 2.0))
-        self.conditional_skip: bool = bool(
-            getattr(config, "review_conditional_enabled", True)
-        )
-        self.concurrency: int = max(
-            1, int(getattr(config, "stage2_review_concurrency", 1))
-        )
-        self.rate_limit_base_sleep: float = float(
-            getattr(config, "rate_limit_base_sleep", 300.0)
-        )
-        self.rate_limit_max_sleep: float = float(
-            getattr(config, "rate_limit_max_sleep", 1800.0)
-        )
+        self.conditional_skip: bool = bool(getattr(config, "review_conditional_enabled", True))
+        self.concurrency: int = max(1, int(getattr(config, "stage2_review_concurrency", 1)))
+        self.rate_limit_base_sleep: float = float(getattr(config, "rate_limit_base_sleep", 300.0))
+        self.rate_limit_max_sleep: float = float(getattr(config, "rate_limit_max_sleep", 1800.0))
         self.rate_limit_total_budget: float = float(
             getattr(config, "rate_limit_total_budget", 21600.0)
         )
-        self.tag_tree = tag_tree if tag_tree is not None else TagTree()
+        # REC-09：接受只读视图（TagTreeSnapshot）或裸 TagTree（测试/独立调用）。
+        self.tag_tree: TagTreeReadable = tag_tree if tag_tree is not None else TagTree()
         self.taxonomy_validator = TaxonomyValidator()
         self.tag_tree_max_depth: int = int(getattr(config, "tag_tree_max_depth", 4))
         self.tag_tree_max_nodes: int = int(getattr(config, "tag_tree_max_nodes", 200))
+        # REC-09：全量 taxonomy 整个 run 不变，预缓存一次（原本每条 _review_one 重新序列化）。
+        self._full_taxonomy_cache: str = self.taxonomy_validator.serialize_for_prompt(
+            discipline=str(self.discipline), max_depth=3
+        )
 
     async def run(
         self,
@@ -257,9 +262,7 @@ class Stage2Review:
         tag_subtree = self.tag_tree.serialize_for_prompt(
             max_depth=self.tag_tree_max_depth, max_nodes=self.tag_tree_max_nodes
         )
-        taxonomy_tree = self.taxonomy_validator.serialize_for_prompt(
-            discipline=str(self.discipline), max_depth=3
-        )
+        taxonomy_tree = self._full_taxonomy_cache
         source_genre_hint = format_baseline_hint(annotated.source_file or "")
 
         def build_prompt(feedback: str) -> str:

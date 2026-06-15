@@ -28,6 +28,7 @@ _VLM_TEMPLATE_RAW = load_prompt("pipeline/vlm_convert.txt")
 _EXTRACT_STAGE1_INITIAL_RAW = load_prompt("pipeline/extract_stage1_initial.txt")
 _EXTRACT_STAGE1_REVIEW_RAW = load_prompt("pipeline/extract_stage1_review.txt")
 _ANNOTATE_STAGE2_INITIAL_RAW = load_prompt("pipeline/annotate_stage2_initial.txt")
+_ANNOTATE_STAGE2_BATCH_RAW = load_prompt("pipeline/annotate_stage2_batch.txt")
 _ANNOTATE_STAGE2_REVIEW_RAW = load_prompt("pipeline/annotate_stage2_review.txt")
 
 
@@ -115,6 +116,20 @@ def get_annotate_stage2_initial_parts(discipline: Discipline) -> tuple[str, str]
     `{source_genre_hint}` / `{retry_feedback}`。
     """
     return split_static_dynamic(_inject_discipline_vars(_ANNOTATE_STAGE2_INITIAL_RAW, discipline))
+
+
+def get_annotate_stage2_batch_parts(discipline: Discipline) -> tuple[str, str]:
+    """Stage2Annotate 批量（REC-04）的 (静态 system, 动态 user)。
+
+    user 占位符：`{items_json}` / `{tag_subtree}` / `{taxonomy_tree}` /
+    `{source_genre_hint}` / `{retry_feedback}`。输出 schema：BatchAnnotationLLM。
+    """
+    return split_static_dynamic(_inject_discipline_vars(_ANNOTATE_STAGE2_BATCH_RAW, discipline))
+
+
+def get_annotate_stage2_batch_template(discipline: Discipline) -> str:
+    """Stage2Annotate 批量标注 prompt（合并回退路径用）。"""
+    return _inject_discipline_vars(_ANNOTATE_STAGE2_BATCH_RAW, discipline)
 
 
 def get_annotate_stage2_review_parts(discipline: Discipline) -> tuple[str, str]:

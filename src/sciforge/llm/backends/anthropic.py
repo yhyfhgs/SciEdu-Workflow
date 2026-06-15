@@ -16,6 +16,10 @@ logger = structlog.get_logger()
 # 本就忽略 cache_control）；中文指令很密，>500 字基本已超最小可缓存粒度。
 _AUTO_CACHE_MIN_CHARS = 500
 
+# REC-07：检测到 max_tokens 截断时，把 max_tokens 翻倍重抓一次的上限（避免静默丢尾部条目）。
+# 仅在原 max_tokens 有余量时触发；上限保守，避免超过模型输出上限触发 4xx。
+_TRUNCATION_REFETCH_CEILING = 32768
+
 
 class AnthropicBackend(BaseBackend):
     """Anthropic Claude API 后端，支持同步和异步"""
@@ -80,14 +84,34 @@ class AnthropicBackend(BaseBackend):
         """
         if not system:
             return system
-        auto = (
-            self.config.provider == LLMProvider.ANTHROPIC
-            and len(system) >= _AUTO_CACHE_MIN_CHARS
+        # REC-08：纯 Anthropic 自动缓存；anthropic_compatible 需 supports_prompt_cache 显式放行。
+        cacheable_provider = self.config.provider == LLMProvider.ANTHROPIC or (
+            self.config.provider == LLMProvider.ANTHROPIC_COMPATIBLE
+            and getattr(self.config, "supports_prompt_cache", False)
         )
+        auto = cacheable_provider and len(system) >= _AUTO_CACHE_MIN_CHARS
         if not (self.config.cache_control or auto):
             return system
         spec = self.config.cache_control or {"type": "ephemeral"}
         return [{"type": "text", "text": system, "cache_control": spec}]
+
+    @staticmethod
+    def _extract_usage(response: Any) -> dict[str, int]:
+        """读取真实 token usage（REC-08）：含 cache 命中量，供 llm_call_metrics 验证缓存收益。"""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        out: dict[str, int] = {}
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ):
+            val = getattr(usage, field, None)
+            if isinstance(val, int):
+                out[field] = val
+        return out
 
     def _maybe_inject_cache_control(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """（仅 vision 路径用）若 config.cache_control 非空，注入到最后一个 user message 末尾块。
@@ -123,6 +147,24 @@ class AnthropicBackend(BaseBackend):
                 messages=cast(Any, messages),
                 **sdk_params,
             )
+            # REC-07：max_tokens 截断 → 有余量时翻倍重抓一次（避免静默丢尾部条目/坏 JSON）
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                cur = int(sdk_params.get("max_tokens", self.config.max_tokens))
+                bumped = min(cur * 2, _TRUNCATION_REFETCH_CEILING)
+                if bumped > cur:
+                    logger.warning(
+                        "anthropic_truncation_refetch",
+                        old_max_tokens=cur,
+                        new_max_tokens=bumped,
+                        model=self.config.model,
+                    )
+                    response = await self.async_client.messages.create(
+                        model=self.config.model,
+                        system=cast(Any, self._system_param(system)),
+                        messages=cast(Any, messages),
+                        **{**sdk_params, "max_tokens": bumped},
+                    )
+            self.last_usage = self._extract_usage(response)
             return self._extract_text(response)
         except Exception as e:
             self._raise_mapped(e)
@@ -137,6 +179,7 @@ class AnthropicBackend(BaseBackend):
                 messages=cast(Any, messages),
                 **sdk_params,
             )
+            self.last_usage = self._extract_usage(response)
             return self._extract_text(response)
         except Exception as e:
             self._raise_mapped(e)
@@ -309,3 +352,56 @@ class AnthropicBackend(BaseBackend):
             "stop_reason": response.stop_reason,
             "raw_content": response.content,
         }
+
+    # ── Message Batches API（REC-23：异步批处理，约半价）────────────────
+    # 适合**非交互式批处理**（如 parse run-book / 目录批量重标）：把彼此独立的调用
+    # 收集成一个 batch 一次提交、轮询取回。流式 Producer-Consumer 主路径不走这里。
+
+    def _batches_api(self) -> Any:
+        batches = getattr(getattr(self.async_client, "messages", None), "batches", None)
+        if batches is None:
+            raise RuntimeError(
+                "当前 anthropic SDK 不支持 Message Batches API（请升级 anthropic SDK）"
+            )
+        return batches
+
+    async def submit_message_batch(self, requests: list[dict[str, Any]]) -> str:
+        """提交一批独立请求，返回 batch_id。
+
+        requests 每项：``{"custom_id": str, "prompt": str, "system"?: str, "max_tokens"?: int}``。
+        """
+        sdk_params = self._to_sdk_params(self._resolve_params())
+        body: list[dict[str, Any]] = []
+        for r in requests:
+            params: dict[str, Any] = dict(sdk_params)
+            params["model"] = self.config.model
+            params["max_tokens"] = int(
+                r.get("max_tokens") or sdk_params.get("max_tokens") or self.config.max_tokens
+            )
+            params["messages"] = [{"role": "user", "content": r["prompt"]}]
+            if r.get("system"):
+                params["system"] = r["system"]
+            body.append({"custom_id": r["custom_id"], "params": params})
+        batch = await self._batches_api().create(requests=body)
+        return str(batch.id)
+
+    async def get_message_batch_status(self, batch_id: str) -> str:
+        """返回 batch 处理状态（in_progress / ended / ...）。"""
+        batch = await self._batches_api().retrieve(batch_id)
+        return str(getattr(batch, "processing_status", "unknown"))
+
+    async def fetch_message_batch_results(self, batch_id: str) -> dict[str, str]:
+        """取回结果：``{custom_id: text}``。失败/拒答条目映射为空串。"""
+        out: dict[str, str] = {}
+        async for entry in await self._batches_api().results(batch_id):
+            cid = str(getattr(entry, "custom_id", ""))
+            result = getattr(entry, "result", None)
+            text = ""
+            if result is not None and getattr(result, "type", None) == "succeeded":
+                msg = getattr(result, "message", None)
+                blocks = getattr(msg, "content", []) or []
+                text = "".join(
+                    getattr(b, "text", "") for b in blocks if getattr(b, "type", None) == "text"
+                )
+            out[cid] = text
+        return out

@@ -119,9 +119,7 @@ def test_prefilter_combined_passes_valid_novel() -> None:
     cand = _q(
         "Let $f(x) = \\sin(x)$. Compute the second derivative $f''(\\pi/4)$ by direct calculation."
     )
-    neg = _q(
-        "Find the inverse of the matrix $\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}$."
-    )
+    neg = _q("Find the inverse of the matrix $\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}$.")
     ok, reason = prefilter_candidate(cand, [neg])
     assert ok, reason
 

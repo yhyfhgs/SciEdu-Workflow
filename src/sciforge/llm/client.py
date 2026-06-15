@@ -26,6 +26,10 @@ T = TypeVar("T")
 DEFAULT_SYSTEM = "你是一位资深数学教育专家。"
 JSON_SYSTEM = "你是一位资深数学教育专家。请严格按 JSON 格式输出，不要包含 markdown 代码块。"
 
+# REC-27：llm_calls.jsonl 单条 prompt/response 截断上限 + 文件轮转阈值，防 VLM 大 prompt 撑爆
+_LOG_TEXT_CAP = 8000
+_LOG_ROTATE_BYTES = 64 * 1024 * 1024  # 64 MB
+
 
 class LLMClient:
     """统一 LLM 客户端，支持多提供者、同步/异步"""
@@ -41,6 +45,15 @@ class LLMClient:
         # 两者嵌套：获得全局许可后再争 model 许可，保证 provider 级限流精准
         self._request_semaphore: asyncio.Semaphore | None = None
         self._model_semaphore: asyncio.Semaphore | None = None
+
+    @property
+    def last_usage(self) -> dict[str, int]:
+        """REC-08：最近一次调用的真实 token usage（含 cache_read/creation_input_tokens）。
+
+        backend 不支持/未采集时返回 ``{}``。供 retry 的 ``llm_call_metrics`` 用真实 token
+        替代 ``chars//4`` 估算（中文严重偏差），并验证 prompt cache 命中。
+        """
+        return getattr(self._backend, "last_usage", {})
 
     def set_request_semaphore(self, semaphore: asyncio.Semaphore | None) -> None:
         """绑定跨 model 全局并发闸门（对应 AppConfig.max_concurrent_llm_calls）"""
@@ -195,6 +208,17 @@ class LLMClient:
         self._log_exchange(prompt, result, elapsed)
         return result
 
+    def _default_json_mode(self, kwargs: dict[str, Any]) -> None:
+        """REC-07：JSON 调用默认启用原生 JSON 模式，降低非法 JSON → 减少重试。
+
+        只在调用方与 config 都未显式设置 response_format 时注入。能力矩阵会按 provider 过滤：
+        OpenAI / Gemini / OpenAI 兼容保留生效；Anthropic / anthropic 兼容不支持 → 静默丢弃
+        （故对生产兼容网关零影响，依旧靠 prompt + thinking 控制）。
+        """
+        cfg_has = getattr(self.config, "response_format", None) is not None
+        if "response_format" not in kwargs and not cfg_has:
+            kwargs["response_format"] = {"type": "json_object"}
+
     async def generate_json(
         self,
         prompt: str,
@@ -203,6 +227,7 @@ class LLMClient:
     ) -> dict[str, Any]:
         """异步生成并解析 JSON"""
         system = system or JSON_SYSTEM
+        self._default_json_mode(kwargs)
         raw = await self.generate(prompt, system=system, **kwargs)
         return parse_llm_json(raw)
 
@@ -214,8 +239,25 @@ class LLMClient:
     ) -> dict[str, Any]:
         """同步生成并解析 JSON"""
         system = system or JSON_SYSTEM
+        self._default_json_mode(kwargs)
         raw = self.generate_sync(prompt, system=system, **kwargs)
         return parse_llm_json(raw)
+
+    # ── Message Batches（REC-23：异步批处理，约半价）─────────────────
+    @property
+    def supports_batch(self) -> bool:
+        """当前后端是否提供 Message Batches API（非交互式批处理）。"""
+        return hasattr(self._backend, "submit_message_batch")
+
+    async def submit_message_batch(self, requests: list[dict[str, Any]]) -> str:
+        """提交一批独立请求，返回 batch_id（详见 backend.submit_message_batch）。"""
+        return await self._backend.submit_message_batch(requests)  # type: ignore[no-any-return]
+
+    async def get_message_batch_status(self, batch_id: str) -> str:
+        return await self._backend.get_message_batch_status(batch_id)  # type: ignore[no-any-return]
+
+    async def fetch_message_batch_results(self, batch_id: str) -> dict[str, str]:
+        return await self._backend.fetch_message_batch_results(batch_id)  # type: ignore[no-any-return]
 
     # ── Vision (多模态) ───────────────────────────────────
 
@@ -691,6 +733,9 @@ class LLMClient:
             log_path = Path(self._log_dir)
             log_path.mkdir(parents=True, exist_ok=True)
 
+            # REC-27：截断 prompt/response（保留完整长度字段），避免 VLM 大 prompt 把
+            # JSONL 撑爆；超过上限的整文留 prompt_length/response_length 即可。
+            cap = _LOG_TEXT_CAP
             entry = {
                 "timestamp": datetime.now(UTC).isoformat(),
                 "call_count": self._call_count,
@@ -699,12 +744,16 @@ class LLMClient:
                 "prompt_length": len(prompt),
                 "response_length": len(response),
                 "latency_ms": latency_ms,
-                "prompt": prompt,
-                "response": response,
+                "prompt": prompt[:cap],
+                "response": response[:cap],
+                "truncated": len(prompt) > cap or len(response) > cap,
             }
 
             log_file = log_path / "llm_calls.jsonl"
             try:
+                # REC-27：超过 _LOG_ROTATE_BYTES 轮转一次（.1），防单文件无限增长
+                if log_file.exists() and log_file.stat().st_size > _LOG_ROTATE_BYTES:
+                    log_file.replace(log_path / "llm_calls.jsonl.1")
                 with log_file.open("a", encoding="utf-8") as f:
                     f.write(_json.dumps(entry, ensure_ascii=False) + "\n")
             except Exception:

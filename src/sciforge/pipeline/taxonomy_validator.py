@@ -93,8 +93,12 @@ class TaxonomyValidator:
     def empty(self) -> bool:
         return not self._valid_paths
 
-    def validate(self, raw_path: str) -> tuple[str, bool]:
+    def validate(self, raw_path: str, discipline: str | None = None) -> tuple[str, bool]:
         """校验并修正 taxonomy_path。
+
+        REC-15：传入 ``discipline``（如 "math"）后，前缀/模糊匹配结果若不在该学科根下
+        （既非 ``discipline`` 也非 ``discipline.`` 开头）则**拒绝**，避免跨学科 fuzzy 漂移
+        （把一条 math 路径模糊匹配到相似 physics 路径、制造看似合法实则错误的分类）。
 
         Returns:
             (修正后路径, 是否发生修正)
@@ -104,23 +108,28 @@ class TaxonomyValidator:
 
         path = self._normalize(raw_path)
 
+        def _in_discipline(p: str) -> bool:
+            if discipline is None:
+                return True
+            return p == discipline or p.startswith(discipline + ".")
+
         # 1. 精确匹配
         if path in self._valid_paths:
             return path, False
 
         # 2. 前缀匹配（LLM 给了更深的路径，截断到最长合法前缀）
         best_prefix = self._longest_valid_prefix(path)
-        if best_prefix and best_prefix != path:
+        if best_prefix and best_prefix != path and _in_discipline(best_prefix):
             logger.info("taxonomy_prefix_match", raw=raw_path, corrected=best_prefix)
             return best_prefix, True
 
         # 3. 模糊匹配（每段 edit_distance <= 2）
         fuzzy = self._fuzzy_match(path)
-        if fuzzy:
+        if fuzzy and _in_discipline(fuzzy):
             logger.info("taxonomy_fuzzy_match", raw=raw_path, corrected=fuzzy)
             return fuzzy, True
 
-        # 无匹配：保留原值
+        # 无匹配（或跨学科被拒）：保留原值
         logger.debug("taxonomy_no_match", path=raw_path)
         return path, False
 

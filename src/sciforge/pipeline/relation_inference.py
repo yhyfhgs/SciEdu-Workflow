@@ -102,30 +102,41 @@ def infer_structural_relations(rows: list[dict[str, Any]]) -> list[dict[str, Any
 
             if is_kp and it["type"] == "corollary":
                 dst = _nearest_preceding(
-                    items, i,
+                    items,
+                    i,
                     lambda x: x["kind"] == "kp" and x["type"] in _THEOREM_LIKE,
                     _MAX_GAP_COROLLARY,
                 )
                 if dst:
-                    _add(_edge(it["id"], dst["id"], RelationType.COROLLARY_OF, 0.9,
-                               "corollary 紧跟定理类知识点"))
+                    _add(
+                        _edge(
+                            it["id"],
+                            dst["id"],
+                            RelationType.COROLLARY_OF,
+                            0.9,
+                            "corollary 紧跟定理类知识点",
+                        )
+                    )
 
             if it["kind"] == "question":
-                dst = _nearest_preceding(
-                    items, i, lambda x: x["kind"] == "kp", _MAX_GAP_TESTS
-                )
+                dst = _nearest_preceding(items, i, lambda x: x["kind"] == "kp", _MAX_GAP_TESTS)
                 if dst:
-                    _add(_edge(it["id"], dst["id"], RelationType.TESTS, 0.6,
-                               "题目考查前置知识点"))
+                    _add(_edge(it["id"], dst["id"], RelationType.TESTS, 0.6, "题目考查前置知识点"))
 
             if is_kp:
                 if (
                     prev_kp_idx is not None
-                    and it["order_index"] - items[prev_kp_idx]["order_index"]
-                    <= _MAX_GAP_SUCCESSOR
+                    and it["order_index"] - items[prev_kp_idx]["order_index"] <= _MAX_GAP_SUCCESSOR
                 ):
-                    _add(_edge(items[prev_kp_idx]["id"], it["id"], RelationType.SUCCESSOR,
-                               0.5, "同节相邻知识点（阅读顺序）"))
+                    _add(
+                        _edge(
+                            items[prev_kp_idx]["id"],
+                            it["id"],
+                            RelationType.SUCCESSOR,
+                            0.5,
+                            "同节相邻知识点（阅读顺序）",
+                        )
+                    )
                 prev_kp_idx = i
 
     return edges

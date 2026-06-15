@@ -39,9 +39,7 @@ def check_structural_validity(content: str) -> tuple[bool, str]:
 
     # 花括号平衡
     if content.count("{") != content.count("}"):
-        return False, (
-            f"unbalanced_braces(open={content.count('{')}, close={content.count('}')})"
-        )
+        return False, (f"unbalanced_braces(open={content.count('{')}, close={content.count('}')})")
 
     # $ 成对（LaTeX inline math）
     # 排除 $$ 的情况下，$ 必须是偶数
@@ -97,9 +95,7 @@ def check_novelty(content: str, negative_examples: list[Question]) -> tuple[bool
     return True, ""
 
 
-def prefilter_candidate(
-    candidate: Question, negative_examples: list[Question]
-) -> tuple[bool, str]:
+def prefilter_candidate(candidate: Question, negative_examples: list[Question]) -> tuple[bool, str]:
     """对候选做全部 zero-cost 检查。
 
     Returns:

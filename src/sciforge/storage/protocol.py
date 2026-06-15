@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from sciforge.core.models import KnowledgePoint, Question
+    from sciforge.core.models import Figure, KnowledgePoint, Question
 
 
 @runtime_checkable
@@ -39,3 +39,7 @@ class BatchStorageBackend(StorageBackend, Protocol):
     ) -> int: ...
 
     def find_duplicates(self, content: str, item_type: str = "all") -> list[str]: ...
+
+    def count_existing_content(self, contents: list[str], scope: str) -> int: ...
+
+    def save_figures(self, figures: list[Figure]) -> int: ...

@@ -23,7 +23,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -33,6 +33,7 @@ from sciforge.core.models import (
     Discipline,
     DocumentFormat,
     ExtractedBatch,
+    Figure,
     FileExtractionState,
     KnowledgePoint,
     MdBlockSource,
@@ -66,7 +67,7 @@ from sciforge.pipeline.stages import (
     Stage2Review,
     Stage3Persist,
 )
-from sciforge.pipeline.tag_tree import TagTree
+from sciforge.pipeline.tag_tree import TagTree, TagTreeSnapshot
 from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 if TYPE_CHECKING:
@@ -116,6 +117,13 @@ class NoopStorageBackend:
     def find_duplicates(self, content: str, item_type: str = "all") -> list[str]:
         del content, item_type
         return []
+
+    def count_existing_content(self, contents: list[str], scope: str) -> int:
+        del contents, scope
+        return 0
+
+    def save_figures(self, figures: list[Figure]) -> int:
+        return len(figures)
 
     def save_question(self, question: Question) -> str:
         return question.id
@@ -346,19 +354,25 @@ class PipelineOrchestrator:
                     checkpoint_root=self.config.checkpoint_dir,
                     discipline=self.discipline,
                 )
+                # REC-09：Stage2 读 tag_tree 只读快照（消除 Stage3 每条 insert 触发的
+                # 序列化缓存失效 + 读写隔离）；Stage3 仍持有 live 树做 insert_path。
+                tag_tree_view = TagTreeSnapshot(
+                    shared_tag_tree,
+                    refresh_gap=int(getattr(self.config, "tag_tree_snapshot_refresh_gap", 16)),
+                )
                 s2_an = Stage2Annotate(
                     llm_client=annotate_llm,  # type: ignore[arg-type]
                     config=self.config,
                     checkpoint_root=self.config.checkpoint_dir,
                     discipline=self.discipline,
-                    tag_tree=shared_tag_tree,
+                    tag_tree=tag_tree_view,
                 )
                 s2_rev = Stage2Review(
                     llm_client=annotate_review_llm,  # type: ignore[arg-type]
                     config=self.config,
                     checkpoint_root=self.config.checkpoint_dir,
                     discipline=self.discipline,
-                    tag_tree=shared_tag_tree,
+                    tag_tree=tag_tree_view,
                 )
                 s3 = Stage3Persist(
                     storage=storage_for_pipeline,
@@ -447,8 +461,11 @@ class PipelineOrchestrator:
             # 10.5 编号连续性核对（#2/#8 召回兜底，不阻断入库）
             if isinstance(storage_for_pipeline, SQLiteStorageBackend):
                 try:
-                    rows = storage_for_pipeline.numbering_rows(
-                        str(primary_path), self.discipline.value
+                    # REC-17：全表读放线程池，避免阻塞目录并发下其他文件的协程
+                    rows = await asyncio.to_thread(
+                        storage_for_pipeline.numbering_rows,
+                        str(primary_path),
+                        self.discipline.value,
                     )
                     report = audit_numbering(rows)
                     write_numbering_report(report, self.config.checkpoint_dir, file_hash)
@@ -467,14 +484,21 @@ class PipelineOrchestrator:
                 self.config, "answer_linking_enabled", True
             ):
                 try:
-                    questions = storage_for_pipeline.load_questions_by_source(
-                        str(primary_path), self.discipline.value
+                    questions = await asyncio.to_thread(
+                        storage_for_pipeline.load_questions_by_source,
+                        str(primary_path),
+                        self.discipline.value,
                     )
                     link = link_answers(questions)
-                    for qid, sol in link.backfills:
-                        storage_for_pipeline.update_question_solution(qid, sol)
-                    for did in link.delete_ids:
-                        storage_for_pipeline.delete_question(did)
+
+                    def _apply_links() -> None:
+                        for qid, sol in link.backfills:
+                            storage_for_pipeline.update_question_solution(qid, sol)
+                        for did in link.delete_ids:
+                            storage_for_pipeline.delete_question(did)
+
+                    # REC-17：回填/删除写操作整体放线程池
+                    await asyncio.to_thread(_apply_links)
                     if link.backfills:
                         logger.info(
                             "pipeline_answer_linked",
@@ -490,14 +514,12 @@ class PipelineOrchestrator:
                 self.config, "relation_inference_enabled", True
             ):
                 try:
-                    rel_rows = storage_for_pipeline.relation_rows(
-                        str(primary_path), self.discipline.value
+                    rel_rows = await asyncio.to_thread(
+                        storage_for_pipeline.relation_rows, str(primary_path), self.discipline.value
                     )
                     edges = infer_structural_relations(rel_rows)
                     if edges:
-                        added = storage_for_pipeline.save_relations(
-                            edges, self.discipline.value
-                        )
+                        added = storage_for_pipeline.save_relations(edges, self.discipline.value)
                         logger.info(
                             "pipeline_relations_inferred",
                             file=primary_path.name,
@@ -512,15 +534,15 @@ class PipelineOrchestrator:
                 self.config, "reconciliation_enabled", True
             ):
                 try:
-                    rec_rows = storage_for_pipeline.reconciliation_rows(
-                        str(primary_path), self.discipline.value
+                    rec_rows = await asyncio.to_thread(
+                        storage_for_pipeline.reconciliation_rows,
+                        str(primary_path),
+                        self.discipline.value,
                     )
                     report = reconcile(rec_rows)
                     import json as _json
 
-                    rec_path = (
-                        self.config.checkpoint_dir / file_hash / "reconciliation_report.json"
-                    )
+                    rec_path = self.config.checkpoint_dir / file_hash / "reconciliation_report.json"
                     rec_path.parent.mkdir(parents=True, exist_ok=True)
                     rec_path.write_text(
                         _json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -533,6 +555,26 @@ class PipelineOrchestrator:
                             duplicate_groups=s["duplicate_groups"],
                             type_mismatches=s["type_mismatches"],
                         )
+                    # REC-15：开启 autofix 时，把高置信 kp_type_mismatch 回改 DB
+                    # （首标记强规则；category 跨表/近重复仍只报告，不自动改）
+                    if getattr(self.config, "reconciliation_autofix", False):
+                        fixes = [
+                            m
+                            for m in report["type_mismatches"]
+                            if m.get("issue") == "kp_type_mismatch" and m.get("expected")
+                        ]
+
+                        def _apply_kp_fixes(items: list[dict[str, Any]]) -> None:
+                            for m in items:
+                                storage_for_pipeline.update_kp_type(m["id"], m["expected"])
+
+                        if fixes:
+                            await asyncio.to_thread(_apply_kp_fixes, fixes)
+                            logger.info(
+                                "pipeline_reconciliation_autofixed",
+                                file=primary_path.name,
+                                kp_type_fixed=len(fixes),
+                            )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("reconciliation_failed", error=str(exc))
 
@@ -615,6 +657,7 @@ class PipelineOrchestrator:
                         vlm_llm,
                         self.config,
                         discipline=self.discipline,
+                        file_path=f,
                     )
                 except Exception as exc:
                     logger.error(
@@ -661,9 +704,7 @@ class PipelineOrchestrator:
                         md_path=str(batch.md_path),
                         md_text=batch.md_text,
                         block_index=block_index,
-                        section_boundaries=detect_section_boundaries(
-                            batch.md_text.splitlines()
-                        ),
+                        section_boundaries=detect_section_boundaries(batch.md_text.splitlines()),
                     )
                     block_index += 1
                     result.blocks_pushed = block_index
@@ -828,7 +869,8 @@ class PipelineOrchestrator:
     async def process_directory(
         self,
         dir_path: Path,
-        max_concurrent_files: int = 4,
+        # REC-30：与 AppConfig.max_concurrent_files 默认对齐（消除 4 vs 8 漂移）
+        max_concurrent_files: int = 8,
     ) -> list[PipelineResult]:
         files = sorted(self._collect_files(dir_path), key=self._natural_sort_key)
         grouped = self._group_part_files(files)
@@ -873,40 +915,46 @@ class PipelineOrchestrator:
         )
 
         # 全局 order_index 分配器：避免并发文件分配到重复 ID
-        allocator_start = 0
         storage_for_dir: SQLiteStorageBackend | None = (
             self.storage if isinstance(self.storage, SQLiteStorageBackend) else None
         )
         if storage_for_dir is None and self.db_path is not None:
             storage_for_dir = SQLiteStorageBackend(self.db_path)
-        if storage_for_dir is not None:
-            try:
-                allocator_start = storage_for_dir.max_order_index(self.discipline.value) + 1
-            except Exception:
-                allocator_start = 0
-        for _, item, _ in work_items:
-            try:
-                item_hash = compute_file_hash(item if isinstance(item, list) else item)
-                item_state = load_state(self.config.checkpoint_dir, item_hash)
-                if item_state is not None:
-                    allocator_start = max(
-                        allocator_start,
-                        item_state.next_item_id,
-                        item_state.last_persisted_item_id + 1,
-                    )
-                for stage_dir in (
-                    "stage1",
-                    "stage1_review",
-                    "stage2",
-                    "stage2_review",
-                    "persisted",
-                ):
-                    allocator_start = max(
-                        allocator_start,
-                        self._latest_mirrored_item_id(item_hash, stage_dir) + 1,
-                    )
-            except Exception:
-                pass
+
+        def _scan_allocator_start() -> int:
+            """预扫 DB MAX(order_index) + 各文件 checkpoint/镜像最大 id（确定分配起点）。"""
+            result = 0
+            if storage_for_dir is not None:
+                try:
+                    result = storage_for_dir.max_order_index(self.discipline.value) + 1
+                except Exception:
+                    result = 0
+            for _, item, _ in work_items:
+                try:
+                    item_hash = compute_file_hash(item if isinstance(item, list) else item)
+                    item_state = load_state(self.config.checkpoint_dir, item_hash)
+                    if item_state is not None:
+                        result = max(
+                            result,
+                            item_state.next_item_id,
+                            item_state.last_persisted_item_id + 1,
+                        )
+                    for stage_dir in (
+                        "stage1",
+                        "stage1_review",
+                        "stage2",
+                        "stage2_review",
+                        "persisted",
+                    ):
+                        result = max(
+                            result, self._latest_mirrored_item_id(item_hash, stage_dir) + 1
+                        )
+                except Exception:
+                    pass
+            return result
+
+        # REC-17：整段预扫是 O(总条目数) 的同步磁盘遍历，放线程池避免阻塞 event loop 启动
+        allocator_start = await asyncio.to_thread(_scan_allocator_start)
         allocator = OrderIndexAllocator(start=allocator_start)
 
         sem = asyncio.Semaphore(max_concurrent_files)
@@ -1107,6 +1155,8 @@ class PipelineOrchestrator:
                     window_lines=list(data.get("window_lines", [])),
                     window_line_range=window_line_range_t,
                     window_last_line=int(data.get("window_last_line", 0)),
+                    # REC-11：恢复 stop_reason，使 Stage1Review 条件化跳过判定不被默认值污染
+                    stop_reason=str(data.get("stop_reason", "all_complete")),
                     block_index=int(data.get("block_index", 0)),
                     source_file=str(data.get("source_file", "")),
                     page_start=data.get("page_start"),

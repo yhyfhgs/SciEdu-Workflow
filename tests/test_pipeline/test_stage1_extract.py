@@ -272,3 +272,91 @@ class TestResumeCheckpointPrecision:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestTerminalTailForceExtract:
+    """REC-12 — 文末尾部 + 有标记但 LLM 返空 → 强制再提取一次，恢复尾部条目。"""
+
+    def test_force_extract_recovers_tail_items(self, tmp_path: Path) -> None:
+        config = _make_config(window=500, max_window=1000)
+        # 正常提取返回空；force-extract 再调返回 1 条
+        llm = _ScriptedLLM([_no_items(), _mk_item(1, 40)])
+        state = _make_state()
+
+        async def run() -> list[object]:
+            stage = Stage1Extract(
+                llm_client=llm,  # type: ignore[arg-type]
+                config=config,
+                checkpoint_root=tmp_path,
+                discipline=Discipline.MATH,
+            )
+            q_md: asyncio.Queue[object] = asyncio.Queue()
+            q_raw: asyncio.Queue[object] = asyncio.Queue()
+            # 含条目标记（has_markers=True → window_empty=False）的小窗口（terminal_tail）
+            md_text = "**习题 5** 求极限\n" + "\n".join(f"line {i}" for i in range(1, 40)) + "\n"
+            await q_md.put(
+                MdBlockSource(
+                    file_path="t.md",
+                    page_start=1,
+                    page_end=1,
+                    md_path=str(tmp_path / "p.md"),
+                    md_text=md_text,
+                    block_index=0,
+                )
+            )
+            await q_md.put(SENTINEL)
+            await stage.run(q_md, q_raw, state)
+            out: list[object] = []
+            while not q_raw.empty():
+                out.append(q_raw.get_nowait())
+            return out
+
+        results = asyncio.run(run())
+        emitted = [r for r in results if isinstance(r, ExtractedBatch)]
+        assert len(emitted) == 1, "force-extract 应恢复文末条目"
+        assert llm.call_count == 2, f"正常 1 次 + force 1 次，实际 {llm.call_count}"
+
+
+class TestResumeMirrorWindow:
+    """REC-11 — _mirror_batch 落盘 window_lines + stop_reason，供 resume 复原 Stage1Review。"""
+
+    def test_mirror_snapshot_includes_window_and_stop_reason(self, tmp_path: Path) -> None:
+        import json as _json
+
+        from sciforge.pipeline.llm_schemas import SingleItemExtractLLM
+
+        config = _make_config()
+        stage = Stage1Extract(
+            llm_client=_ScriptedLLM([]),  # type: ignore[arg-type]
+            config=config,
+            checkpoint_root=tmp_path,
+            discipline=Discipline.MATH,
+        )
+        state = _make_state()
+        item = SingleItemExtractLLM(
+            category="knowledge",
+            item_type="theorem",
+            number="1",
+            corrected_content="Body.",
+            corrected_proof="Proof.",
+            corrected_solution=None,
+            solution_status="complete",
+            start_line=1,
+            end_line=5,
+        )
+        batch = ExtractedBatch(
+            item_ids=[0],
+            items=[item],
+            window_lines=["**定理 1** ...\n", "证明：...\n"],
+            window_line_range=(1, 2),
+            window_last_line=2,
+            stop_reason="incomplete_at_tail",
+            block_index=0,
+            source_file="t.md",
+        )
+        stage._mirror_batch(batch, state, stage_dir="stage1")
+
+        snap_path = tmp_path / state.file_hash / "items" / "stage1" / "item_000000.json"
+        data = _json.loads(snap_path.read_text(encoding="utf-8"))
+        assert data["window_lines"] == ["**定理 1** ...\n", "证明：...\n"]
+        assert data["stop_reason"] == "incomplete_at_tail"

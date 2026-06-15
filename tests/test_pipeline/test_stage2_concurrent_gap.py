@@ -42,7 +42,7 @@ class _ValidAnnotationLLM:
         pass
 
 
-def _reviewed(item_id: int) -> ReviewedItem:
+def _reviewed(item_id: int, block_index: int = 0) -> ReviewedItem:
     return ReviewedItem(
         item_id=item_id,
         item=SingleItemExtractLLM(
@@ -56,7 +56,7 @@ def _reviewed(item_id: int) -> ReviewedItem:
             start_line=item_id * 10 + 1,
             end_line=item_id * 10 + 5,
         ),
-        block_index=0,
+        block_index=block_index,
         source_file="t.md",
     )
 
@@ -101,7 +101,11 @@ async def test_concurrent_gap_preserves_order_no_loss() -> None:
 
 @pytest.mark.asyncio
 async def test_concurrent_gap_does_not_stall_streaming() -> None:
-    """gap 之后的条目须在 SENTINEL/close 之前就被释放（否则 buffer 卡死 → 超时）。"""
+    """gap 之后的条目须在 SENTINEL/close 之前就被释放（否则 buffer 卡死 → 超时）。
+
+    REC-04：批量打标按 block_index 成组，组在 block 边界冲刷。用不同 block_index 触发
+    各组在 SENTINEL 前冲刷，验证 gap（缺 1）被分发器在读取时 skip()、不卡 ReorderBuffer。
+    """
     stage = _make_stage(concurrency=2)
     state = FileExtractionState(file_path="t.md", file_hash="")
 
@@ -109,10 +113,11 @@ async def test_concurrent_gap_does_not_stall_streaming() -> None:
     out_q: asyncio.Queue[object] = asyncio.Queue()
 
     task = asyncio.create_task(stage._run_concurrent(in_q, out_q, state))
-    # 喂 id=0 与 id=2（缺 1）后**不发 SENTINEL**——若分发器不补 skip(1)，
-    # id=2 会永远卡在 _pending，下面的轮询将超时。
-    await in_q.put(_reviewed(0))
-    await in_q.put(_reviewed(2))
+    # id=0(block0) → id=2(block1，缺 1) 触发 flush group[0] → id=3(block2) 触发 flush group[2]。
+    # 若分发器不在读 id=2 时补 skip(1)，id=2 会永远卡在 _pending，下面的轮询将超时。
+    await in_q.put(_reviewed(0, block_index=0))
+    await in_q.put(_reviewed(2, block_index=1))
+    await in_q.put(_reviewed(3, block_index=2))
 
     got: list[int] = []
     for _ in range(200):  # 最多等 ~2s

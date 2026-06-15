@@ -14,9 +14,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Protocol
 
 # 单段标签的合法格式: 小写英文标识符 + ':' + 中文翻译
 _SEGMENT_RE = re.compile(r"^[a-z][a-z0-9_]*:[^\s:/]+$")
+
+
+class TagTreeReadable(Protocol):
+    """Stage2 注入 prompt 只需要的只读接口（TagTree 与 TagTreeSnapshot 都满足）。"""
+
+    def serialize_for_prompt(self, max_depth: int = 4, max_nodes: int = 200) -> str: ...
 
 
 @dataclass
@@ -225,3 +232,33 @@ class TagTree:
         - 中文部分：非空，不含空白/冒号/斜杠
         """
         return bool(_SEGMENT_RE.match(seg))
+
+
+class TagTreeSnapshot:
+    """TagTree 的只读快照视图（REC-09）。
+
+    Stage3 持续向 live 树 ``insert_path``，每次都 bump ``_generation``。若 Stage2 直接
+    读 live：(1) ``serialize_for_prompt`` 的 generation 缓存几乎每条都失效 → 每条重新序列化
+    整棵树（prod ``max_nodes`` 达 10 万时是可观的 CPU 浪费）；(2) 序列化结果每条都变 →
+    永不命中 LLM prompt 的静态前缀缓存；(3) 并发/未来多线程下读写交错不安全。
+
+    本视图把 live 周期性（live 较上次快照增长 ≥ ``refresh_gap`` 个 generation 时）冻结为一棵
+    独立只读 ``TagTree``，Stage2 读快照：缓存稳定命中、静态前缀稳定、读写隔离。代价是 Stage2
+    看到的 tag 树最多滞后 ``refresh_gap`` 条——tag 树只是"复用提示"，Stage3 仍做确定性
+    canonicalize/validate，轻微滞后无损正确性。
+    """
+
+    def __init__(self, live: TagTree, refresh_gap: int = 16) -> None:
+        self._live = live
+        self._refresh_gap = max(1, refresh_gap)
+        self._snapshot = TagTree.from_json(live.to_json())
+        self._snapshot_gen = live._generation
+
+    def _maybe_refresh(self) -> None:
+        if self._live._generation - self._snapshot_gen >= self._refresh_gap:
+            self._snapshot = TagTree.from_json(self._live.to_json())
+            self._snapshot_gen = self._live._generation
+
+    def serialize_for_prompt(self, max_depth: int = 4, max_nodes: int = 200) -> str:
+        self._maybe_refresh()
+        return self._snapshot.serialize_for_prompt(max_depth=max_depth, max_nodes=max_nodes)

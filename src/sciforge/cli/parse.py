@@ -214,6 +214,14 @@ def parse_run(
     output: Path = typer.Option(Path("data"), "--output", "-o", help="输出目录"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="SQLite 数据库路径"),
     backend: str = typer.Option("vlm", "--backend", "-b", help="文档识别后端 (vlm/pymupdf)"),
+    force_vlm: bool = typer.Option(
+        False,
+        "--force-vlm",
+        help=(
+            "关闭文字层自动探测，强制所有 PDF 全页走 VLM（默认会把含文字层的"
+            "电子版 PDF 自动降级到 0-LLM 文本提取；脏文字层的扫描件用本开关强制 VLM）"
+        ),
+    ),
     pages_per_batch: int | None = typer.Option(
         None, "--pages-per-batch", help="Task0 每批页数（默认读 TOML，fallback 5）"
     ),
@@ -306,6 +314,8 @@ def parse_run(
         overrides["intra_doc_parallel_extract"] = True
     if segment_concurrency is not None:
         overrides["intra_doc_segment_concurrency"] = segment_concurrency
+    if force_vlm:
+        overrides["vlm_auto_text_detect"] = False
     if debug:
         overrides["pipeline_debug"] = True
 
@@ -491,14 +501,23 @@ def parse_audit(
         "-o",
         help="报告落盘路径",
     ),
-    pages_per_batch: int = typer.Option(5, "--pages-per-batch", help="预估 PDF 批次数的每批页数"),
+    pages_per_batch: int | None = typer.Option(
+        None,
+        "--pages-per-batch",
+        help="预估 PDF 批次数的每批页数（默认读 AppConfig/TOML，与真实 run 一致；REC-30）",
+    ),
 ) -> None:
     """盘点 Raw Data 下所有 logical_document 的 pipeline 处理进度"""
+    from sciforge.config.settings import AppConfig
     from sciforge.pipeline.audit import (
         audit_directory,
         format_audit_report,
         print_audit_table,
     )
+
+    # REC-30：与真实 run 用同一来源（AppConfig/TOML），消除硬编码 5 vs 实际 10 的盘点偏差
+    if pages_per_batch is None:
+        pages_per_batch = AppConfig().pages_per_batch
 
     if not raw_data_dir.exists():
         error(f"Raw Data 目录不存在：{raw_data_dir}")
@@ -656,6 +675,34 @@ def _display_result(result: object) -> None:
     console.print(table)
 
 
+@parse_app.command("relink")
+def parse_relink(
+    db: Path = typer.Argument(..., help="SQLite 数据库路径", exists=True),
+    discipline: str = typer.Option("math", "--discipline", "-D", help="学科"),
+) -> None:
+    """REC-29：跨文档题答联动。把全库（按学科）的题目一起跑 answer_linker，
+    解决"习题册 / 答案册分文件"时章末/独立答案文件无法回填到题干的问题。
+    """
+    from sciforge.pipeline.answer_linker import link_answers
+    from sciforge.storage.sqlite_backend import SQLiteStorageBackend
+
+    discipline_enum = _parse_discipline(discipline)
+    backend = SQLiteStorageBackend(db)
+    try:
+        questions = backend.load_questions_by_discipline(discipline_enum.value)
+        link = link_answers(questions)
+        for qid, sol in link.backfills:
+            backend.update_question_solution(qid, sol)
+        for did in link.delete_ids:
+            backend.delete_question(did)
+    finally:
+        backend.close()
+    console.print(
+        f"[green]跨文档题答联动完成[/green]：扫描 {len(questions)} 题，"
+        f"回填 {len(link.backfills)} 条，移除冗余答案 {len(link.delete_ids)} 条。"
+    )
+
+
 @parse_app.command("db-stats")
 def db_stats(
     db: Path = typer.Argument(..., help="SQLite 数据库路径", exists=True),
@@ -763,8 +810,7 @@ def validate(
     checks.add_row(
         "[#2] 编号连续性",
         _verdict(gap_groups == 0, warn=True),
-        f"疑似缺号分组 {gap_groups}"
-        + (f"；样例 {gap_samples[:2]}" if gap_samples else ""),
+        f"疑似缺号分组 {gap_groups}" + (f"；样例 {gap_samples[:2]}" if gap_samples else ""),
     )
     console.print(checks)
 

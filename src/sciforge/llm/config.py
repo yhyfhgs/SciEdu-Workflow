@@ -55,6 +55,9 @@ class ProviderConfig(BaseModel):
     default_model: str | None = None
     timeout: int = 120
     max_retries: int = 3
+    # REC-08：anthropic_compatible 网关是否支持 prompt caching（cache_control）。默认 False
+    # （兼容网关 cache 语义/计费各异）；置 True 后 backend 会把静态 system 前缀包成可缓存块。
+    supports_prompt_cache: bool = False
 
     # Provider 级默认参数（tasks 可继续覆盖）
     temperature: float | None = None
@@ -105,6 +108,7 @@ class LLMConfig(BaseModel):
     base_url: str | None = None
     timeout: int = 120
     max_retries: int = 3
+    supports_prompt_cache: bool = False  # REC-08：见 ProviderConfig.supports_prompt_cache
 
     # 扩展参数（所有 Optional，None 表示不传给 SDK）
     top_p: float | None = None
@@ -121,20 +125,31 @@ class LLMConfig(BaseModel):
     cache_control: dict[str, Any] | None = None
     extra_body: dict[str, Any] | None = None
 
+    # REC-13：高频 pipeline 任务的 thinking 默认值（仅 Anthropic 系生效，其余 provider 由
+    # 能力矩阵过滤）。提取/识别是"抄写"任务，关思考实测提速 ~3×（CLAUDE.md）；审核/打标是
+    # 推理类，给小预算兼顾准确率与速度。task_cfg / CLI 可覆盖。
+    _THINK_OFF: ClassVar[dict[str, Any]] = {"type": "disabled"}
+    _THINK_SMALL: ClassVar[dict[str, Any]] = {"type": "enabled", "budget_tokens": 512}
+
     PRESETS: ClassVar[dict[str, dict[str, Any]]] = {
         "generate": {"temperature": 0.7, "max_tokens": 16384},
         "solve": {"temperature": 0.0, "max_tokens": 16384},
         "solve_deep": {"temperature": 0.0, "max_tokens": 32768},
-        "review": {"temperature": 0.0, "max_tokens": 8192},
-        "tag": {"temperature": 0.0, "max_tokens": 4096},
+        "review": {"temperature": 0.0, "max_tokens": 8192, "thinking": _THINK_SMALL},
+        "tag": {"temperature": 0.0, "max_tokens": 4096, "thinking": _THINK_SMALL},
+        "annotate_review": {"temperature": 0.0, "max_tokens": 8192, "thinking": _THINK_SMALL},
         "repair": {"temperature": 0.0, "max_tokens": 8192},
         "split": {"temperature": 0.2, "max_tokens": 8192},
         "process_item": {"temperature": 0.1, "max_tokens": 8192},
         "infer_relations": {"temperature": 0.3, "max_tokens": 8192},
         "improve": {"temperature": 0.3, "max_tokens": 16384},
         "numerical_verify": {"temperature": 0.0, "max_tokens": 8192},
-        "vlm_convert": {"temperature": 0.0, "max_tokens": 8192},
-        "extract_and_classify": {"temperature": 0.0, "max_tokens": 32768},
+        "vlm_convert": {"temperature": 0.0, "max_tokens": 8192, "thinking": _THINK_OFF},
+        "extract_and_classify": {
+            "temperature": 0.0,
+            "max_tokens": 32768,
+            "thinking": _THINK_OFF,
+        },
     }
 
     @classmethod
@@ -193,6 +208,7 @@ class LLMConfig(BaseModel):
             max_retries = provider_cfg.max_retries
             prov_temperature = provider_cfg.temperature
             prov_max_tokens = provider_cfg.max_tokens
+            supports_prompt_cache = provider_cfg.supports_prompt_cache
         else:
             # 无 providers 定义（纯 CLI / 裸跑）→ 从 overrides 和默认值拿
             raw_provider = overrides.get("provider")
@@ -204,6 +220,7 @@ class LLMConfig(BaseModel):
             max_retries = 3
             prov_temperature = None
             prov_max_tokens = None
+            supports_prompt_cache = False
 
         # 3. api_key fallback 到标准 vendor 环境变量（*_COMPATIBLE 除外）
         if api_key is None:
@@ -246,7 +263,13 @@ class LLMConfig(BaseModel):
             "base_url": base_url,
             "timeout": timeout,
             "max_retries": max_retries,
+            "supports_prompt_cache": supports_prompt_cache,
         }
+
+        # 6b. REC-13：preset 的 thinking 默认（优先级最低，task_cfg / CLI 覆盖之）
+        preset_thinking = preset.get("thinking")
+        if preset_thinking is not None:
+            base["thinking"] = preset_thinking
 
         # 7. 扩展参数从 task_cfg 拉取（None 保持缺省）
         if task_cfg is not None:

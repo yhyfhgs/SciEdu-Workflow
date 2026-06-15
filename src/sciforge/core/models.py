@@ -167,8 +167,20 @@ class Solution(BaseModel):
     is_verified: bool = False
 
 
+class Figure(BaseModel):
+    """图表条目（REC-18）：带图条目的图片元数据，关联 KP/Question 的 id。"""
+
+    id: int | None = None  # DB AUTOINCREMENT，构造时为 None
+    item_id: str = ""
+    item_kind: str = "question"  # knowledge | question
+    source_file: str = ""
+    image_path: str = ""
+    caption: str = ""
+    page: int | None = None
+
+
 class Question(BaseModel):
-    """题目存储模型 — 与 DB schema v9 一一对应"""
+    """题目存储模型 — 与 DB schema v10 一一对应"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH
@@ -185,6 +197,13 @@ class Question(BaseModel):
     seq_index: int | None = None
     content: str = ""
     solution_content: str | None = None
+    # ── 结构化题型字段（REC-19）：选择/填空题的选项与答案不再塞进 content 自由文本 ──
+    # options: 选择题选项文本列表（如 ["A. ...", "B. ..."]）；非选择题为空。
+    # correct_option: 正确选项标签（如 "A" 或 "AC"）；未知/非选择题为 None。
+    # blanks: 填空题空位数；非填空题为 None。
+    options: list[str] = Field(default_factory=list)
+    correct_option: str | None = None
+    blanks: int | None = None
     difficulty: int = Field(ge=1, le=10, default=5)
     subject: str = ""
     taxonomy_path: str = ""

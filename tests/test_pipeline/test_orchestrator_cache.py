@@ -529,9 +529,7 @@ async def test_process_directory_reprocesses_stale_completed_entry(
     calls: list[str] = []
     from sciforge.pipeline.orchestrator import PipelineResult
 
-    async def fake_process_file(
-        item: Path | list[Path], **_kwargs: object
-    ) -> PipelineResult:
+    async def fake_process_file(item: Path | list[Path], **_kwargs: object) -> PipelineResult:
         calls.append(str(item[0]) if isinstance(item, list) else str(item))
         return PipelineResult(file_path=str(md), file_hash=file_hash, completed=True)
 
@@ -564,9 +562,7 @@ async def test_process_directory_does_not_mark_incomplete_as_completed(
     file_hash = compute_file_hash(md)
     from sciforge.pipeline.orchestrator import PipelineResult
 
-    async def fake_process_file(
-        _item: Path | list[Path], **_kwargs: object
-    ) -> PipelineResult:
+    async def fake_process_file(_item: Path | list[Path], **_kwargs: object) -> PipelineResult:
         return PipelineResult(file_path=str(md), file_hash=file_hash, completed=False)
 
     monkeypatch.setattr(orch, "process_file", fake_process_file)

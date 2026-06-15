@@ -37,9 +37,7 @@ _EXECUTE_PYTHON_TOOL: dict[str, Any] = {
     ),
     "parameters": {
         "type": "object",
-        "properties": {
-            "code": {"type": "string", "description": "要执行的自包含 Python 代码"}
-        },
+        "properties": {"code": {"type": "string", "description": "要执行的自包含 Python 代码"}},
         "required": ["code"],
     },
 }
@@ -127,8 +125,7 @@ def _kp_context(context: ContextBundle | None) -> str:
     if context is None or not context.knowledge_points:
         return ""
     return "\n".join(
-        f"- {kp.number} [{kp.kp_type}]: {kp.content[:200]}"
-        for kp in context.knowledge_points[:5]
+        f"- {kp.number} [{kp.kp_type}]: {kp.content[:200]}" for kp in context.knowledge_points[:5]
     )
 
 

@@ -24,9 +24,7 @@ PHYSICS_SPEC = DisciplineSpec(
         "proof",
         "experiment_design",
         "explanation",
-        "true_false",
-        "choice",
-        "fill_blank",
+        # REC-16：形式类（true_false/choice/fill_blank）迁出 question_type，改由 question_form 承载
     ),
     tag_root="physics:物理",
     branch_keywords={

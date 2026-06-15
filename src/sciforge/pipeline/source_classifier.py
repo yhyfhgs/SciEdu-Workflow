@@ -67,6 +67,52 @@ def infer_genre(source_file: str) -> tuple[str, str, int, int]:
     return _DEFAULT
 
 
+# ── 内容体裁探测（REC-14）：书本 / 试卷 / 讲义 ──
+# 文件名启发式（infer_genre）只在路径含关键词时有效；本函数从**正文结构**判别体裁，
+# 任意文件内容驱动，供下游差异化处理（试卷放宽 near-tail/卷末密集短题、讲义放宽 fast-skip）。
+
+_EXAM_SIGNAL_RE = re.compile(
+    r"[（(]\s*\d+\s*分\s*[)）]"  # 分值标注 "（5分）"
+    r"|参考答案|答案与解析|评分标准|本卷|满分\s*\d+|考试时间"
+    r"|一[、.]\s*(选择题|填空题|解答题|判断题)"  # 大题分组
+)
+_EXAM_CHOICE_RE = re.compile(r"^\s*[A-D][.、)]\s+", re.MULTILINE)  # A. B. C. D. 选项行
+_BOOK_SIGNAL_RE = re.compile(
+    r"\*\*\s*(定义|定理|引理|推论|命题|例)\s*[\d.]+\s*\*\*"  # **定义 1.1**
+    r"|第\s*[一二三四五六七八九十百\d]+\s*章"
+    r"|\\begin\{(definition|theorem|lemma|example|proof)\}"
+)
+_LECTURE_SIGNAL_RE = re.compile(r"讲义|lecture\s*notes?|slide|课件|第\s*\d+\s*讲|本讲|本节课|课堂")
+
+
+def detect_genre(md_text: str) -> str:
+    """从正文结构判别文档体裁：``exam_paper`` / ``book`` / ``lecture`` / ``unknown``。
+
+    纯启发式、确定性、零依赖。计数各体裁信号取最高者；信号过弱返回 ``unknown``。
+    """
+    if not md_text or not md_text.strip():
+        return "unknown"
+    exam = len(_EXAM_SIGNAL_RE.findall(md_text)) + len(_EXAM_CHOICE_RE.findall(md_text))
+    book = len(_BOOK_SIGNAL_RE.findall(md_text))
+    lecture = len(_LECTURE_SIGNAL_RE.findall(md_text))
+    best = max(exam, book, lecture)
+    if best < 2:  # 信号太弱，不妄断
+        return "unknown"
+    if exam == best:
+        return "exam_paper"
+    if book == best:
+        return "book"
+    return "lecture"
+
+
+_GENRE_LABELS = {"exam_paper": "试卷", "book": "书本/教材", "lecture": "讲义"}
+
+
+def genre_label(genre: str) -> str:
+    """体裁英文 key → 中文标签。"""
+    return _GENRE_LABELS.get(genre, "未知")
+
+
 def format_baseline_hint(source_file: str) -> str:
     """生成一段可插入 prompt 的 baseline 提示文本。
 
@@ -83,4 +129,4 @@ def format_baseline_hint(source_file: str) -> str:
     )
 
 
-__all__ = ["infer_genre", "format_baseline_hint"]
+__all__ = ["detect_genre", "format_baseline_hint", "genre_label", "infer_genre"]

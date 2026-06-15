@@ -117,9 +117,7 @@ class ParallelSegmentExtractor:
                 return await self._extract_segment(seg)
 
         # gather 保持顺序：per_seg[i] 对应 segments[i]（段序）
-        per_seg: list[list[Any]] = await asyncio.gather(
-            *(run_segment(s) for s in segments)
-        )
+        per_seg: list[list[Any]] = await asyncio.gather(*(run_segment(s) for s in segments))
         return list(zip(segments, per_seg, strict=True))
 
     async def _extract_segment(self, seg: Any) -> list[Any]:

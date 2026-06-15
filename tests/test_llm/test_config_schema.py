@@ -64,9 +64,7 @@ class TestLLMConfigExtendedFields:
 
     def test_max_tokens_upper_bound_raised_to_1m(self):
         # 65536 → 200_000 → 1_000_000（覆盖 MiniMax-M3 512K 输出区间）
-        cfg = LLMConfig(
-            provider=LLMProvider.ANTHROPIC, api_key="test", max_tokens=512_000
-        )
+        cfg = LLMConfig(provider=LLMProvider.ANTHROPIC, api_key="test", max_tokens=512_000)
         assert cfg.max_tokens == 512_000
 
     def test_max_tokens_rejects_above_1m(self):
@@ -176,11 +174,11 @@ class TestCapabilityMatrix:
         assert dropped == []
 
     def test_anthropic_compatible_caps(self):
-        """anthropic 兼容网关：放行 thinking（关思考用），仍不支持 metadata/cache_control"""
+        """anthropic 兼容网关：放行 thinking + cache_control（REC-08，opt-in），仍不支持 metadata"""
         caps = PROVIDER_CAPABILITIES[LLMProvider.ANTHROPIC_COMPATIBLE]
         assert "thinking" in caps  # 现放行（经 extra_body 透传）
         assert "metadata" not in caps
-        assert "cache_control" not in caps
+        assert "cache_control" in caps  # REC-08：放行（是否生效由 supports_prompt_cache 决定）
         # 基础参数
         assert "top_p" in caps
         assert "extra_body" in caps
@@ -293,9 +291,7 @@ class TestFromAppConfigV2:
     def test_task_temperature_overrides_preset(self):
         """task_cfg.temperature 优先于 PRESETS"""
         app = _make_app(
-            providers={
-                "x": ProviderConfig(type=LLMProvider.ANTHROPIC, api_key="test")
-            },
+            providers={"x": ProviderConfig(type=LLMProvider.ANTHROPIC, api_key="test")},
             task_llm={"solve": TaskLLMConfig(provider_ref="x", temperature=0.5)},
         )
         cfg = LLMConfig.from_app_config(app, "solve")
@@ -312,16 +308,12 @@ class TestFromAppConfigV2:
             },
             task_llm={"generate": TaskLLMConfig(provider_ref="x")},
         )
-        cfg = LLMConfig.from_app_config(
-            app, "generate", model="claude-opus-4-20250805"
-        )
+        cfg = LLMConfig.from_app_config(app, "generate", model="claude-opus-4-20250805")
         assert cfg.model == "claude-opus-4-20250805"
 
     def test_extended_params_inherited_from_task(self):
         app = _make_app(
-            providers={
-                "x": ProviderConfig(type=LLMProvider.ANTHROPIC, api_key="test")
-            },
+            providers={"x": ProviderConfig(type=LLMProvider.ANTHROPIC, api_key="test")},
             task_llm={
                 "generate": TaskLLMConfig(
                     provider_ref="x",
@@ -338,9 +330,7 @@ class TestFromAppConfigV2:
         """ProviderConfig.api_key=None + type=ANTHROPIC → 从 env 拿"""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-env")
         app = _make_app(
-            providers={
-                "x": ProviderConfig(type=LLMProvider.ANTHROPIC, api_key=None)
-            },
+            providers={"x": ProviderConfig(type=LLMProvider.ANTHROPIC, api_key=None)},
             task_llm={"generate": TaskLLMConfig(provider_ref="x")},
         )
         cfg = LLMConfig.from_app_config(app, "generate")
@@ -425,3 +415,46 @@ class TestForTaskHelper:
     def test_for_task_override_wins_over_preset(self):
         cfg = LLMConfig.for_task("solve", api_key="test", temperature=0.5)
         assert cfg.temperature == 0.5
+
+
+# ── REC-13：thinking 默认值 ─────────────────────────────────
+
+
+class TestThinkingPresets:
+    def test_extract_preset_thinking_disabled(self) -> None:
+        from sciforge.config.settings import AppConfig
+
+        cfg = LLMConfig.from_app_config(AppConfig(), task="extract_and_classify")
+        assert cfg.thinking == {"type": "disabled"}
+
+    def test_tag_preset_thinking_small_budget(self) -> None:
+        from sciforge.config.settings import AppConfig
+
+        cfg = LLMConfig.from_app_config(AppConfig(), task="tag")
+        assert cfg.thinking == {"type": "enabled", "budget_tokens": 512}
+
+    def test_annotate_review_preset_thinking_present(self) -> None:
+        from sciforge.config.settings import AppConfig
+
+        cfg = LLMConfig.from_app_config(AppConfig(), task="annotate_review")
+        assert cfg.thinking is not None and cfg.thinking["type"] == "enabled"
+
+    def test_task_cfg_thinking_overrides_preset(self) -> None:
+        from sciforge.config.settings import AppConfig
+        from sciforge.llm.config import TaskLLMConfig
+
+        app = AppConfig(
+            task_llm={
+                "extract_and_classify": TaskLLMConfig(
+                    thinking={"type": "enabled", "budget_tokens": 99}
+                )
+            }
+        )
+        cfg = LLMConfig.from_app_config(app, task="extract_and_classify")
+        assert cfg.thinking == {"type": "enabled", "budget_tokens": 99}
+
+    def test_generate_preset_has_no_thinking_default(self) -> None:
+        from sciforge.config.settings import AppConfig
+
+        cfg = LLMConfig.from_app_config(AppConfig(), task="generate")
+        assert cfg.thinking is None

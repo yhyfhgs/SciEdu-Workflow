@@ -19,6 +19,7 @@ import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ import structlog
 from sciforge.core.exceptions import SciForgeError
 from sciforge.core.models import (
     Discipline,
+    Figure,
     KnowledgePoint,
     Question,
 )
@@ -37,7 +39,7 @@ logger = structlog.get_logger()
 # ── SQL 常量（executemany 批量写入复用）──────────────────
 # schema v9：questions 新增生成元数据列（is_generated / generator_model /
 # generated_at / generation_session_id / tenant_id）；提供 v8→v9 增量迁移
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 # schema 增量迁移：{from_version: [该版本→下一版的 ALTER 语句]}。
 # 每条 ALTER 容忍 "duplicate column"（幂等，应对中断重跑）。
@@ -48,6 +50,14 @@ _MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE questions ADD COLUMN generated_at TEXT",
         "ALTER TABLE questions ADD COLUMN generation_session_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE questions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''",
+    ],
+    # v9→v10（REC-19 结构化题型 + REC-16 order_index 单列索引）
+    9: [
+        "ALTER TABLE questions ADD COLUMN options TEXT DEFAULT '[]'",
+        "ALTER TABLE questions ADD COLUMN correct_option TEXT",
+        "ALTER TABLE questions ADD COLUMN blanks INTEGER",
+        "CREATE INDEX IF NOT EXISTS idx_kp_order_only ON knowledge_points(order_index)",
+        "CREATE INDEX IF NOT EXISTS idx_q_order_only ON questions(order_index)",
     ],
 }
 
@@ -66,10 +76,11 @@ _Q_INSERT_SQL = """
 INSERT OR IGNORE INTO questions
     (id, discipline, question_type, question_form, number, number_canonical,
      seq_chapter, seq_section, seq_index,
-     content, solution_content, difficulty, subject, taxonomy_path, tags, source_file,
+     content, solution_content, options, correct_option, blanks,
+     difficulty, subject, taxonomy_path, tags, source_file,
      start_line, end_line, order_index, content_hash,
      is_generated, generator_model, generated_at, generation_session_id, tenant_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -77,8 +88,13 @@ class SchemaVersionMismatch(SciForgeError):  # noqa: N818
     """DB schema 版本与当前代码不兼容"""
 
 
+@lru_cache(maxsize=4096)
 def _content_hash(text: str) -> str:
-    """LaTeX 内容归一化后取 SHA-256 前 32 位"""
+    """LaTeX 内容归一化后取 SHA-256 前 32 位。
+
+    REC-26：纯函数按入参记忆化——同一条 content 在去重预查(count_existing_content)与
+    入库(save_batch)路径各算一次，缓存消除重复归一化+哈希（bounded maxsize）。
+    """
     normalized = " ".join(text.split())
     return hashlib.sha256(normalized.encode()).hexdigest()[:32]
 
@@ -134,6 +150,9 @@ def _question_to_tuple(q: Question) -> tuple[Any, ...]:
         q.seq_index,
         q.content,
         q.solution_content,
+        json.dumps(q.options, ensure_ascii=False),
+        q.correct_option,
+        q.blanks,
         q.difficulty,
         q.subject,
         q.taxonomy_path,
@@ -277,6 +296,40 @@ class SQLiteStorageBackend:
         row = cur.fetchone()
         return int(row[0]) if row else 0
 
+    def save_figures(self, figures: list[Figure]) -> int:
+        """REC-18：批量写入图表元数据（INSERT OR IGNORE，UNIQUE(item_id,image_path) 幂等）。"""
+        if not figures:
+            return 0
+        with self._write_lock, self.transaction():
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO figures "
+                "(item_id, item_kind, source_file, image_path, caption, page) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (f.item_id, f.item_kind, f.source_file, f.image_path, f.caption, f.page)
+                    for f in figures
+                ],
+            )
+        return len(figures)
+
+    def figures_for_item(self, item_id: str) -> list[Figure]:
+        """取某条目的全部图表。"""
+        rows = self._conn.execute(
+            "SELECT * FROM figures WHERE item_id = ? ORDER BY id", (item_id,)
+        ).fetchall()
+        return [
+            Figure(
+                id=r["id"],
+                item_id=r["item_id"],
+                item_kind=r["item_kind"],
+                source_file=r["source_file"],
+                image_path=r["image_path"],
+                caption=r["caption"],
+                page=r["page"],
+            )
+            for r in rows
+        ]
+
     # ── 单条写入（内部用 save_batch 统一路径）─────────
 
     def save_knowledge_point(self, kp: KnowledgePoint) -> str:
@@ -316,6 +369,17 @@ class SQLiteStorageBackend:
         ).fetchall()
         return [self._row_to_question(r) for r in rows]
 
+    def load_questions_by_discipline(self, discipline: str | None = None) -> list[Question]:
+        """加载全库（或某学科）的全部 Question，供 REC-29 跨文档题答联动。"""
+        if discipline:
+            rows = self._conn.execute(
+                "SELECT * FROM questions WHERE discipline = ? ORDER BY order_index",
+                (discipline,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute("SELECT * FROM questions ORDER BY order_index").fetchall()
+        return [self._row_to_question(r) for r in rows]
+
     def update_question_solution(self, qid: str, solution: str) -> None:
         """回填题目的 solution_content（answer_linker 跨章节并答用）。"""
         with self._write_lock, self.transaction():
@@ -323,10 +387,24 @@ class SQLiteStorageBackend:
                 "UPDATE questions SET solution_content = ? WHERE id = ?", (solution, qid)
             )
 
+    def update_kp_type(self, kp_id: str, kp_type: str) -> None:
+        """REC-15：reconciliation 高置信类型纠正——回改 knowledge_points.kp_type。"""
+        with self._write_lock, self.transaction():
+            self._conn.execute(
+                "UPDATE knowledge_points SET kp_type = ? WHERE id = ?", (kp_type, kp_id)
+            )
+
     def delete_question(self, qid: str) -> None:
-        """删除一条 Question（回填后移除冗余答案条目；FTS 由触发器同步）。"""
+        """删除一条 Question（回填后移除冗余答案条目；FTS 由触发器同步）。
+
+        REC-28：item_relations 的 src_id/dst_id 跨表引用无法设 FK，故在此**级联清理**
+        指向被删条目的边，避免知识图谱残留悬挂边指向不存在节点。
+        """
         with self._write_lock, self.transaction():
             self._conn.execute("DELETE FROM questions WHERE id = ?", (qid,))
+            self._conn.execute(
+                "DELETE FROM item_relations WHERE src_id = ? OR dst_id = ?", (qid, qid)
+            )
 
     def load_questions_by_ids(self, ids: list[str]) -> list[Question]:
         if not ids:
@@ -432,8 +510,7 @@ class SQLiteStorageBackend:
             "kp_total": scalar("SELECT COUNT(*) FROM knowledge_points"),
             "q_total": q_total,
             "kp_by_type": dist(
-                "SELECT kp_type, COUNT(*) FROM knowledge_points "
-                "GROUP BY kp_type ORDER BY 2 DESC"
+                "SELECT kp_type, COUNT(*) FROM knowledge_points GROUP BY kp_type ORDER BY 2 DESC"
             ),
             "q_by_type": dist(
                 "SELECT question_type, COUNT(*) FROM questions "
@@ -792,6 +869,9 @@ class SQLiteStorageBackend:
             seq_index=row["seq_index"],
             content=row["content"],
             solution_content=row["solution_content"],
+            options=_safe_json_list(row, "options"),
+            correct_option=row["correct_option"],
+            blanks=row["blanks"],
             difficulty=row["difficulty"],
             subject=row["subject"] or "",
             taxonomy_path=row["taxonomy_path"] or "",

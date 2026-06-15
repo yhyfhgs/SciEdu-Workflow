@@ -166,6 +166,21 @@ response_format = { type = "json_object" }   # OpenAI/Gemini 生效；Anthropic 
 # 各阶段建议预算：extract 1024 / review·tag 2048 / generate 6144 / solve 8192 / solve_deep 16384。
 # 非推理模型（GPT-4o-mini / Kimi K2 / Qwen-instruct）无需此项，且通常更快更适合高频提取。
 
+# ─── REC-13：便宜模型分级路由模板（可选，强烈建议） ───
+# 提取(extract_and_classify)用强模型保召回；审核(review)/打标(tag)/标注复核(annotate_review)
+# 是更简单的分类任务，指向便宜/快档模型可把占总调用 ~75% 的 Stage2 + 条件 Review 综合成本
+# 再降 40-60%。机制已就绪（orchestrator 按 task 取 client）；下面取消注释并填好便宜 provider 即可。
+# 未配置时这些 task 走 default_provider_ref，并自动套用 PRESETS 的 thinking 默认。
+# [tasks.review]
+# provider_ref = "deepseek_anthropic"   # 便宜档
+# model = "deepseek-chat"
+# [tasks.tag]
+# provider_ref = "deepseek_anthropic"
+# model = "deepseek-chat"
+# [tasks.annotate_review]
+# provider_ref = "deepseek_anthropic"
+# model = "deepseek-chat"
+
 
 # ─── 生成引擎任务 ───
 

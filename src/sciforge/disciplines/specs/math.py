@@ -30,10 +30,8 @@ MATH_SPEC = DisciplineSpec(
         "discrimination",  # 判别/判断成立性
         "application",  # 应用题
         "exploration",  # 探究/开放题
-        # —— 以下为兼容旧数据保留（形式类，已迁移到 question_form）——
-        "true_false",
-        "choice",
-        "fill_blank",
+        # REC-16：形式类（true_false/choice/fill_blank）已彻底迁出 question_type，
+        # 改由正交的 question_form 维度承载，避免两个维度互相污染、误填合法通过。
     ),
     tag_root="math:数学",
     # 常见同义 english 变体 → 规范（#6 受控词表）。同中文一致性由 canonicalizer 自动兜底。
@@ -88,6 +86,16 @@ MATH_SPEC = DisciplineSpec(
         "逻辑": "logic",
         "集合": "set_theory",
         "数值": "numerical_analysis",
+        # REC-22：补全常见大学分支，避免被迫归错（如 measure_theory 旧时只能归 real_analysis）
+        "微分几何": "differential_geometry",
+        "测度": "measure_theory",
+        "勒贝格": "measure_theory",
+        "最优化": "optimization",
+        "优化": "optimization",
+        "运筹": "operations_research",
+        "动力系统": "dynamical_systems",
+        "博弈": "game_theory",
+        "范畴": "category_theory",
     },
     allowed_branches=(
         "analysis",
@@ -101,6 +109,7 @@ MATH_SPEC = DisciplineSpec(
         "number_theory",
         "combinatorics",
         "geometry",
+        "differential_geometry",
         "topology",
         "probability",
         "statistics",
@@ -109,6 +118,12 @@ MATH_SPEC = DisciplineSpec(
         "numerical_analysis",
         "differential_equations",
         "set_theory",
+        "measure_theory",
+        "optimization",
+        "operations_research",
+        "dynamical_systems",
+        "game_theory",
+        "category_theory",
     ),
     prompt_vars={
         # extract_and_classify.txt 占位符

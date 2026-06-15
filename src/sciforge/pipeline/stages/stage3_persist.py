@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,7 @@ import structlog
 
 from sciforge.core.models import (
     Discipline,
+    Figure,
     FileExtractionState,
     KnowledgePoint,
     Question,
@@ -39,6 +41,26 @@ if TYPE_CHECKING:
     from sciforge.storage.protocol import BatchStorageBackend
 
 logger = structlog.get_logger()
+
+# REC-18：从条目正文抽取 markdown 图片链接 ![caption](path) → figures 表
+_FIGURE_LINK_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+
+
+def _extract_figures(content: str, item_id: str, item_kind: str, source_file: str) -> list[Figure]:
+    out: list[Figure] = []
+    for m in _FIGURE_LINK_RE.finditer(content or ""):
+        path = m.group(2).strip()
+        if path:
+            out.append(
+                Figure(
+                    item_id=item_id,
+                    item_kind=item_kind,
+                    source_file=source_file,
+                    image_path=path,
+                    caption=m.group(1).strip(),
+                )
+            )
+    return out
 
 
 class Stage3Persist:
@@ -62,18 +84,22 @@ class Stage3Persist:
         # tag 受控词表统一（#6）：用学科别名表初始化，并把已累积的 tag_tree 注册为既有规范
         self.tag_canon = TagCanonicalizer(self.discipline_spec.tag_aliases)
         self.tag_canon.seed_from_tree(self.tag_tree)
+        # REC-10：攒小批再一次 save_batch+commit（WAL fsync 大降）
+        self.persist_batch_size: int = max(1, int(getattr(config, "stage3_persist_batch_size", 16)))
 
     async def run(
         self,
         in_queue: asyncio.Queue[Any],
         state: FileExtractionState,
     ) -> None:
-        sentinel_seen = False
+        # REC-10：攒小批入库。buffer 内未提交的 item 也要参与保序断言，故用本地游标 cursor
+        # （= last_persisted + 已 buffer 数）跟踪期望 item_id；flush 提交后才推进 last_persisted。
+        buffer: list[ReviewedAnnotatedItem] = []
+        cursor = state.last_persisted_item_id
         try:
-            while not sentinel_seen:
+            while True:
                 msg = await in_queue.get()
                 if isinstance(msg, _Sentinel):
-                    sentinel_seen = True
                     break
                 if not isinstance(msg, ReviewedAnnotatedItem):
                     logger.warning("stage3_persist_unexpected_msg", type=type(msg).__name__)
@@ -81,8 +107,8 @@ class Stage3Persist:
 
                 # 保序断言（单协程消费 + FIFO queue）：
                 # - gap（item_id > expected）是合法的，Stage1Review 可能拒绝中间条目
-                # - backward（item_id ≤ last_persisted）是错误，说明 FIFO 保序被破坏
-                expected = state.last_persisted_item_id + 1
+                # - backward（item_id ≤ cursor）是错误，说明 FIFO 保序被破坏
+                expected = cursor + 1
                 if msg.item_id < expected:
                     logger.error(
                         "stage3_out_of_order_backward",
@@ -99,8 +125,16 @@ class Stage3Persist:
                         got=msg.item_id,
                         gap=msg.item_id - expected,
                     )
+                cursor = max(cursor, msg.item_id)
 
-                await self._persist_one(msg, state)
+                buffer.append(msg)
+                if len(buffer) >= self.persist_batch_size:
+                    await self._flush_batch(buffer, state)
+                    buffer = []
+
+            if buffer:
+                await self._flush_batch(buffer, state)
+                buffer = []
 
             state.stage3_completed = True
             state.stage2_completed = True
@@ -118,35 +152,16 @@ class Stage3Persist:
             await save_state_locked(self.checkpoint_root, state, force=True)
             raise
 
-    async def _persist_one(
-        self,
-        msg: ReviewedAnnotatedItem,
-        state: FileExtractionState,
-    ) -> None:
+    def _build_persistable(
+        self, msg: ReviewedAnnotatedItem
+    ) -> tuple[KnowledgePoint | None, Question | None]:
+        """确定性规范化后把一条 item 构造为 KP 或 Question（纯 CPU，无 IO）。
+
+        REC-10：去掉逐条 find_duplicates 预检——去重计数移到 ``_flush_batch`` 批量预查，
+        DB 的 content_hash UNIQUE + INSERT OR IGNORE 仍是幂等兜底。
+        """
         annotation = msg.annotation
         item = msg.item
-
-        # ── 写入去重（#8 不多提取）──
-        # 内容已存在（重叠窗口/force-consume/resume 重放）→ 跳过入库，显式记账。
-        # DB 的 content_hash UNIQUE + INSERT OR IGNORE 是最终兜底；此处提前拦截以便观测。
-        dup_scope = "kp" if item.category == "knowledge" else "question"
-        dup_ids = await asyncio.to_thread(
-            self.storage.find_duplicates, item.corrected_content, dup_scope
-        )
-        if dup_ids:
-            state.stage3_deduped_count += 1
-            logger.info(
-                "stage3_dedup_skip",
-                item_id=msg.item_id,
-                category=item.category,
-                existing_id=dup_ids[0],
-                number=item.number,
-            )
-            # 仍推进游标 + 镜像，保证 resume 不重复处理、保序断言不误判
-            state.last_persisted_item_id = max(state.last_persisted_item_id, msg.item_id)
-            self._mirror(msg, state)
-            await save_state_locked(self.checkpoint_root, state)
-            return
 
         # 强制学科根（兜底防线 —— LLM 偶尔从中层概念起头）
         annotation = self._ensure_discipline_root(annotation, item_id=msg.item_id)
@@ -159,16 +174,16 @@ class Stage3Persist:
             canon_updates["methods"] = self.tag_canon.canonicalize_path(annotation.methods)
         annotation = annotation.model_copy(update=canon_updates)
 
-        # Taxonomy 校验 + 模糊匹配
-        corrected_taxonomy, _ = self.taxonomy_validator.validate(annotation.taxonomy_path)
+        # Taxonomy 校验 + 模糊匹配（REC-15：限定本学科，杜绝跨学科 fuzzy 漂移）
+        corrected_taxonomy, _ = self.taxonomy_validator.validate(
+            annotation.taxonomy_path, discipline=self.discipline.value
+        )
         if corrected_taxonomy and corrected_taxonomy != annotation.taxonomy_path:
             annotation = annotation.model_copy(update={"taxonomy_path": corrected_taxonomy})
 
-        # 累积 tag tree（集中在 Stage3，保证原子性）
+        # 累积 tag tree（集中在 Stage3）
         self.tag_tree.insert_path(annotation.tags)
 
-        kp: KnowledgePoint | None = None
-        q: Question | None = None
         if item.category == "knowledge":
             kp_type = item.item_type
             if kp_type not in self.discipline_spec.allowed_kp_types:
@@ -193,53 +208,93 @@ class Stage3Persist:
                 end_line=item.end_line,
                 order_index=msg.item_id,
             )
-        else:  # category == "question"
-            q_type = annotation.question_type or item.item_type
-            if q_type not in self.discipline_spec.allowed_question_types:
-                logger.warning(
-                    "stage3_unknown_question_type",
-                    q_type=q_type,
-                    allowed=list(self.discipline_spec.allowed_question_types),
-                )
-                q_type = self.discipline_spec.allowed_question_types[0]
-            # 题目形式（#5 与认知类别正交）：Stage1 从题面识别，校验白名单
-            q_form = self.discipline_spec.question_form_or(
-                getattr(item, "question_form", "") or "", ""
-            )
-            q = Question(
-                discipline=self.discipline,
-                question_type=q_type,
-                question_form=q_form,
-                number=item.number,
-                content=item.corrected_content,
-                solution_content=item.corrected_solution,
-                difficulty=annotation.difficulty,
-                subject=annotation.subject,
-                taxonomy_path=annotation.taxonomy_path,
-                tags=list(annotation.tags),
-                source_file=msg.source_file,
-                start_line=item.start_line,
-                end_line=item.end_line,
-                order_index=msg.item_id,
-            )
+            return kp, None
 
-        # 入库（同步 IO，放到线程池避免阻塞 event loop）
-        await asyncio.to_thread(
-            self.storage.save_batch,
-            [kp] if kp else [],
-            [q] if q else [],
+        q_type = annotation.question_type or item.item_type
+        if q_type not in self.discipline_spec.allowed_question_types:
+            logger.warning(
+                "stage3_unknown_question_type",
+                q_type=q_type,
+                allowed=list(self.discipline_spec.allowed_question_types),
+            )
+            q_type = self.discipline_spec.allowed_question_types[0]
+        # 题目形式（#5 与认知类别正交）：Stage1 从题面识别，校验白名单
+        q_form = self.discipline_spec.question_form_or(getattr(item, "question_form", "") or "", "")
+        q = Question(
+            discipline=self.discipline,
+            question_type=q_type,
+            question_form=q_form,
+            number=item.number,
+            content=item.corrected_content,
+            solution_content=item.corrected_solution,
+            # REC-19：结构化题型字段从 Stage1 提取直通入库
+            options=list(getattr(item, "options", []) or []),
+            correct_option=getattr(item, "correct_option", None),
+            blanks=getattr(item, "blanks", None),
+            difficulty=annotation.difficulty,
+            subject=annotation.subject,
+            taxonomy_path=annotation.taxonomy_path,
+            tags=list(annotation.tags),
+            source_file=msg.source_file,
+            start_line=item.start_line,
+            end_line=item.end_line,
+            order_index=msg.item_id,
         )
+        return None, q
 
-        state.stage3_persisted_count += 1
-        state.last_persisted_item_id = max(state.last_persisted_item_id, msg.item_id)
-        self._mirror(msg, state)
+    async def _flush_batch(
+        self, buffer: list[ReviewedAnnotatedItem], state: FileExtractionState
+    ) -> None:
+        """REC-10：一次 save_batch+commit 入库整批，批量预查去重计数，单次 mirror+state。"""
+        if not buffer:
+            return
+        kps: list[KnowledgePoint] = []
+        qs: list[Question] = []
+        kp_contents: list[str] = []
+        q_contents: list[str] = []
+        figures: list[Figure] = []
+        for msg in buffer:
+            kp, q = self._build_persistable(msg)
+            if kp is not None:
+                kps.append(kp)
+                kp_contents.append(msg.item.corrected_content)
+                figures.extend(_extract_figures(kp.content, kp.id, "knowledge", kp.source_file))
+            if q is not None:
+                qs.append(q)
+                q_contents.append(msg.item.corrected_content)
+                figures.extend(_extract_figures(q.content, q.id, "question", q.source_file))
+
+        # 批量去重计数（每类一次 SELECT，替代逐条 find_duplicates）
+        existing = 0
+        if kp_contents:
+            existing += await asyncio.to_thread(
+                self.storage.count_existing_content, kp_contents, "knowledge"
+            )
+        if q_contents:
+            existing += await asyncio.to_thread(
+                self.storage.count_existing_content, q_contents, "question"
+            )
+
+        attempted = len(kps) + len(qs)
+        await asyncio.to_thread(self.storage.save_batch, kps, qs)
+        # REC-18：带图条目的图片元数据落库（content 仍保留 ![](path) 链接）
+        if figures:
+            await asyncio.to_thread(self.storage.save_figures, figures)
+
+        state.stage3_persisted_count += max(0, attempted - existing)
+        state.stage3_deduped_count += existing
+        state.last_persisted_item_id = max(
+            state.last_persisted_item_id, max(m.item_id for m in buffer)
+        )
+        for msg in buffer:
+            self._mirror(msg, state)
         await save_state_locked(self.checkpoint_root, state)
 
         logger.info(
-            "stage3_persist_one",
-            item_id=msg.item_id,
-            category=item.category,
-            item_type=item.item_type,
+            "stage3_flush",
+            count=len(buffer),
+            persisted_new=max(0, attempted - existing),
+            deduped=existing,
         )
 
     def _ensure_discipline_root(

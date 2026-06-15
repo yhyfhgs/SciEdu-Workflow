@@ -141,9 +141,7 @@ class Evolver:
         if not content:
             return None
 
-        difficulty = self._coerce_difficulty(
-            data.get("estimated_difficulty"), candidate.difficulty
-        )
+        difficulty = self._coerce_difficulty(data.get("estimated_difficulty"), candidate.difficulty)
 
         return Question(
             discipline=candidate.discipline,

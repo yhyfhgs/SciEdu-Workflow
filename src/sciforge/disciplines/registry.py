@@ -15,6 +15,11 @@ from dataclasses import dataclass, field
 
 from sciforge.core.models import Discipline
 
+# REC-22：infer_branch 记忆化（frozen dataclass 不能挂可变属性，用模块级 dict）。
+# key=(tag_root, texts)；规模 = 学科数 × 不同章节标题组合，天然有界。
+_MISS = object()
+_BRANCH_CACHE: dict[tuple[str, tuple[str, ...]], str | None] = {}
+
 
 @dataclass(frozen=True)
 class DisciplineSpec:
@@ -62,20 +67,28 @@ class DisciplineSpec:
         """从中文章节文本推断英文主分支；无命中返回 None。
 
         逐个 (关键词, 分支) 检查，关键词作为子串出现在任一文本中即命中。
-        优先匹配更长的关键词（更具体），命中的分支须在 allowed_branches 内。
+        **优先匹配更长的关键词**（更具体，如"微分方程"胜过"微分"、"数学分析"胜过"分析"），
+        消解短词歧义；命中的分支须在 allowed_branches 内。
+
+        REC-22：结果按 (tag_root, texts) 记忆化——同一章/节内成百上千条目复用同一推断，
+        避免每条都跑 O(关键词数) 子串扫描。
         """
         if not self.branch_keywords:
             return None
+        key = (self.tag_root, texts)
+        cached = _BRANCH_CACHE.get(key, _MISS)
+        if cached is not _MISS:
+            return cached  # type: ignore[return-value]
         haystack = " ".join(t for t in texts if t)
-        if not haystack:
-            return None
-        best_kw = ""
-        best_branch: str | None = None
-        for kw, branch in self.branch_keywords.items():
-            if kw in haystack and len(kw) > len(best_kw):
-                if not self.allowed_branches or branch in self.allowed_branches:
-                    best_kw, best_branch = kw, branch
-        return best_branch
+        result: str | None = None
+        if haystack:
+            best_kw = ""
+            for kw, branch in self.branch_keywords.items():
+                if kw in haystack and len(kw) > len(best_kw):
+                    if not self.allowed_branches or branch in self.allowed_branches:
+                        best_kw, result = kw, branch
+        _BRANCH_CACHE[key] = result
+        return result
 
     def kp_type_or(self, value: str, fallback: str = "theorem") -> str:
         """校验 kp_type 字符串；不在白名单时返回 fallback"""

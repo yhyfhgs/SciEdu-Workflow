@@ -1,5 +1,10 @@
--- SciForge SQLite Schema v9
--- v9 变更（本版本）：questions 新增生成元数据列
+-- SciForge SQLite Schema v10
+-- v10 变更（本版本）：
+--   * 结构化题型（REC-19）：questions 新增 options(JSON) / correct_option / blanks
+--   * 检索优化（REC-16）：knowledge_points / questions 新增 order_index 单列索引
+--     （max_order_index 不再全表扫描；非 source 过滤检索排序提速）
+--   迁移：提供 v9→v10 增量 ALTER + CREATE INDEX（见 sqlite_backend._MIGRATIONS）
+-- v9 变更：questions 新增生成元数据列
 --   is_generated / generator_model / generated_at / generation_session_id / tenant_id
 --   （区分生成题 vs 手动题，支撑版权归属、计费、统计；tenant_id 支撑多租户隔离）
 --   迁移：提供 v8→v9 增量 ALTER（见 sqlite_backend._MIGRATIONS），不再要求删库
@@ -15,7 +20,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;
 
 -- ── 知识点 ──
 
@@ -57,6 +62,10 @@ CREATE TABLE IF NOT EXISTS questions (
     seq_index INTEGER,
     content TEXT NOT NULL DEFAULT '',
     solution_content TEXT,
+    -- 结构化题型（v10 / REC-19）
+    options TEXT DEFAULT '[]',
+    correct_option TEXT,
+    blanks INTEGER,
     difficulty INTEGER NOT NULL DEFAULT 5 CHECK(difficulty BETWEEN 1 AND 10),
     subject TEXT NOT NULL DEFAULT '',
     taxonomy_path TEXT DEFAULT '',
@@ -98,6 +107,23 @@ CREATE TABLE IF NOT EXISTS item_relations (
     UNIQUE(src_id, dst_id, relation_type)
 );
 
+-- ── 图表（v10 / REC-18）──
+-- 理工科带图条目的图片元数据。item_id 引用 knowledge_points.id 或 questions.id（跨表，
+-- 不设 FK）；image_path 指向裁剪落盘的图片。content 里仍保留 ![](path) 链接，本表供结构化检索。
+
+CREATE TABLE IF NOT EXISTS figures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id TEXT NOT NULL,
+    item_kind TEXT NOT NULL DEFAULT 'question',
+    source_file TEXT NOT NULL DEFAULT '',
+    image_path TEXT NOT NULL DEFAULT '',
+    caption TEXT DEFAULT '',
+    page INTEGER,
+    UNIQUE(item_id, image_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fig_item ON figures(item_id);
+
 -- ── FTS5 全文检索 ──
 
 CREATE VIRTUAL TABLE IF NOT EXISTS kp_fts USING fts5(
@@ -120,6 +146,8 @@ CREATE INDEX IF NOT EXISTS idx_kp_subject ON knowledge_points(subject);
 CREATE INDEX IF NOT EXISTS idx_kp_taxonomy ON knowledge_points(taxonomy_path);
 CREATE INDEX IF NOT EXISTS idx_kp_source ON knowledge_points(source_file);
 CREATE INDEX IF NOT EXISTS idx_kp_order ON knowledge_points(source_file, order_index);
+-- REC-16：order_index 单列索引（max_order_index / 非 source 过滤检索排序，避免全表扫描）
+CREATE INDEX IF NOT EXISTS idx_kp_order_only ON knowledge_points(order_index);
 -- content_hash 非空时唯一 → 写入去重（#8）
 CREATE UNIQUE INDEX IF NOT EXISTS idx_kp_hash_uniq ON knowledge_points(content_hash)
     WHERE content_hash != '';
@@ -131,6 +159,8 @@ CREATE INDEX IF NOT EXISTS idx_q_subject ON questions(subject);
 CREATE INDEX IF NOT EXISTS idx_q_taxonomy ON questions(taxonomy_path);
 CREATE INDEX IF NOT EXISTS idx_q_source ON questions(source_file);
 CREATE INDEX IF NOT EXISTS idx_q_order ON questions(source_file, order_index);
+-- REC-16：order_index 单列索引
+CREATE INDEX IF NOT EXISTS idx_q_order_only ON questions(order_index);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_q_hash_uniq ON questions(content_hash)
     WHERE content_hash != '';
 -- 生成题 / 租户筛选（v9）

@@ -106,6 +106,14 @@ class AppConfig(BaseSettings):
     vlm_dpi: int = 200
     vlm_max_concurrent: int = 3
     vlm_max_retries: int = 3
+    # 文本层探测（REC-01）：backend=vlm 时，若 PDF 已含可提取文字层（电子版教材）
+    # 则自动降级走 0-LLM 的 PyMuPdfRecognizer，VLM 仅留给扫描件/图表密集件。
+    # CLI --force-vlm 可关闭本探测，强制全页走 VLM（适合脏文字层的扫描件）。
+    vlm_auto_text_detect: bool = True
+    # 文字层判定阈值：抽样页平均字符数 ≥ 此值且非乱码 → 认为有可用文字层。
+    vlm_text_layer_min_chars_per_page: int = 100
+    # 文字层探测抽样页数（从首页起）。
+    vlm_text_layer_sample_pages: int = 5
 
     # ── Pipeline: Stage1Extract — 单条滑动窗口 ──────────
     extract_window_lines: int = 500  # 初始窗口行数（旧默认 200）
@@ -118,7 +126,11 @@ class AppConfig(BaseSettings):
 
     # ── Pipeline: Stage1Review / Stage2Review 开关 ──────
     stage1_review_enabled: bool = True
-    stage2_review_enabled: bool = True
+    # REC-05：默认关闭 Stage2Review。它逐条 LLM 复核的学科根/tag 复用/taxonomy 合法性
+    # 已由 Stage3 确定性规则（_ensure_discipline_root + canonicalize_path + validate）
+    # 完整覆盖，重叠且结论会与规则抖动。关闭后这一轮 LLM 调用归零（一本书约省 N 次），
+    # 标准化全交给 Stage3 确定性后处理。需要 LLM 二次复核时显式置 true 重新启用（opt-in）。
+    stage2_review_enabled: bool = False
     stage1_review_max_retries: int = 2
     stage2_annotate_max_retries: int = 3
     stage2_review_max_retries: int = 2
@@ -132,12 +144,15 @@ class AppConfig(BaseSettings):
     retry_feedback_enabled: bool = True
 
     # ── Pipeline: 各 stage 间 queue 大小 ─────────────────
-    pipeline_stage_queue_size: int = 2
+    pipeline_stage_queue_size: int = 8  # REC-03：加深以平滑 LLM 延迟抖动（原 2 易阻塞上游）
     pipeline_annotate_queue_size: int = 4  # 保留兼容老 TOML
 
     # Tag 树注入到 prompt 的限制
     tag_tree_max_depth: int = 4
     tag_tree_max_nodes: int = 200
+    # REC-09：Stage2 读 tag_tree 只读快照；live 较上次快照增长 ≥ 此值才刷新快照。
+    # 越大越省（Stage2 序列化缓存更稳、prompt 前缀更稳），代价是 tag 复用提示更滞后。
+    tag_tree_snapshot_refresh_gap: int = 16
 
     # ── Pipeline: Debug ──────────────────────────────────
     pipeline_debug: bool = False
@@ -150,7 +165,8 @@ class AppConfig(BaseSettings):
     # 并发建议：≤16GB RAM → 4-6；32GB → 8-12；64GB+ → 16-24
     # 过高会挤占 WASM 工具（VS Code SQLite 插件等）的内存分配
     max_concurrent_files: int = 8
-    max_concurrent_llm_calls: int = 5
+    # REC-03：≥ Stage2 并发总和 + 其余 stage，否则并发被全局闸门钳死（原 5 不够 4 路打标）
+    max_concurrent_llm_calls: int = 8
 
     # ── Pipeline: per-model 并发限流 ────────────────────
     # 防止被 provider 按 model 维度限流（如 Anthropic Token Plan 的 429）。
@@ -200,8 +216,11 @@ class AppConfig(BaseSettings):
     answer_linking_enabled: bool = True
     # 结构化关系推断（#6 知识图谱）：入库后推断 corollary_of/tests/successor 边写 item_relations
     relation_inference_enabled: bool = True
-    # 文档级 reconciliation 复核（#7）：入库后检测重复条目/类型误判，写报告不改库
+    # 文档级 reconciliation 复核（#7）：入库后检测重复条目/类型误判，写报告
     reconciliation_enabled: bool = True
+    # REC-15：reconciliation 高置信结论自动纠正回改 DB（仅 kp_type_mismatch，首标记强规则）。
+    # 默认 False 保守（只报告）；category 跨表迁移/近重复合并仍只报告不自动改。
+    reconciliation_autofix: bool = False
     # 单文档内并行提取（#1 Phase 6）：按 section 分段并发提取 + 段序保序。默认关（流式串行）。
     intra_doc_parallel_extract: bool = False
     intra_doc_segment_concurrency: int = 4
@@ -210,8 +229,16 @@ class AppConfig(BaseSettings):
     # Prompt caching（#9）：各 stage 把静态指令放 system（稳定可缓存前缀），动态输入放 user。
     # 默认 True；设 False 退回"全部塞 user message"的合并路径（应急回滚用）。
     pipeline_prompt_cache_enabled: bool = True
-    stage2_annotate_concurrency: int = 1
-    stage2_review_concurrency: int = 1
+    # REC-03：默认开 Stage2 并发（REC-09 只读快照已消除共享 tag_tree 竞争前提）。
+    # ReorderBuffer 保证并发后按 item_id 保序入库；受 max_concurrent_llm_calls 全局闸门兜底。
+    stage2_annotate_concurrency: int = 4
+    stage2_review_concurrency: int = 2
+    # REC-04：Stage2Annotate 批量打标（同来源 batch 的 N 条合 1 次 LLM 调用，单文档最大
+    # 调用压降点 800→~180）。1:1 长度校验 + 单条失败降级逐条；关闭则退回逐条打标。
+    stage2_annotate_batch: bool = True
+    stage2_annotate_batch_size: int = 8  # 单次批量打标最多合并多少条 item
+    # REC-10：Stage3 攒小批再一次 save_batch+commit（WAL fsync N→N/批），去重计数批量预查。
+    stage3_persist_batch_size: int = 16
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）
