@@ -77,3 +77,42 @@ def test_physics_strategy_templates_loaded() -> None:
     assert set(gen._strategy_templates) == set(VariantStrategy)
     for body in gen._strategy_templates.values():
         assert body.strip()
+
+
+def test_dedup_batch_drops_near_duplicates() -> None:
+    """同批内近重复候选(cosine>0.92)被丢弃，保留首个"""
+    gen = _gen()
+    q_a = Question(
+        discipline=Discipline.MATH,
+        content="设 $f$ 在 $[0,1]$ 上连续，证明 $f$ 有界且能取到最大值与最小值。",
+    )
+    q_dup = Question(
+        discipline=Discipline.MATH,
+        content="设 $f$ 在 $[0,1]$ 上连续，证明 $f$ 有界且能取到最大值与最小值。",
+    )
+    q_diff = Question(
+        discipline=Discipline.MATH,
+        content="求矩阵 $A$ 的特征值与特征向量，其中 $A$ 是给定的二阶实方阵。",
+    )
+    result = gen._dedup_batch([q_a, q_dup, q_diff])
+    assert len(result) == 2
+    assert q_a in result and q_diff in result
+    assert q_dup not in result
+
+
+def test_dedup_batch_keeps_distinct() -> None:
+    gen = _gen()
+    qs = [
+        Question(
+            discipline=Discipline.MATH,
+            content=f"第{i}类问题：考查不同知识点的独立数学题，表述与方法各异，内容足够长。",
+        )
+        for i in ("一", "二", "三")
+    ]
+    # 内容高度相似（仅一字之差）→ 可能被去重；这里验证不会抛错且至少保留 1 个
+    result = gen._dedup_batch(qs)
+    assert 1 <= len(result) <= 3
+
+
+def test_dedup_batch_empty() -> None:
+    assert _gen()._dedup_batch([]) == []

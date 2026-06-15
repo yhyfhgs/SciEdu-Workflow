@@ -11,10 +11,12 @@ LLM 输出字段兼容新老 schema：
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Any
 
 import structlog
 
+from sciforge.agents.qgen.prefilter import _tf_vector, cosine_similarity
 from sciforge.core.models import (
     ContextBundle,
     Discipline,
@@ -28,6 +30,9 @@ from sciforge.pipeline.retry import call_llm_json_with_retry
 from sciforge.prompts.templates import get_generation_prompt_template
 
 logger = structlog.get_logger()
+
+# 同批候选两两 cosine 相似度去重阈值（> 此值视为近重复，丢弃后者）
+BATCH_DEDUP_THRESHOLD = 0.92
 
 
 class QuestionGenerator:
@@ -81,7 +86,20 @@ class QuestionGenerator:
                     )
             except Exception as exc:
                 logger.warning("qgen_candidate_failed", idx=i + 1, error=str(exc)[:200])
-        return candidates
+        return self._dedup_batch(candidates)
+
+    def _dedup_batch(self, candidates: list[Question]) -> list[Question]:
+        """同批候选两两 cosine 去重：与已保留候选相似度 > 阈值则丢弃，避免一批近重复题。"""
+        kept: list[Question] = []
+        kept_vecs: list[Counter[str]] = []
+        for cand in candidates:
+            vec = _tf_vector(cand.content)
+            if any(cosine_similarity(vec, kv) > BATCH_DEDUP_THRESHOLD for kv in kept_vecs):
+                logger.info("qgen_batch_dedup_drop", content_head=cand.content[:40])
+                continue
+            kept.append(cand)
+            kept_vecs.append(vec)
+        return kept
 
     def _build_prompt(self, req: GenerationRequest, ctx: ContextBundle) -> str:
         """构建 prompt（按 variant / free 模式 + 学科参数化）"""
