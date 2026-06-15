@@ -71,3 +71,41 @@ def test_papers_bad_difficulty_range_422() -> None:
     client = TestClient(create_app(_noop(), _noop(), storage_factory=lambda: store))
     r = client.post("/v1/papers", json={"difficulty_min": 8, "difficulty_max": 3})
     assert r.status_code == 422
+
+
+def _bank_with_solutions() -> Any:
+    qs = [
+        Question(
+            discipline=Discipline.MATH,
+            content=f"题目{i}内容足够长用于导出测试。",
+            difficulty=5,
+            solution_content=f"解答{i}",
+        )
+        for i in range(2)
+    ]
+    return _mock_storage(qs)
+
+
+def test_papers_export_markdown() -> None:
+    store = _bank_with_solutions()
+    client = TestClient(create_app(_noop(), _noop(), storage_factory=lambda: store))
+    r = client.post("/v1/papers/export", json={"count": 2, "format": "markdown"})
+    assert r.status_code == 200
+    assert "text/markdown" in r.headers["content-type"]
+    assert "题目0内容" in r.text
+    assert "解答0" in r.text
+
+
+def test_papers_export_docx() -> None:
+    store = _bank_with_solutions()
+    client = TestClient(create_app(_noop(), _noop(), storage_factory=lambda: store))
+    r = client.post("/v1/papers/export", json={"count": 2, "format": "docx"})
+    assert r.status_code == 200
+    assert "wordprocessingml" in r.headers["content-type"]
+    assert r.content[:2] == b"PK"
+
+
+def test_papers_export_no_storage_503() -> None:
+    client = TestClient(create_app(_noop(), _noop()))
+    r = client.post("/v1/papers/export", json={"format": "markdown"})
+    assert r.status_code == 503

@@ -21,13 +21,14 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Response
 
 from sciforge.api.schemas import (
     GenerateBatchRequest,
     GeneratedQuestionOut,
     GenerateRequest,
     GenerateResponse,
+    PaperExportRequest,
     PaperItem,
     PaperRequest,
     PaperResponse,
@@ -40,6 +41,7 @@ from sciforge.core.models import (
     Question,
     VariantStrategy,
 )
+from sciforge.export import render_docx, render_markdown
 from sciforge.storage.saas import SaasStore, TaskInfo, UsageSummary
 
 if TYPE_CHECKING:
@@ -108,6 +110,37 @@ async def _run_batch(
     except Exception as exc:  # noqa: BLE001
         logger.warning("batch_run_failed", task_id=task_id, error=str(exc)[:200])
         saas_store.update_task(task_id, status="failed", error=str(exc)[:300])
+
+
+def _assemble_paper_items(storage_factory: StorageFactory, req: PaperRequest) -> list[PaperItem]:
+    """按 req 过滤条件从题库抽题（用完释放 storage 连接）。"""
+    discipline = _parse_discipline(req.discipline)
+    storage = storage_factory()
+    try:
+        filters: dict[str, object] = {
+            "discipline": discipline.value,
+            "difficulty_range": (req.difficulty_min, req.difficulty_max),
+        }
+        if req.subject:
+            filters["subject"] = req.subject
+        if req.question_type:
+            filters["question_type"] = req.question_type
+        ids = storage.search_questions(filters)
+        bank = storage.load_questions_by_ids(list(ids)[: req.count])
+        return [
+            PaperItem(
+                id=q.id,
+                content=q.content,
+                difficulty=q.difficulty,
+                question_type=str(q.question_type),
+                solution=q.solution_content or "",
+            )
+            for q in bank
+        ]
+    finally:
+        close = getattr(storage, "close", None)
+        if callable(close):
+            close()
 
 
 def create_app(
@@ -247,39 +280,40 @@ def create_app(
             raise HTTPException(status_code=503, detail="组卷需注入题库 storage")
         if req.difficulty_min > req.difficulty_max:
             raise HTTPException(status_code=422, detail="difficulty_min 不能大于 difficulty_max")
-        discipline = _parse_discipline(req.discipline)
-        storage = storage_factory()
-        try:
-            filters: dict[str, object] = {
-                "discipline": discipline.value,
-                "difficulty_range": (req.difficulty_min, req.difficulty_max),
-            }
-            if req.subject:
-                filters["subject"] = req.subject
-            if req.question_type:
-                filters["question_type"] = req.question_type
-            ids = storage.search_questions(filters)
-            bank = storage.load_questions_by_ids(list(ids)[: req.count])
-            items = [
-                PaperItem(
-                    id=q.id,
-                    content=q.content,
-                    difficulty=q.difficulty,
-                    question_type=str(q.question_type),
-                    solution=q.solution_content or "",
-                )
-                for q in bank
-            ]
-        finally:
-            close = getattr(storage, "close", None)
-            if callable(close):
-                close()
+        items = _assemble_paper_items(storage_factory, req)
         if tenant and saas_store is not None and items:
             saas_store.record_usage(tenant, "/v1/papers", billable_units=len(items))
-        return PaperResponse(
-            title=req.title or f"{discipline.value} 试卷",
-            count=len(items),
-            questions=items,
-        )
+        title = req.title or f"{_parse_discipline(req.discipline).value} 试卷"
+        return PaperResponse(title=title, count=len(items), questions=items)
+
+    @app.post("/v1/papers/export")
+    async def papers_export(
+        req: PaperExportRequest, tenant: str = Depends(require_tenant)
+    ) -> Response:
+        if storage_factory is None:
+            raise HTTPException(status_code=503, detail="组卷导出需注入题库 storage")
+        if req.difficulty_min > req.difficulty_max:
+            raise HTTPException(status_code=422, detail="difficulty_min 不能大于 difficulty_max")
+        items = _assemble_paper_items(storage_factory, req)
+        title = req.title or f"{_parse_discipline(req.discipline).value} 试卷"
+        item_dicts = [it.model_dump() for it in items]
+        if tenant and saas_store is not None and items:
+            saas_store.record_usage(tenant, "/v1/papers/export", billable_units=len(items))
+        if req.format == "docx":
+            try:
+                data = render_docx(title, item_dicts, include_solutions=req.include_solutions)
+            except ImportError as exc:
+                raise HTTPException(
+                    status_code=501, detail="DOCX 导出需安装 python-docx（docx extra）"
+                ) from exc
+            return Response(
+                content=data,
+                media_type=(
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ),
+                headers={"Content-Disposition": 'attachment; filename="paper.docx"'},
+            )
+        text = render_markdown(title, item_dicts, include_solutions=req.include_solutions)
+        return Response(content=text, media_type="text/markdown; charset=utf-8")
 
     return app
