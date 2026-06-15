@@ -787,10 +787,12 @@ class SQLiteStorageBackend:
 
     _ALLOWED_SEARCH_TABLES = {"knowledge_points", "questions"}
 
-    def _search(self, table: str, filters: dict[str, object]) -> list[str]:
-        """动态构建 WHERE 子句（table 必须是白名单内的表名）"""
-        assert table in self._ALLOWED_SEARCH_TABLES
+    @staticmethod
+    def _build_filter_clause(filters: dict[str, object]) -> tuple[list[str], list[object]]:
+        """把 filters 字典编译成 (conditions, params)，供 _search 与多租户子类复用。
 
+        仅放行白名单字段，避免 SQL 注入（key 全部来自字面量）。
+        """
         conditions: list[str] = []
         params: list[object] = []
 
@@ -817,6 +819,13 @@ class SQLiteStorageBackend:
                 conditions.append("content_hash = ?")
                 params.append(value)
 
+        return conditions, params
+
+    def _search(self, table: str, filters: dict[str, object]) -> list[str]:
+        """动态构建 WHERE 子句（table 必须是白名单内的表名）"""
+        assert table in self._ALLOWED_SEARCH_TABLES
+
+        conditions, params = self._build_filter_clause(filters)
         where = " AND ".join(conditions) if conditions else "1=1"
         rows = self._conn.execute(
             f"SELECT id FROM {table} WHERE {where} ORDER BY order_index LIMIT 500",  # noqa: S608
