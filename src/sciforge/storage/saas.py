@@ -10,10 +10,12 @@ SaaS 元数据仅在共享后端存在）。
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import sqlite3
 import uuid
 from pathlib import Path
+from typing import Any
 
 import structlog
 from pydantic import BaseModel, Field
@@ -49,6 +51,20 @@ CREATE TABLE IF NOT EXISTS usage_records (
     ts TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_usage_tenant ON usage_records(tenant_id);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'generate_batch',
+    status TEXT NOT NULL DEFAULT 'pending',
+    total INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    result_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_tenant ON tasks(tenant_id);
 """
 
 
@@ -69,6 +85,16 @@ class UsageSummary(BaseModel):
     used: int = 0
     quota: int = 0
     remaining: int = 0
+
+
+class TaskInfo(BaseModel):
+    id: str
+    tenant_id: str = ""
+    status: str = "pending"  # pending / running / completed / failed
+    total: int = 0
+    done: int = 0
+    result: list[dict[str, Any]] = Field(default_factory=list)
+    error: str = ""
 
 
 def _hash_key(raw: str) -> str:
@@ -182,3 +208,66 @@ class SaasStore:
         if summary.quota <= 0:
             return True
         return summary.remaining > 0
+
+    # ── 异步任务 ──
+
+    def create_task(self, tenant_id: str, total: int, *, kind: str = "generate_batch") -> str:
+        task_id = str(uuid.uuid4())
+        self._conn.execute(
+            "INSERT INTO tasks (id, tenant_id, kind, total) VALUES (?, ?, ?, ?)",
+            (task_id, tenant_id, kind, total),
+        )
+        self._conn.commit()
+        return task_id
+
+    def update_task(
+        self,
+        task_id: str,
+        *,
+        done: int | None = None,
+        status: str | None = None,
+        result_json: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        sets: list[str] = []
+        params: list[Any] = []
+        if done is not None:
+            sets.append("done = ?")
+            params.append(done)
+        if status is not None:
+            sets.append("status = ?")
+            params.append(status)
+        if result_json is not None:
+            sets.append("result_json = ?")
+            params.append(result_json)
+        if error is not None:
+            sets.append("error = ?")
+            params.append(error)
+        if not sets:
+            return
+        sets.append("updated_at = datetime('now')")
+        params.append(task_id)
+        self._conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", params)
+        self._conn.commit()
+
+    def get_task(self, task_id: str) -> TaskInfo | None:
+        row = self._conn.execute(
+            "SELECT id, tenant_id, status, total, done, result_json, error "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            parsed = json.loads(row["result_json"])
+        except (json.JSONDecodeError, TypeError):
+            parsed = []
+        return TaskInfo(
+            id=row["id"],
+            tenant_id=row["tenant_id"],
+            status=row["status"],
+            total=row["total"],
+            done=row["done"],
+            result=parsed if isinstance(parsed, list) else [],
+            error=row["error"],
+        )

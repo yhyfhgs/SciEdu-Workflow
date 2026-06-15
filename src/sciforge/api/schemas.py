@@ -29,6 +29,10 @@ class GenerateResponse(BaseModel):
     reason: str = ""
 
 
+class GenerateBatchRequest(GenerateRequest):
+    count: int = Field(default=5, ge=1, le=50)
+
+
 class SolveRequest(BaseModel):
     question_id: str = ""
     content: str = ""

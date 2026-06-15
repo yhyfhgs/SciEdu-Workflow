@@ -16,12 +16,15 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+import structlog
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 
 from sciforge.api.schemas import (
+    GenerateBatchRequest,
     GeneratedQuestionOut,
     GenerateRequest,
     GenerateResponse,
@@ -34,10 +37,12 @@ from sciforge.core.models import (
     Question,
     VariantStrategy,
 )
-from sciforge.storage.saas import SaasStore, UsageSummary
+from sciforge.storage.saas import SaasStore, TaskInfo, UsageSummary
 
 if TYPE_CHECKING:
     from sciforge.agents import QGenAgent, SolveAgent
+
+logger = structlog.get_logger()
 
 QGenFactory = Callable[[Discipline], "QGenAgent"]
 SolveFactory = Callable[[Discipline], "SolveAgent"]
@@ -54,6 +59,50 @@ def _trace_tokens(result: Any) -> int:
     """从 QGenOutput.trace 估算 token 用量（用于计费）。"""
     trace = getattr(result, "trace", None)
     return int(getattr(trace, "total_tokens_est", 0)) if trace is not None else 0
+
+
+async def _run_batch(
+    task_id: str,
+    gen_req: GenerationRequest,
+    count: int,
+    discipline: Discipline,
+    qgen_factory: QGenFactory,
+    saas_store: SaasStore,
+    tenant: str,
+) -> None:
+    """后台批量生成：逐题生成，实时更新任务进度/结果；异常标 failed。"""
+    from sciforge.agents import QGenInput
+
+    saas_store.update_task(task_id, status="running")
+    questions: list[dict[str, Any]] = []
+    try:
+        for i in range(count):
+            agent = qgen_factory(discipline)
+            result = await agent.run(QGenInput(request=gen_req))
+            if result.generated is not None:
+                gq = result.generated
+                questions.append(
+                    {
+                        "id": gq.question.id,
+                        "content": gq.question.content,
+                        "solution": gq.solution.solution_latex,
+                        "difficulty": gq.difficulty_score.overall,
+                        "verified": gq.verification.passed,
+                    }
+                )
+                if tenant:
+                    saas_store.record_usage(
+                        tenant, "/v1/generate/batch", tokens_est=_trace_tokens(result)
+                    )
+            saas_store.update_task(
+                task_id, done=i + 1, result_json=json.dumps(questions, ensure_ascii=False)
+            )
+        saas_store.update_task(
+            task_id, status="completed", result_json=json.dumps(questions, ensure_ascii=False)
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("batch_run_failed", task_id=task_id, error=str(exc)[:200])
+        saas_store.update_task(task_id, status="failed", error=str(exc)[:300])
 
 
 def create_app(
@@ -151,5 +200,39 @@ def create_app(
         if saas_store is None:
             raise HTTPException(status_code=404, detail="鉴权/计费未启用")
         return saas_store.get_usage(tenant)
+
+    @app.post("/v1/generate/batch")
+    async def generate_batch(
+        req: GenerateBatchRequest,
+        background_tasks: BackgroundTasks,
+        tenant: str = Depends(require_tenant),
+    ) -> dict[str, Any]:
+        if saas_store is None:
+            raise HTTPException(status_code=503, detail="异步批量需启用 saas_store（鉴权/计费）")
+        discipline = _parse_discipline(req.discipline)
+        if not req.topics:
+            raise HTTPException(status_code=422, detail="topics 不能为空")
+        task_id = saas_store.create_task(tenant, req.count)
+        gen_req = GenerationRequest(
+            discipline=discipline,
+            subject=req.subject,
+            topics=req.topics,
+            difficulty_target=req.difficulty,
+            question_type=req.question_type,
+            strategy=VariantStrategy.TOPIC_GENERATION,
+        )
+        background_tasks.add_task(
+            _run_batch, task_id, gen_req, req.count, discipline, qgen_factory, saas_store, tenant
+        )
+        return {"task_id": task_id, "status": "pending", "total": req.count}
+
+    @app.get("/v1/tasks/{task_id}", response_model=TaskInfo)
+    async def get_task(task_id: str, tenant: str = Depends(require_tenant)) -> TaskInfo:
+        if saas_store is None:
+            raise HTTPException(status_code=404, detail="任务系统未启用")
+        info = saas_store.get_task(task_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+        return info
 
     return app
