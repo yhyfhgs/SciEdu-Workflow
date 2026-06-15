@@ -116,14 +116,23 @@ class LLMClient:
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        **extra: Any,
     ) -> str:
-        """异步生成文本"""
+        """异步生成文本
+
+        ``**extra`` 透传额外生成参数（如 ``response_format`` / ``thinking`` / ``seed``）；
+        backend 的 ``_resolve_params`` 会按 provider 能力矩阵静默过滤掉不支持项
+        （例如 anthropic 兼容网关丢弃 ``response_format``）。
+        """
         system = system or DEFAULT_SYSTEM
         kwargs: dict[str, Any] = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        for key, value in extra.items():
+            if value is not None:
+                kwargs[key] = value
 
         logger.debug(
             "llm_request",
@@ -166,14 +175,22 @@ class LLMClient:
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        **extra: Any,
     ) -> str:
-        """同步生成文本"""
+        """同步生成文本
+
+        ``**extra`` 透传额外生成参数（如 ``response_format`` / ``thinking`` / ``seed``）；
+        backend 的 ``_resolve_params`` 会按 provider 能力矩阵静默过滤掉不支持项。
+        """
         system = system or DEFAULT_SYSTEM
         kwargs: dict[str, Any] = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        for key, value in extra.items():
+            if value is not None:
+                kwargs[key] = value
 
         logger.debug(
             "llm_request",
