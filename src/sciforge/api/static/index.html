@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SciForge 控制台</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<style>
+  :root { --bg:#0f1320; --panel:#1a2030; --line:#2a3450; --fg:#e6e9f0; --muted:#8b94ad;
+          --accent:#4f8cff; --accent2:#7c5cff; --ok:#2fbf71; --err:#ff5c6c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC",sans-serif;
+         background: var(--bg); color: var(--fg); }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex;
+           align-items:center; gap:12px; background:linear-gradient(90deg,#161b2c,#11152200); }
+  header h1 { font-size:18px; margin:0; font-weight:700; letter-spacing:.5px; }
+  header .tag { font-size:12px; color:var(--muted); border:1px solid var(--line);
+                padding:2px 8px; border-radius:99px; }
+  header .spacer { flex:1; }
+  #who { font-size:13px; color:var(--muted); }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:9px 14px;
+           font-size:14px; cursor:pointer; transition:.15s; }
+  button:hover { filter:brightness(1.1); }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  main { max-width:1000px; margin:0 auto; padding:24px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px;
+           padding:20px; margin-bottom:20px; }
+  .panel h2 { margin:0 0 14px; font-size:15px; color:var(--accent); }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input, select, textarea { width:100%; background:#0d1220; color:var(--fg);
+           border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:14px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:140px; }
+  .tabs { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+  .tabs button { background:transparent; border:1px solid var(--line); color:var(--muted); }
+  .tabs button.active { background:var(--accent2); color:#fff; border-color:var(--accent2); }
+  .hidden { display:none; }
+  .card { border:1px solid var(--line); border-radius:10px; padding:14px; margin-top:12px;
+          background:#0d1220; }
+  .card .meta { font-size:12px; color:var(--muted); margin-bottom:8px; display:flex; gap:10px;
+                flex-wrap:wrap; }
+  .badge { background:#13203a; color:var(--accent); border-radius:6px; padding:1px 7px; }
+  .badge.ok { background:#10301f; color:var(--ok); }
+  .solution { color:#c7cfe0; border-top:1px dashed var(--line); margin-top:10px; padding-top:10px; }
+  .toast { position:fixed; bottom:20px; right:20px; padding:12px 16px; border-radius:10px;
+           font-size:14px; color:#fff; opacity:0; transform:translateY(10px); transition:.25s; }
+  .toast.show { opacity:1; transform:translateY(0); }
+  .toast.ok { background:var(--ok); } .toast.err { background:var(--err); }
+  .muted { color:var(--muted); font-size:13px; }
+  pre.usage { background:#0d1220; border:1px solid var(--line); border-radius:8px; padding:12px;
+              font-size:13px; overflow:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙️ SciForge</h1><span class="tag">统一后端 · SaaS 控制台</span>
+  <div class="spacer"></div>
+  <span id="who"></span>
+  <button class="ghost" id="logoutBtn" onclick="logout()" style="display:none">退出</button>
+</header>
+<main>
+  <!-- 登录/注册 -->
+  <section class="panel" id="authPanel">
+    <h2>登录 / 注册</h2>
+    <div class="row">
+      <div><label>用户名</label><input id="username" placeholder="alice" /></div>
+      <div><label>密码</label><input id="password" type="password" placeholder="••••••" /></div>
+    </div>
+    <div style="margin-top:14px; display:flex; gap:10px;">
+      <button onclick="auth('login')">登录</button>
+      <button class="ghost" onclick="auth('register')">注册</button>
+    </div>
+    <p class="muted" id="authHint" style="margin-top:12px"></p>
+  </section>
+
+  <!-- 已登录区 -->
+  <div id="appArea" class="hidden">
+    <div class="tabs">
+      <button class="active" data-tab="gen" onclick="tab('gen')">出题</button>
+      <button data-tab="paper" onclick="tab('paper')">组卷</button>
+      <button data-tab="rec" onclick="tab('rec')">智能推荐</button>
+      <button data-tab="usage" onclick="tab('usage')">用量</button>
+    </div>
+
+    <!-- 出题 -->
+    <section class="panel tabpane" id="tab-gen">
+      <h2>单题生成</h2>
+      <div class="row">
+        <div><label>学科</label>
+          <select id="g_disc"><option value="math">数学</option><option value="physics">物理</option></select>
+        </div>
+        <div><label>题型</label>
+          <select id="g_type">
+            <option value="proof">证明</option><option value="computational">计算</option>
+            <option value="construction">构造</option>
+          </select>
+        </div>
+        <div><label>难度 (1-10)</label><input id="g_diff" type="number" min="1" max="10" value="5" /></div>
+      </div>
+      <label>主题（逗号分隔）</label>
+      <input id="g_topics" placeholder="极限, 连续性" />
+      <label>科目</label>
+      <input id="g_subject" placeholder="数学分析" />
+      <div style="margin-top:14px"><button id="genBtn" onclick="generate()">生成题目</button></div>
+      <div id="genOut"></div>
+    </section>
+
+    <!-- 组卷 -->
+    <section class="panel tabpane hidden" id="tab-paper">
+      <h2>按条件组卷</h2>
+      <div class="row">
+        <div><label>学科</label>
+          <select id="p_disc"><option value="math">数学</option><option value="physics">物理</option></select>
+        </div>
+        <div><label>难度下限</label><input id="p_dmin" type="number" min="1" max="10" value="1" /></div>
+        <div><label>难度上限</label><input id="p_dmax" type="number" min="1" max="10" value="10" /></div>
+        <div><label>题量</label><input id="p_count" type="number" min="1" max="100" value="10" /></div>
+      </div>
+      <div style="margin-top:14px; display:flex; gap:10px;">
+        <button onclick="papers()">组卷预览</button>
+        <button class="ghost" onclick="exportPaper('markdown')">导出 Markdown</button>
+        <button class="ghost" onclick="exportPaper('docx')">导出 DOCX</button>
+      </div>
+      <div id="paperOut"></div>
+    </section>
+
+    <!-- 推荐 -->
+    <section class="panel tabpane hidden" id="tab-rec">
+      <h2>个性化推荐</h2>
+      <p class="muted">基于你的练习画像（掌握难度 + 薄弱标签）推荐题目。可先「标记练习结果」积累画像。</p>
+      <div class="row">
+        <div><label>学科</label>
+          <select id="r_disc"><option value="math">数学</option><option value="physics">物理</option></select>
+        </div>
+        <div><label>条数</label><input id="r_limit" type="number" min="1" max="50" value="10" /></div>
+      </div>
+      <div style="margin-top:14px"><button onclick="recommend()">获取推荐</button></div>
+      <div id="recOut"></div>
+    </section>
+
+    <!-- 用量 -->
+    <section class="panel tabpane hidden" id="tab-usage">
+      <h2>用量与配额</h2>
+      <button onclick="usage()">刷新</button>
+      <pre class="usage" id="usageOut">点击刷新查看</pre>
+    </section>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const API = ""; // 同源
+let token = localStorage.getItem("sf_token") || "";
+let lastGenId = "";
+
+function headers(json=true){
+  const h = {};
+  if (json) h["Content-Type"] = "application/json";
+  if (token) h["Authorization"] = "Bearer " + token;
+  return h;
+}
+function toast(msg, ok=true){
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.className = "toast show " + (ok ? "ok":"err");
+  setTimeout(()=>{ t.className = "toast " + (ok?"ok":"err"); }, 2600);
+}
+function renderMath(el){
+  if (window.renderMathInElement) renderMathInElement(el, {
+    delimiters:[{left:"$$",right:"$$",display:true},{left:"$",right:"$",display:false}],
+    throwOnError:false });
+}
+async function api(path, opts={}){
+  const r = await fetch(API + path, opts);
+  if (r.status === 401){ logout(); toast("登录已过期，请重新登录", false); throw new Error("401"); }
+  return r;
+}
+
+async function auth(mode){
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  if (!username || !password){ toast("请输入用户名和密码", false); return; }
+  const r = await fetch(API + "/v1/auth/" + mode, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({username, password}) });
+  const body = await r.json();
+  if (!r.ok){ document.getElementById("authHint").textContent = body.detail || "失败"; return; }
+  token = body.token; localStorage.setItem("sf_token", token);
+  localStorage.setItem("sf_user", username);
+  showApp(username);
+  toast(mode === "login" ? "已登录" : "注册成功，已登录");
+}
+function logout(){
+  token = ""; localStorage.removeItem("sf_token"); localStorage.removeItem("sf_user");
+  document.getElementById("appArea").classList.add("hidden");
+  document.getElementById("authPanel").classList.remove("hidden");
+  document.getElementById("who").textContent = "";
+  document.getElementById("logoutBtn").style.display = "none";
+}
+function showApp(username){
+  document.getElementById("authPanel").classList.add("hidden");
+  document.getElementById("appArea").classList.remove("hidden");
+  document.getElementById("who").textContent = "👤 " + username;
+  document.getElementById("logoutBtn").style.display = "inline-block";
+}
+function tab(name){
+  document.querySelectorAll(".tabpane").forEach(p=>p.classList.add("hidden"));
+  document.getElementById("tab-"+name).classList.remove("hidden");
+  document.querySelectorAll(".tabs button").forEach(b=>
+    b.classList.toggle("active", b.dataset.tab === name));
+}
+
+async function generate(){
+  const btn = document.getElementById("genBtn");
+  btn.disabled = true; btn.textContent = "生成中…";
+  const out = document.getElementById("genOut");
+  out.innerHTML = '<p class="muted">正在调用生成引擎（QGenAgent 5 阶段闭环）…</p>';
+  try {
+    const topics = document.getElementById("g_topics").value.split(",").map(s=>s.trim()).filter(Boolean);
+    const r = await api("/v1/generate", { method:"POST", headers: headers(), body: JSON.stringify({
+      discipline: document.getElementById("g_disc").value,
+      subject: document.getElementById("g_subject").value,
+      topics, difficulty: +document.getElementById("g_diff").value,
+      question_type: document.getElementById("g_type").value }) });
+    const body = await r.json();
+    if (!body.success){ out.innerHTML = '<p class="muted">未生成合格题目：'+(body.reason||"")+'</p>'; return; }
+    const q = body.question; lastGenId = q.id;
+    out.innerHTML = renderQuestion(q, true);
+    renderMath(out);
+    toast("生成成功（" + body.rounds_used + " 轮）");
+  } catch(e){ if(e.message!=="401") out.innerHTML = '<p class="muted">请求失败</p>'; }
+  finally { btn.disabled = false; btn.textContent = "生成题目"; }
+}
+function renderQuestion(q, withMark){
+  const verified = q.verified ? '<span class="badge ok">✓ 已验证</span>' : '<span class="badge">未验证</span>';
+  let html = '<div class="card"><div class="meta">'+
+    '<span class="badge">'+q.question_type+'</span>'+
+    '<span>难度 '+(q.difficulty?.toFixed ? q.difficulty.toFixed(1) : q.difficulty)+'</span>'+verified+
+    '<span class="muted">id '+q.id.slice(0,8)+'</span></div>'+
+    '<div>'+escapeHtml(q.content)+'</div>';
+  if (q.solution) html += '<div class="solution"><b>解答</b><br/>'+escapeHtml(q.solution)+'</div>';
+  if (withMark) html += '<div style="margin-top:12px; display:flex; gap:8px;">'+
+    '<button class="ghost" onclick="mark(\''+q.id+'\','+q.difficulty+',\'correct\')">标记答对</button>'+
+    '<button class="ghost" onclick="mark(\''+q.id+'\','+q.difficulty+',\'incorrect\')">标记答错</button></div>';
+  html += '</div>';
+  return html;
+}
+function escapeHtml(s){ const d=document.createElement("div"); d.textContent=s||""; return d.innerHTML; }
+
+async function mark(qid, difficulty, outcome){
+  try {
+    await api("/v1/behavior", { method:"POST", headers: headers(), body: JSON.stringify({
+      question_id: qid, outcome, difficulty: Math.round(difficulty)||5 }) });
+    toast("已记录："+(outcome==="correct"?"答对":"答错"));
+  } catch(e){}
+}
+
+async function papers(){
+  const out = document.getElementById("paperOut");
+  out.innerHTML = '<p class="muted">抽题中…</p>';
+  try {
+    const r = await api("/v1/papers", { method:"POST", headers: headers(), body: JSON.stringify(paperReq()) });
+    const body = await r.json();
+    if (!body.questions?.length){ out.innerHTML = '<p class="muted">题库中暂无匹配题目（先用「出题」并保存，或导入题库）。</p>'; return; }
+    out.innerHTML = '<h3 class="muted">'+body.title+'（'+body.count+' 题）</h3>'+
+      body.questions.map(q=>renderQuestion(q,false)).join("");
+    renderMath(out);
+  } catch(e){}
+}
+function paperReq(){
+  return { discipline: document.getElementById("p_disc").value,
+    difficulty_min:+document.getElementById("p_dmin").value,
+    difficulty_max:+document.getElementById("p_dmax").value,
+    count:+document.getElementById("p_count").value };
+}
+async function exportPaper(fmt){
+  try {
+    const r = await api("/v1/papers/export", { method:"POST", headers: headers(),
+      body: JSON.stringify({...paperReq(), format: fmt, include_solutions:true}) });
+    if (!r.ok){ toast("导出失败", false); return; }
+    const blob = await r.blob(); const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = fmt === "docx" ? "paper.docx" : "paper.md"; a.click();
+    URL.revokeObjectURL(url); toast("已导出 "+fmt);
+  } catch(e){}
+}
+
+async function recommend(){
+  const out = document.getElementById("recOut");
+  out.innerHTML = '<p class="muted">计算画像中…</p>';
+  try {
+    const r = await api("/v1/recommend?discipline="+document.getElementById("r_disc").value+
+      "&limit="+document.getElementById("r_limit").value, { headers: headers(false) });
+    const body = await r.json();
+    let head = '<p class="muted">掌握难度 '+body.mastered_difficulty.toFixed(1)+
+      ' · 正确率 '+(body.accuracy*100).toFixed(0)+'%'+
+      (body.weak_tags?.length ? ' · 薄弱：'+body.weak_tags.join("，") : '')+'</p>';
+    if (!body.items?.length){ out.innerHTML = head+'<p class="muted">题库暂无可推荐题目。</p>'; return; }
+    out.innerHTML = head + body.items.map(it=>'<div class="card"><div class="meta">'+
+      '<span class="badge">难度 '+it.difficulty+'</span><span>评分 '+it.score.toFixed(2)+'</span>'+
+      (it.matched_weak_tags?.length?'<span class="badge">薄弱命中</span>':'')+
+      '</div><div>'+escapeHtml(it.content||it.question_id)+'</div>'+
+      '<div class="muted" style="margin-top:6px">'+escapeHtml(it.reason)+'</div></div>').join("");
+    renderMath(out);
+  } catch(e){}
+}
+
+async function usage(){
+  try {
+    const r = await api("/v1/usage", { headers: headers(false) });
+    const body = await r.json();
+    document.getElementById("usageOut").textContent = JSON.stringify(body, null, 2);
+  } catch(e){}
+}
+
+// 启动：有 token 直接进控制台
+if (token){ showApp(localStorage.getItem("sf_user") || "用户"); }
+</script>
+</body>
+</html>

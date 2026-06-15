@@ -18,10 +18,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from sciforge.api.schemas import (
     AuthRequest,
@@ -156,9 +160,25 @@ def create_app(
     saas_store: SaasStore | None = None,
     storage_factory: StorageFactory | None = None,
     jwt_secret: str = "dev-secret-change-me",
+    cors_origins: list[str] | None = None,
+    serve_console: bool = True,
 ) -> FastAPI:
-    """构造 FastAPI app；agent 经工厂注入，saas_store 提供时启用鉴权+计费。"""
+    """构造 FastAPI app；agent 经工厂注入，saas_store 提供时启用鉴权+计费。
+
+    - ``cors_origins``：允许的跨域来源（默认 ``["*"]``，为未来独立部署的
+      Web/App/小程序前端铺垫）。鉴权走 Authorization 头（非 Cookie），故
+      ``allow_credentials=False`` 与 ``*`` 兼容。
+    - ``serve_console``：是否挂载内置 SaaS 控制台静态页到 ``/app``（``/`` 重定向至此）。
+    """
     app = FastAPI(title="SciForge API", version="0.1.0")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins or ["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     async def require_tenant(
         x_api_key: str = Header(default="", alias="X-API-Key"),
@@ -448,5 +468,16 @@ def create_app(
             )
         text = render_markdown(title, item_dicts, include_solutions=req.include_solutions)
         return Response(content=text, media_type="text/markdown; charset=utf-8")
+
+    # ── 内置 SaaS 控制台（静态 SPA，调 /v1/* API）──
+    static_dir = Path(__file__).parent / "static"
+    if serve_console and static_dir.is_dir():
+
+        @app.get("/")
+        async def _root() -> RedirectResponse:
+            return RedirectResponse(url="/app/")
+
+        # html=True → "/app/" 返回 index.html；放在路由注册之后，不影响 /v1/* 与 /docs
+        app.mount("/app", StaticFiles(directory=str(static_dir), html=True), name="console")
 
     return app
