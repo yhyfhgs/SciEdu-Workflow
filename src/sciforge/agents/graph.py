@@ -7,7 +7,11 @@
 
 功能边界：
 - 支持：async node function、线性边、条件边、END 终止
-- 不支持：持久化、human-in-the-loop、fanout/fanin、重试 hooks
+- 支持（HarnessGraph 升级，全部 opt-in，默认行为不变）：
+    * trace 钩子 on_node_enter / on_node_exit —— 每个节点执行前/后回调
+    * 节点级 retry —— add_node(..., retries=N) 在节点抛异常时最多重试 N 次（指数退避）
+    * checkpoint 钩子 on_checkpoint —— 每步状态更新后回调，便于持久化/恢复
+- 不支持：human-in-the-loop、fanout/fanin
   （这些都是 Post-MVP 需要时迁移到真 LangGraph 时补的）
 
 示例：
@@ -31,6 +35,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -47,8 +52,30 @@ NodeFn = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]
 Router = Callable[[dict[str, Any]], str]
 """条件路由函数: (state) -> next_node_name"""
 
+NodeEnterHook = Callable[[str, dict[str, Any]], None]
+"""trace 钩子：节点执行前回调 (node_name, state) -> None"""
+
+NodeExitHook = Callable[[str, dict[str, Any], dict[str, Any] | None], None]
+"""trace 钩子：节点执行后回调 (node_name, state, updates) -> None
+
+`updates` 为该节点返回的更新 dict（已 merge 进 state），None 表示无更新。
+"""
+
+CheckpointHook = Callable[[dict[str, Any], int], None]
+"""checkpoint 钩子：每步状态更新后回调 (state, step) -> None
+
+`step` 为 1-based 的已执行步数，便于持久化进度并在恢复时定位。
+"""
+
 END = "__END__"
 """终止节点哨兵"""
+
+_RETRY_BACKOFF_BASE_SECONDS = 0.001
+"""节点 retry 的退避基数（秒）。
+
+刻意取很小的值：生产场景下节点失败通常是瞬时的（LLM 限流/网络抖动），
+小退避足够；同时保证单元测试快速。退避时长 = base * 2 ** (attempt - 1)。
+"""
 
 
 class StateGraph:
@@ -56,17 +83,28 @@ class StateGraph:
 
     def __init__(self) -> None:
         self._nodes: dict[str, NodeFn] = {}
+        self._retries: dict[str, int] = {}
         self._edges: dict[str, str] = {}
         self._cond_edges: dict[str, tuple[Router, dict[str, str]]] = {}
         self._entry: str = ""
 
-    def add_node(self, name: str, fn: NodeFn) -> None:
-        """注册一个节点"""
+    def add_node(self, name: str, fn: NodeFn, retries: int = 0) -> None:
+        """注册一个节点
+
+        Args:
+            name: 节点名（不能是 END，不能重复）
+            fn: 节点协程函数 async (state) -> updates | None
+            retries: 节点抛异常时的最大重试次数（默认 0 = 不重试）。
+                每次重试前用指数退避 `await asyncio.sleep`；重试耗尽则原样向上抛。
+        """
         if name == END:
             raise ValueError(f"节点名不能是 {END!r}")
         if name in self._nodes:
             raise ValueError(f"节点 {name!r} 已存在")
+        if retries < 0:
+            raise ValueError(f"retries 不能为负: {retries}")
         self._nodes[name] = fn
+        self._retries[name] = retries
 
     def add_edge(self, src: str, dst: str) -> None:
         """添加线性边 src → dst"""
@@ -104,12 +142,20 @@ class CompiledGraph:
         self,
         state: dict[str, Any],
         max_steps: int = 100,
+        *,
+        on_node_enter: NodeEnterHook | None = None,
+        on_node_exit: NodeExitHook | None = None,
+        on_checkpoint: CheckpointHook | None = None,
     ) -> dict[str, Any]:
         """从入口节点开始异步执行状态图，直到到达 END 或 max_steps 超限
 
         Args:
             state: 初始状态字典（节点会 in-place 修改）
             max_steps: 防止循环图无限运行的保险丝
+            on_node_enter: 可选 trace 钩子，每个节点执行前调用 (node, state)
+            on_node_exit: 可选 trace 钩子，每个节点执行后调用 (node, state, updates)；
+                节点 retry 成功时仅在最终成功后调用一次。
+            on_checkpoint: 可选 checkpoint 钩子，每步状态更新后调用 (state, step)
         Returns:
             最终状态字典
         """
@@ -125,10 +171,18 @@ class CompiledGraph:
             if fn is None:
                 raise ValueError(f"未知节点 {current!r}")
 
+            if on_node_enter is not None:
+                on_node_enter(current, state)
             logger.debug("graph_node_enter", node=current, step=steps)
-            updates = await fn(state)
+
+            updates = await self._run_node(current, fn, state)
             if updates:
                 state.update(updates)
+
+            if on_node_exit is not None:
+                on_node_exit(current, state, updates)
+            if on_checkpoint is not None:
+                on_checkpoint(state, steps)
 
             # 决定下一步
             if current in self._g._cond_edges:
@@ -142,3 +196,32 @@ class CompiledGraph:
             current = next_node
 
         return state
+
+    async def _run_node(
+        self,
+        name: str,
+        fn: NodeFn,
+        state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """执行单个节点，按 add_node(retries=N) 做带退避的重试
+
+        节点抛异常时最多重试 N 次（共执行 N+1 次）；重试耗尽则把最后一次
+        异常原样向上抛。退避时长 = `_RETRY_BACKOFF_BASE_SECONDS * 2 ** attempt`。
+        """
+        retries = self._g._retries.get(name, 0)
+        attempt = 0
+        while True:
+            try:
+                return await fn(state)
+            except Exception as exc:
+                if attempt >= retries:
+                    raise
+                logger.warning(
+                    "graph_node_retry",
+                    node=name,
+                    attempt=attempt + 1,
+                    max_retries=retries,
+                    error=str(exc),
+                )
+                await asyncio.sleep(_RETRY_BACKOFF_BASE_SECONDS * 2**attempt)
+                attempt += 1

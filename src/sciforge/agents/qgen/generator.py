@@ -20,6 +20,7 @@ from sciforge.core.models import (
     Discipline,
     GenerationRequest,
     Question,
+    VariantStrategy,
 )
 from sciforge.disciplines import DISCIPLINE_REGISTRY
 from sciforge.llm.client import LLMClient
@@ -46,6 +47,12 @@ class QuestionGenerator:
         self._difficulty_cal = get_generation_prompt_template(
             "generation/difficulty_calibration.txt", discipline
         )
+        # 预加载 8 种变式策略正文（A1-A6/B1-B2），修复"只注入枚举字符串、从未加载策略文件"缺陷。
+        # 策略正文作为 .format() 的参数值注入，其内部裸 LaTeX 花括号不会被二次解析。
+        self._strategy_templates: dict[VariantStrategy, str] = {
+            s: get_generation_prompt_template(f"strategies/{s.value}.txt", discipline)
+            for s in VariantStrategy
+        }
 
     async def generate_candidates(
         self,
@@ -88,7 +95,9 @@ class QuestionGenerator:
             return self._variant_template.format(
                 subject=subject_text,
                 source_question_latex=req.source_question.content,
-                strategy_instruction=req.strategy.value,
+                strategy_instruction=self._strategy_templates.get(
+                    req.strategy, req.strategy.value
+                ),
                 target_difficulty=req.difficulty_target,
                 difficulty_calibration=difficulty_cal,
                 question_type=req.question_type,
@@ -100,7 +109,9 @@ class QuestionGenerator:
             topics=", ".join(req.topics),
             target_difficulty=req.difficulty_target,
             question_type=req.question_type,
-            strategy_instruction=req.strategy.value,
+            strategy_instruction=self._strategy_templates.get(
+                req.strategy, req.strategy.value
+            ),
             difficulty_calibration=difficulty_cal,
             context_block=context_block,
         )

@@ -168,7 +168,7 @@ class Solution(BaseModel):
 
 
 class Question(BaseModel):
-    """题目存储模型 — 与 DB schema v7 一一对应"""
+    """题目存储模型 — 与 DB schema v9 一一对应"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH
@@ -194,6 +194,12 @@ class Question(BaseModel):
     start_line: int = 0
     end_line: int = 0
     order_index: int = 0
+    # ── 生成元数据（v9）：区分生成题/手动题，支撑版权归属、计费与统计追溯 ──
+    is_generated: bool = False
+    generator_model: str = ""  # 生成所用模型 id（如 claude-opus-4-8）
+    generated_at: datetime | None = None
+    generation_session_id: str = ""  # 关联 EvolutionSession.session_id
+    tenant_id: str = ""  # 多租户归属（共享后端用；私有化/单机恒空）
 
     model_config = ConfigDict(validate_assignment=True)
 

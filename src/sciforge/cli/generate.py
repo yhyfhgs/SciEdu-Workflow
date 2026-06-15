@@ -1,15 +1,13 @@
 """CLI generate 命令组 — 题目/讲义/解答生成
 
-MVP 阶段已实现：
+已实现：
 - `generate free` — 自由模式生成题目（QGenAgent 5 阶段闭环）
 - `generate solve` — 为已有题目生成详细解答（SolveAgent）
 - `generate batch` — 批量 free 模式
 - `generate lecture` — 生成 markdown 讲义（DocAssemblyAgent lite）
-
-Post-MVP 占位（raise NotImplementedError）：
-- `generate variant` — 变式生成
-- `generate evolve` — 进化模式
-- `generate solve-deep` — 深度求解（sandbox + 多轮工具调用）
+- `generate variant` — 基于源题的 A1-A6/B1-B2 变式生成
+- `generate evolve` — 进化模式（失败后 improve_* 定向改进迭代）
+- `generate solve-deep` — 深度求解（多轮推理 + sandbox 工具调用）
 """
 
 from __future__ import annotations
@@ -55,6 +53,17 @@ def _parse_discipline(value: str) -> Discipline:
     except ValueError as exc:
         allowed = ", ".join(d.value for d in Discipline)
         raise typer.BadParameter(f"未知学科 {value!r}；允许值: {allowed}") from exc
+
+
+def _parse_strategy(value: str) -> VariantStrategy:
+    """把 'A1' / 'A1_parameter_shift' / 'parameter_shift' 解析为 VariantStrategy。"""
+    v = value.strip().lower()
+    for s in VariantStrategy:
+        prefix, _, name = s.value.partition("_")  # 'A1', 'parameter_shift'
+        if v in (s.value, prefix, name):
+            return s
+    allowed = ", ".join(s.value for s in VariantStrategy)
+    raise typer.BadParameter(f"未知变式策略 {value!r}；允许值: {allowed}")
 
 
 def _resolve_provider_override(llm_provider: str | None) -> dict[str, str]:
@@ -355,27 +364,140 @@ def generate_lecture(
 @generate_app.command("variant")
 def generate_variant(
     source_id: str = typer.Argument(..., help="源题 ID"),
-    strategy: str = typer.Option("A1", "--strategy"),
-    difficulty: int | None = typer.Option(None, "-d", "--difficulty"),
+    strategy: str = typer.Option("A1", "--strategy", help="变式策略 A1-A6/B1-B2（或全名）"),
+    difficulty: int | None = typer.Option(None, "-d", "--difficulty", min=1, max=10),
     discipline: str = typer.Option("math", "--discipline", "-D"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db"),
+    save: bool = typer.Option(True, "--save/--no-save"),
+    llm_provider: str | None = typer.Option(None, "--llm-provider"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
+    llm_config: Path | None = typer.Option(
+        None, "--llm-config", help="LLM TOML 配置文件路径（默认 config/sciforge.toml）"
+    ),
 ) -> None:
-    """基于已有题目生成变式 (Post-MVP)"""
-    _not_implemented("variant", "是 Post-MVP 特性；MVP 请用 `generate free` 从头生成题目")
+    """基于已有题目按 A1-A6/B1-B2 策略生成变式"""
+    from sciforge.agents import QGenAgent, QGenInput
+    from sciforge.config.settings import AppConfig
+
+    discipline_enum = _parse_discipline(discipline)
+    strat = _parse_strategy(strategy)
+    llm_config = _resolve_llm_config(llm_config)
+    llm = _build_llm_client("generate", llm_config, llm_provider, llm_model)
+    storage = _open_storage(db)
+
+    try:
+        try:
+            source_q = storage.load_question(source_id)
+        except FileNotFoundError:
+            error(f"源题不存在: {source_id}")
+            raise typer.Exit(1) from None
+
+        app_cfg = AppConfig()
+        agent = QGenAgent(
+            llm=llm,
+            storage=storage,
+            discipline=discipline_enum,
+            max_rounds=app_cfg.generation_max_rounds,
+            candidates_per_round=app_cfg.generation_candidates_per_round,
+            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
+            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+        )
+
+        async def run_once() -> None:
+            request = GenerationRequest(
+                discipline=discipline_enum,
+                subject=source_q.subject,
+                topics=list(source_q.tags),
+                difficulty_target=difficulty or source_q.difficulty,
+                question_type=source_q.question_type,
+                strategy=strat,
+                source_question=source_q,
+            )
+            console.print(f"[bold cyan]── 变式生成（策略 {strat.value}）──[/]")
+            result = await agent.run(QGenInput(request=request))
+            if result.generated is None:
+                error(f"  ✗ 未生成合格变式: {result.reason}")
+                raise typer.Exit(1)
+            _print_generated(result.generated)
+            if save:
+                storage.save_batch([], [result.generated.question])
+                success(f"  ✓ 已保存变式题 id={result.generated.question.id[:8]}")
+
+        asyncio.run(run_once())
+    finally:
+        storage.close()
 
 
 @generate_app.command("evolve")
 def generate_evolve(
     subject: str = typer.Option("", "-s", "--subject"),
     topic: str = typer.Option(..., "-t", "--topic"),
-    difficulty: int = typer.Option(5, "-d", "--difficulty"),
+    difficulty: int = typer.Option(5, "-d", "--difficulty", min=1, max=10),
     question_type: str = typer.Option("proof", "--type"),
-    max_improve: int = typer.Option(2, "--max-improve"),
+    max_improve: int = typer.Option(2, "--max-improve", help="每候选最多进化改进轮数"),
     discipline: str = typer.Option("math", "--discipline", "-D"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db"),
+    save: bool = typer.Option(True, "--save/--no-save"),
+    llm_provider: str | None = typer.Option(None, "--llm-provider"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
+    llm_config: Path | None = typer.Option(
+        None, "--llm-config", help="LLM TOML 配置文件路径（默认 config/sciforge.toml）"
+    ),
 ) -> None:
-    """进化模式（失败后迭代改进） (Post-MVP)"""
-    _not_implemented("evolve", "是 Post-MVP 特性；MVP 的 QGenAgent 已内建多轮重试")
+    """进化模式：生成失败后用 improve_* prompt 定向改进迭代（QGenAgent 进化闭环）"""
+    from sciforge.agents import QGenAgent, QGenInput
+    from sciforge.config.settings import AppConfig
+
+    discipline_enum = _parse_discipline(discipline)
+    topics = [t.strip() for t in topic.split(",") if t.strip()]
+    if not topics:
+        error("至少提供一个 topic")
+        raise typer.Exit(1)
+
+    llm_config = _resolve_llm_config(llm_config)
+    llm = _build_llm_client("generate", llm_config, llm_provider, llm_model)
+    storage = _open_storage(db)
+
+    try:
+        app_cfg = AppConfig()
+        agent = QGenAgent(
+            llm=llm,
+            storage=storage,
+            discipline=discipline_enum,
+            max_rounds=app_cfg.generation_max_rounds,
+            candidates_per_round=app_cfg.generation_candidates_per_round,
+            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
+            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+            enable_evolution=True,
+            max_improvement_rounds=max_improve,
+        )
+
+        async def run_once() -> None:
+            request = GenerationRequest(
+                discipline=discipline_enum,
+                subject=subject,
+                topics=topics,
+                difficulty_target=difficulty,
+                question_type=question_type,
+                strategy=VariantStrategy.TOPIC_GENERATION,
+                enable_evolution=True,
+                max_improvement_rounds=max_improve,
+            )
+            console.print("[bold cyan]── 进化模式生成 ──[/]")
+            result = await agent.run(QGenInput(request=request))
+            if result.generated is None:
+                error(f"  ✗ 未生成合格题目: {result.reason}")
+                raise typer.Exit(1)
+            _print_generated(result.generated)
+            if result.trace is not None:
+                console.print(f"[dim]进化改进轮数: {result.trace.improve_rounds_used}[/]")
+            if save:
+                storage.save_batch([], [result.generated.question])
+                success(f"  ✓ 已保存题目 id={result.generated.question.id[:8]}")
+
+        asyncio.run(run_once())
+    finally:
+        storage.close()
 
 
 @generate_app.command("solve-deep")
@@ -383,12 +505,55 @@ def generate_solve_deep(
     question_id: str = typer.Argument(..., help="题目 ID"),
     discipline: str = typer.Option("math", "--discipline", "-D"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db"),
+    save: bool = typer.Option(
+        False, "--save/--no-save", help="把解答写回 question.solution_content"
+    ),
+    llm_provider: str | None = typer.Option(None, "--llm-provider"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
+    llm_config: Path | None = typer.Option(
+        None, "--llm-config", help="LLM TOML 配置文件路径（默认 config/sciforge.toml）"
+    ),
 ) -> None:
-    """深度求解（多轮推理 + 代码沙箱） (Post-MVP)"""
-    _not_implemented(
-        "solve-deep",
-        "是 Post-MVP 特性（依赖 sandbox + tool calling）；MVP 请用 `generate solve`",
-    )
+    """深度求解：多轮推理 + sandbox 工具调用（execute_python 交叉验证中间结果）"""
+    from sciforge.agents.qgen.deep_solver import DeepSolveEngine
+    from sciforge.config.settings import AppConfig
+
+    discipline_enum = _parse_discipline(discipline)
+    llm_config = _resolve_llm_config(llm_config)
+    llm = _build_llm_client("solve_deep", llm_config, llm_provider, llm_model)
+    storage = _open_storage(db)
+
+    try:
+        try:
+            q = storage.load_question(question_id)
+        except FileNotFoundError:
+            error(f"题目不存在: {question_id}")
+            raise typer.Exit(1) from None
+
+        app_cfg = AppConfig()
+        engine = DeepSolveEngine(
+            llm,
+            discipline_enum,
+            sandbox_timeout=app_cfg.sandbox_timeout,
+            max_turns=app_cfg.solver_max_turns,
+        )
+
+        async def run_once() -> None:
+            solution = await engine.solve_deep(q)
+            if solution is None:
+                error("深度求解失败")
+                raise typer.Exit(1)
+            console.print(f"[bold green]置信度:[/] {solution.confidence}")
+            console.print("[bold]解答:[/]")
+            console.print(solution.solution_latex or "(空)")
+            if save:
+                q.solution_content = solution.solution_latex
+                storage.save_batch([], [q])
+                success(f"已更新 question {question_id[:8]}.solution_content")
+
+        asyncio.run(run_once())
+    finally:
+        storage.close()
 
 
 # ── 输出辅助 ──────────────────────────────────────────

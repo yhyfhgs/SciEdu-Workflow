@@ -18,6 +18,7 @@ import sqlite3
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,8 +35,21 @@ logger = structlog.get_logger()
 
 
 # ── SQL 常量（executemany 批量写入复用）──────────────────
-# schema v8：number_canonical / seq_* / question_form 新列 + content_hash 写入去重
-_SCHEMA_VERSION = 8
+# schema v9：questions 新增生成元数据列（is_generated / generator_model /
+# generated_at / generation_session_id / tenant_id）；提供 v8→v9 增量迁移
+_SCHEMA_VERSION = 9
+
+# schema 增量迁移：{from_version: [该版本→下一版的 ALTER 语句]}。
+# 每条 ALTER 容忍 "duplicate column"（幂等，应对中断重跑）。
+_MIGRATIONS: dict[int, list[str]] = {
+    8: [
+        "ALTER TABLE questions ADD COLUMN is_generated INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE questions ADD COLUMN generator_model TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE questions ADD COLUMN generated_at TEXT",
+        "ALTER TABLE questions ADD COLUMN generation_session_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE questions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''",
+    ],
+}
 
 # 用 INSERT OR IGNORE：content_hash 唯一索引命中（重复内容）或 id 冲突时静默跳过，
 # 保证重复窗口 / resume 重放 / 多次运行的幂等性（首次写入者胜出，不产生重复行）。
@@ -53,8 +67,9 @@ INSERT OR IGNORE INTO questions
     (id, discipline, question_type, question_form, number, number_canonical,
      seq_chapter, seq_section, seq_index,
      content, solution_content, difficulty, subject, taxonomy_path, tags, source_file,
-     start_line, end_line, order_index, content_hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     start_line, end_line, order_index, content_hash,
+     is_generated, generator_model, generated_at, generation_session_id, tenant_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -128,6 +143,11 @@ def _question_to_tuple(q: Question) -> tuple[Any, ...]:
         q.end_line,
         q.order_index,
         _content_hash(q.content),
+        int(q.is_generated),
+        q.generator_model,
+        q.generated_at.isoformat() if q.generated_at else None,
+        q.generation_session_id,
+        q.tenant_id,
     )
 
 
@@ -159,18 +179,41 @@ class SQLiteStorageBackend:
             ).fetchone()
             is not None
         )
+        # 旧库：优先走增量迁移（ALTER）；仅在缺迁移路径时才要求删库重建
         if has_kp_table and 0 < cur_version < _SCHEMA_VERSION:
-            raise SchemaVersionMismatch(
-                f"检测到 DB schema v{cur_version}，当前代码要求 v{_SCHEMA_VERSION}。"
-                f"v6 不提供自动迁移，请删除旧 DB 并加 --restart：\n"
-                f"  rm -rf {self.db_path} data/checkpoint/\n"
-                f"  uv run sciforge parse run ... --restart"
-            )
+            self._migrate(cur_version)
 
         schema_path = Path(__file__).parent / "schema.sql"
         schema_sql = schema_path.read_text(encoding="utf-8")
         self._conn.executescript(schema_sql)
         self._conn.commit()
+
+    def _migrate(self, from_version: int) -> None:
+        """按 _MIGRATIONS 逐版本增量迁移（ALTER），替代删库重建。
+
+        每条 ALTER 容忍 "duplicate column"，保证中断后重跑幂等；缺迁移路径时
+        抛 SchemaVersionMismatch，提示 --restart（如 v8 之前的旧库）。
+        """
+        v = from_version
+        while v < _SCHEMA_VERSION:
+            stmts = _MIGRATIONS.get(v)
+            if stmts is None:
+                raise SchemaVersionMismatch(
+                    f"检测到 DB schema v{from_version}，无 v{v}→v{v + 1} 迁移路径。"
+                    f"请删除旧 DB 并加 --restart：\n"
+                    f"  rm -rf {self.db_path} data/checkpoint/\n"
+                    f"  uv run sciforge parse run ... --restart"
+                )
+            for sql in stmts:
+                try:
+                    self._conn.execute(sql)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+            v += 1
+            self._conn.execute(f"PRAGMA user_version = {v}")
+            self._conn.commit()
+            logger.info("schema_migrated_step", from_version=v - 1, to_version=v)
 
     def close(self) -> None:
         self._conn.close()
@@ -203,7 +246,11 @@ class SQLiteStorageBackend:
         kps: list[KnowledgePoint],
         questions: list[Question],
     ) -> int:
-        """一次事务 + executemany 保存多个 KP + Question"""
+        """一次事务 + executemany 保存多个 KP + Question（INSERT OR IGNORE 幂等去重）。
+
+        返回尝试条数（非真实新增——FTS AFTER INSERT 触发器会污染 total_changes）。
+        REC-10：真实 persisted/deduped 由 Stage3 用 ``count_existing_content`` 批量预查得出。
+        """
         with self._write_lock, self.transaction():
             if kps:
                 self._conn.executemany(_KP_INSERT_SQL, [_kp_to_tuple(kp) for kp in kps])
@@ -211,6 +258,24 @@ class SQLiteStorageBackend:
                 self._conn.executemany(_Q_INSERT_SQL, [_question_to_tuple(q) for q in questions])
         logger.info("storage_batch_saved", kps=len(kps), questions=len(questions))
         return len(kps) + len(questions)
+
+    def count_existing_content(self, contents: list[str], scope: str) -> int:
+        """REC-10：批量统计 ``contents`` 已存在于库的条数（一次 SELECT，替代逐条 find_duplicates）。
+
+        scope: "knowledge" → knowledge_points；其余 → questions。用 content_hash IN 批量查；
+        入参内重复内容只算一次（按 hash 去重），与 INSERT OR IGNORE 的语义一致。
+        """
+        if not contents:
+            return 0
+        table = "knowledge_points" if scope == "knowledge" else "questions"
+        hashes = list({_content_hash(c) for c in contents})
+        placeholders = ",".join("?" for _ in hashes)
+        cur = self._conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE content_hash IN ({placeholders})",  # noqa: S608
+            hashes,
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
 
     # ── 单条写入（内部用 save_batch 统一路径）─────────
 
@@ -735,4 +800,11 @@ class SQLiteStorageBackend:
             start_line=row["start_line"] or 0,
             end_line=row["end_line"] or 0,
             order_index=row["order_index"] or 0,
+            is_generated=bool(row["is_generated"]),
+            generator_model=row["generator_model"] or "",
+            generated_at=(
+                datetime.fromisoformat(row["generated_at"]) if row["generated_at"] else None
+            ),
+            generation_session_id=row["generation_session_id"] or "",
+            tenant_id=row["tenant_id"] or "",
         )

@@ -1,5 +1,9 @@
--- SciForge SQLite Schema v8
--- v8 变更（本版本）：
+-- SciForge SQLite Schema v9
+-- v9 变更（本版本）：questions 新增生成元数据列
+--   is_generated / generator_model / generated_at / generation_session_id / tenant_id
+--   （区分生成题 vs 手动题，支撑版权归属、计费、统计；tenant_id 支撑多租户隔离）
+--   迁移：提供 v8→v9 增量 ALTER（见 sqlite_backend._MIGRATIONS），不再要求删库
+-- v8 变更：
 --   * 字段规范化（#4）：knowledge_points / questions 新增
 --       number_canonical（规范化题号，如 "3.2"）+ seq_chapter/seq_section/seq_index（结构化序号，编号连续性 audit 用）
 --   * 题目类型双维度（#5）：questions 新增 question_form（题目形式：choice/fill_blank/...，与 question_type 认知类别正交）
@@ -11,7 +15,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
 
 -- ── 知识点 ──
 
@@ -61,7 +65,13 @@ CREATE TABLE IF NOT EXISTS questions (
     start_line INTEGER NOT NULL DEFAULT 0,
     end_line INTEGER NOT NULL DEFAULT 0,
     order_index INTEGER NOT NULL DEFAULT 0,
-    content_hash TEXT DEFAULT ''
+    content_hash TEXT DEFAULT '',
+    -- 生成元数据（v9）
+    is_generated INTEGER NOT NULL DEFAULT 0,
+    generator_model TEXT NOT NULL DEFAULT '',
+    generated_at TEXT,
+    generation_session_id TEXT NOT NULL DEFAULT '',
+    tenant_id TEXT NOT NULL DEFAULT ''
 );
 
 -- ── 学科全局 Tag Tree ──
@@ -123,6 +133,9 @@ CREATE INDEX IF NOT EXISTS idx_q_source ON questions(source_file);
 CREATE INDEX IF NOT EXISTS idx_q_order ON questions(source_file, order_index);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_q_hash_uniq ON questions(content_hash)
     WHERE content_hash != '';
+-- 生成题 / 租户筛选（v9）
+CREATE INDEX IF NOT EXISTS idx_q_tenant ON questions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_q_generated ON questions(is_generated);
 
 CREATE INDEX IF NOT EXISTS idx_rel_src ON item_relations(src_id);
 CREATE INDEX IF NOT EXISTS idx_rel_dst ON item_relations(dst_id);

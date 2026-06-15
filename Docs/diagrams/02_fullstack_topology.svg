@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 940 620" xmlns="http://www.w3.org/2000/svg" role="img" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<title>全平台产品拓扑</title>
+<desc>Web/App/小程序/API 四端经 API Gateway 接入统一 SaaS 后端（身份、生成编排、题库、计费四服务 + PostgreSQL）；私有化与定制 API 为物理隔离实例，复用同一代码内核但独立部署、数据不出域。</desc>
+<defs>
+<marker id="t_blue" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 z" fill="#1A73E8"/></marker>
+</defs>
+<rect x="20" y="34" width="784" height="410" rx="12" fill="#F6FAFF" stroke="#AECBFA" stroke-width="1.5" stroke-dasharray="7 4"/>
+<text x="36" y="56" font-size="14" font-weight="700" fill="#0B5394">共享统一 SaaS 后端 · 多端共用 / 逻辑隔离</text>
+<rect x="20" y="462" width="900" height="140" rx="12" fill="#FAF5FE" stroke="#D7AEFB" stroke-width="1.5" stroke-dasharray="7 4"/>
+<text x="36" y="484" font-size="14" font-weight="700" fill="#6A1B9A">物理隔离实例 · 数据不出域</text>
+<g font-size="11.5" fill="#3C4043">
+<rect x="816" y="60" width="116" height="120" rx="8" fill="#FFFFFF" stroke="#DADCE0"/>
+<text x="828" y="80" font-weight="700" fill="#1A2B4A">图例</text>
+<rect x="828" y="90" width="15" height="11" rx="2" fill="#E8F0FE" stroke="#1A73E8" stroke-width="1.5"/><text x="850" y="100">共享层</text>
+<rect x="828" y="110" width="15" height="11" rx="2" fill="#F3E8FD" stroke="#8430CE" stroke-width="1.5"/><text x="850" y="120">隔离实例</text>
+<line x1="828" y1="138" x2="845" y2="138" stroke="#1A73E8" stroke-width="2"/><text x="850" y="142">数据流</text>
+<line x1="828" y1="158" x2="845" y2="158" stroke="#E8910C" stroke-width="2" stroke-dasharray="5 3"/><text x="850" y="162">内核复用</text>
+</g>
+<g>
+<rect x="36" y="68" width="176" height="50" rx="7" fill="#E8F0FE" stroke="#1A73E8" stroke-width="2"/>
+<text x="124" y="89" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1A2B4A">SaaS Web</text>
+<text x="124" y="106" text-anchor="middle" font-size="10.5" fill="#5F6368">Next.js + KaTeX</text>
+<rect x="222" y="68" width="176" height="50" rx="7" fill="#E8F0FE" stroke="#1A73E8" stroke-width="2"/>
+<text x="310" y="89" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1A2B4A">App</text>
+<text x="310" y="106" text-anchor="middle" font-size="10.5" fill="#5F6368">iOS / Android</text>
+<rect x="408" y="68" width="176" height="50" rx="7" fill="#E8F0FE" stroke="#1A73E8" stroke-width="2"/>
+<text x="496" y="89" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1A2B4A">微信小程序</text>
+<text x="496" y="106" text-anchor="middle" font-size="10.5" fill="#5F6368">Taro / uni-app</text>
+<rect x="594" y="68" width="176" height="50" rx="7" fill="#E8F0FE" stroke="#1A73E8" stroke-width="2"/>
+<text x="682" y="89" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1A2B4A">B2B API 客户</text>
+<text x="682" y="106" text-anchor="middle" font-size="10.5" fill="#5F6368">API Key</text>
+</g>
+<g stroke="#1A73E8" stroke-width="2" fill="none">
+<path d="M124,118 V150" marker-end="url(#t_blue)"/><path d="M310,118 V150" marker-end="url(#t_blue)"/>
+<path d="M496,118 V150" marker-end="url(#t_blue)"/><path d="M682,118 V150" marker-end="url(#t_blue)"/>
+</g>
+<rect x="36" y="150" width="734" height="52" rx="7" fill="#D2E3FC" stroke="#1A73E8" stroke-width="2"/>
+<text x="403" y="172" text-anchor="middle" font-size="14.5" font-weight="700" fill="#0B5394">API Gateway</text>
+<text x="403" y="190" text-anchor="middle" font-size="11" fill="#3C4043">统一鉴权 · 限流配额 · 计费埋点</text>
+<g stroke="#1A73E8" stroke-width="2" fill="none">
+<path d="M124,202 V238" marker-end="url(#t_blue)"/><path d="M310,202 V238" marker-end="url(#t_blue)"/>
+<path d="M496,202 V238" marker-end="url(#t_blue)"/><path d="M682,202 V238" marker-end="url(#t_blue)"/>
+</g>
+<g>
+<rect x="36" y="238" width="176" height="60" rx="7" fill="#E8F0FE" stroke="#1A73E8" stroke-width="2"/>
+<text x="124" y="262" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1A2B4A">身份中心</text>
+<text x="124" y="280" text-anchor="middle" font-size="10.5" fill="#5F6368">统一 user_id · 多端登录</text>
+<rect x="222" y="238" width="176" height="60" rx="7" fill="#E8F0FE" stroke="#1A73E8" stroke-width="2"/>
+<text x="310" y="262" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1A2B4A">生成编排</text>
+<text x="310" y="280" text-anchor="middle" font-size="10.5" fill="#5F6368">HarnessGraph · 异步队列</text>
+<rect x="408" y="238" width="176" height="60" rx="7" fill="#E8F0FE" stroke="#1A73E8" stroke-width="2"/>
+<text x="496" y="262" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1A2B4A">题库/数据</text>
+<text x="496" y="280" text-anchor="middle" font-size="10.5" fill="#5F6368">公共只读 + 租户私有</text>
+<rect x="594" y="238" width="176" height="60" rx="7" fill="#E8F0FE" stroke="#1A73E8" stroke-width="2"/>
+<text x="682" y="262" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1A2B4A">计费/配额</text>
+<text x="682" y="280" text-anchor="middle" font-size="10.5" fill="#5F6368">trace 数据源</text>
+</g>
+<g stroke="#1A73E8" stroke-width="2" fill="none">
+<path d="M124,298 V356" marker-end="url(#t_blue)"/><path d="M310,298 V356" marker-end="url(#t_blue)"/>
+<path d="M496,298 V356" marker-end="url(#t_blue)"/><path d="M682,298 V356" marker-end="url(#t_blue)"/>
+</g>
+<rect x="36" y="356" width="734" height="50" rx="7" fill="#D2E3FC" stroke="#1A73E8" stroke-width="2"/>
+<text x="403" y="378" text-anchor="middle" font-size="14" font-weight="700" fill="#0B5394">统一数据层 · PostgreSQL + pgvector</text>
+<text x="403" y="395" text-anchor="middle" font-size="10.5" fill="#3C4043">业务表带 tenant_id 行级隔离 · 公共题库全局只读</text>
+<path d="M310,406 V432 H403 V462" stroke="#E8910C" stroke-width="2" stroke-dasharray="5 3" fill="none"/>
+<text x="412" y="450" font-size="10.5" fill="#8A5A12">复用同一代码内核（非数据连接）</text>
+<rect x="44" y="498" width="412" height="88" rx="8" fill="#F3E8FD" stroke="#8430CE" stroke-width="2"/>
+<text x="250" y="524" text-anchor="middle" font-size="13.5" font-weight="600" fill="#4A148C">私有化部署实例</text>
+<text x="250" y="544" text-anchor="middle" font-size="10.5" fill="#6A1B9A">独立后端 + 独立题库 + 本地/自带模型</text>
+<text x="250" y="562" text-anchor="middle" font-size="10.5" fill="#6A1B9A">离线可用 · 白标</text>
+<rect x="480" y="498" width="412" height="88" rx="8" fill="#F3E8FD" stroke="#8430CE" stroke-width="2"/>
+<text x="686" y="524" text-anchor="middle" font-size="13.5" font-weight="600" fill="#4A148C">定制 API 实例</text>
+<text x="686" y="544" text-anchor="middle" font-size="10.5" fill="#6A1B9A">独立租户库 + 独立配额</text>
+<text x="686" y="562" text-anchor="middle" font-size="10.5" fill="#6A1B9A">完全隔离 · 数据不出域</text>
+</svg>
