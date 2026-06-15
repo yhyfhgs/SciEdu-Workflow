@@ -84,3 +84,31 @@ class AuthResponse(BaseModel):
     token: str
     user_id: str
     tenant_id: str
+
+
+# ── P4 个性化推荐 ──
+
+
+class BehaviorRequest(BaseModel):
+    question_id: str = ""
+    outcome: Literal["correct", "incorrect", "skipped"] = "skipped"
+    difficulty: int = Field(default=5, ge=1, le=10)
+    tags: list[str] = Field(default_factory=list)
+    time_spent_ms: int = Field(default=0, ge=0)
+
+
+class RecommendItem(BaseModel):
+    question_id: str
+    content: str = ""
+    difficulty: int = 5
+    score: float = 0.0
+    matched_weak_tags: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class RecommendResponse(BaseModel):
+    user_id: str = ""
+    mastered_difficulty: float = 3.0
+    accuracy: float = 0.0
+    weak_tags: list[str] = Field(default_factory=list)
+    items: list[RecommendItem] = Field(default_factory=list)

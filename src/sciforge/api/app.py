@@ -21,11 +21,12 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Response
 
 from sciforge.api.schemas import (
     AuthRequest,
     AuthResponse,
+    BehaviorRequest,
     GenerateBatchRequest,
     GeneratedQuestionOut,
     GenerateRequest,
@@ -34,6 +35,8 @@ from sciforge.api.schemas import (
     PaperItem,
     PaperRequest,
     PaperResponse,
+    RecommendItem,
+    RecommendResponse,
     SolveRequest,
     SolveResponse,
 )
@@ -178,6 +181,26 @@ def create_app(
             raise HTTPException(status_code=429, detail="配额已用尽")
         return tenant_id
 
+    async def require_identity(
+        x_api_key: str = Header(default="", alias="X-API-Key"),
+        authorization: str = Header(default=""),
+    ) -> tuple[str, str]:
+        """返回 (user_id, tenant_id)。轻量端点（行为/推荐）用：鉴权但不计配额。
+
+        Bearer token（C 端）带 user_id；API Key（B2B）无终端用户 → user_id 为空。
+        """
+        if saas_store is None:
+            return "", ""
+        if authorization.startswith("Bearer "):
+            payload = verify_token(authorization[7:], jwt_secret)
+            if payload is None:
+                raise HTTPException(status_code=401, detail="无效或过期的 token")
+            return str(payload.get("user_id", "")), str(payload.get("tenant_id", ""))
+        info = saas_store.verify_api_key(x_api_key)
+        if info is None:
+            raise HTTPException(status_code=401, detail="无效或缺失 API Key / token")
+        return "", info.tenant_id
+
     @app.get("/v1/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "sciforge"}
@@ -275,6 +298,80 @@ def create_app(
         if saas_store is None:
             raise HTTPException(status_code=404, detail="鉴权/计费未启用")
         return saas_store.get_usage(tenant)
+
+    @app.post("/v1/behavior")
+    async def record_behavior(
+        req: BehaviorRequest, identity: tuple[str, str] = Depends(require_identity)
+    ) -> dict[str, str]:
+        """记录一次练习行为（P4 推荐数据源）。需 C 端用户登录（Bearer token）。"""
+        if saas_store is None:
+            raise HTTPException(status_code=404, detail="用户系统未启用")
+        user_id, _tenant = identity
+        if not user_id:
+            raise HTTPException(status_code=400, detail="练习行为需 C 端用户身份（Bearer token）")
+        saas_store.record_behavior(
+            user_id,
+            req.question_id,
+            req.outcome,
+            difficulty=req.difficulty,
+            tags=req.tags,
+            time_spent_ms=req.time_spent_ms,
+        )
+        return {"status": "recorded"}
+
+    @app.get("/v1/recommend", response_model=RecommendResponse)
+    async def recommend(
+        discipline: str = Query(default="math"),
+        subject: str = Query(default=""),
+        limit: int = Query(default=10, ge=1, le=50),
+        identity: tuple[str, str] = Depends(require_identity),
+    ) -> RecommendResponse:
+        """按用户练习画像推荐题目（难度贴合最近发展区 + 命中薄弱标签）。"""
+        if saas_store is None:
+            raise HTTPException(status_code=404, detail="用户系统未启用")
+        if storage_factory is None:
+            raise HTTPException(status_code=503, detail="推荐需注入题库 storage")
+        user_id, _tenant = identity
+        if not user_id:
+            raise HTTPException(status_code=400, detail="推荐需 C 端用户身份（Bearer token）")
+
+        from sciforge.agents.recommend import RecommendEngine
+
+        disc = _parse_discipline(discipline)
+        storage = storage_factory()
+        try:
+            filters: dict[str, object] = {"discipline": disc.value}
+            if subject:
+                filters["subject"] = subject
+            ids = storage.search_questions(filters)
+            candidates = storage.load_questions_by_ids(list(ids))
+        finally:
+            close = getattr(storage, "close", None)
+            if callable(close):
+                close()
+
+        engine = RecommendEngine()
+        profile = engine.build_profile(user_id, saas_store.get_behavior(user_id))
+        recs = engine.recommend(profile, candidates, limit=limit)
+        by_id = {q.id: q for q in candidates}
+        items = [
+            RecommendItem(
+                question_id=r.question_id,
+                content=by_id[r.question_id].content if r.question_id in by_id else "",
+                difficulty=r.difficulty,
+                score=r.score,
+                matched_weak_tags=r.matched_weak_tags,
+                reason=r.reason,
+            )
+            for r in recs
+        ]
+        return RecommendResponse(
+            user_id=user_id,
+            mastered_difficulty=profile.mastered_difficulty,
+            accuracy=profile.accuracy,
+            weak_tags=profile.weak_tags,
+            items=items,
+        )
 
     @app.post("/v1/generate/batch")
     async def generate_batch(

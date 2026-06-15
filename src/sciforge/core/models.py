@@ -823,6 +823,42 @@ class Lecture(BaseModel):
     generation_meta: dict[str, object] = Field(default_factory=dict)
 
 
+# ── 个性化推荐（P4）────────────────────────────────────
+
+
+class PracticeOutcome(StrEnum):
+    """单次练习结果。"""
+
+    CORRECT = "correct"
+    INCORRECT = "incorrect"
+    SKIPPED = "skipped"
+
+
+class UserProfile(BaseModel):
+    """由用户练习行为聚合出的能力画像（推荐引擎输入，无需 LLM）。"""
+
+    user_id: str = ""
+    total_attempts: int = 0
+    correct: int = 0
+    accuracy: float = 0.0  # correct / 已答(不含 skipped)
+    # 用户已稳定掌握的难度（按正确题加权），推荐目标 = 此值 + 步长（最近发展区）
+    mastered_difficulty: float = 3.0
+    # 薄弱/擅长标签：tag 段 → 该 tag 上的正确率（升序=最弱在前）
+    tag_accuracy: dict[str, float] = Field(default_factory=dict)
+    weak_tags: list[str] = Field(default_factory=list)
+    attempted_question_ids: list[str] = Field(default_factory=list)
+
+
+class QuestionRecommendation(BaseModel):
+    """单条推荐结果（题目 id + 解释性评分）。"""
+
+    question_id: str
+    score: float = 0.0
+    difficulty: int = 5
+    matched_weak_tags: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
 # ── 前向引用解析 ──────────────────────────────────────
 # KnowledgePoint/Question 引用了后续定义的 ItemRelation
 KnowledgePoint.model_rebuild()

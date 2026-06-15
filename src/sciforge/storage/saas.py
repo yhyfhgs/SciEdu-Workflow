@@ -74,6 +74,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_tenant ON tasks(tenant_id);
+
+-- P4 个性化：用户练习行为流水（推荐引擎 / 自适应练习的数据源）
+CREATE TABLE IF NOT EXISTS user_behavior (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    question_id TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT 'skipped',  -- correct / incorrect / skipped
+    difficulty INTEGER NOT NULL DEFAULT 5,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    time_spent_ms INTEGER NOT NULL DEFAULT 0,
+    ts TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_behavior_user ON user_behavior(user_id);
 """
 
 
@@ -104,6 +117,17 @@ class TaskInfo(BaseModel):
     done: int = 0
     result: list[dict[str, Any]] = Field(default_factory=list)
     error: str = ""
+
+
+class BehaviorRecord(BaseModel):
+    """一条用户练习行为（P4 推荐引擎数据源）。"""
+
+    user_id: str
+    question_id: str = ""
+    outcome: str = "skipped"  # correct / incorrect / skipped
+    difficulty: int = 5
+    tags: list[str] = Field(default_factory=list)
+    time_spent_ms: int = 0
 
 
 def _hash_key(raw: str) -> str:
@@ -330,3 +354,49 @@ class SaasStore:
             result=parsed if isinstance(parsed, list) else [],
             error=row["error"],
         )
+
+    # ── 用户行为（P4 个性化）──
+
+    def record_behavior(
+        self,
+        user_id: str,
+        question_id: str,
+        outcome: str,
+        *,
+        difficulty: int = 5,
+        tags: list[str] | None = None,
+        time_spent_ms: int = 0,
+    ) -> None:
+        """记录一次练习行为（答对/错/跳过 + 难度 + tag 路径 + 耗时）。"""
+        self._conn.execute(
+            "INSERT INTO user_behavior "
+            "(user_id, question_id, outcome, difficulty, tags_json, time_spent_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, question_id, outcome, difficulty, json.dumps(tags or []), time_spent_ms),
+        )
+        self._conn.commit()
+
+    def get_behavior(self, user_id: str, *, limit: int = 1000) -> list[BehaviorRecord]:
+        """取用户最近 limit 条行为（按时间倒序）。"""
+        rows = self._conn.execute(
+            "SELECT user_id, question_id, outcome, difficulty, tags_json, time_spent_ms "
+            "FROM user_behavior WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+        out: list[BehaviorRecord] = []
+        for r in rows:
+            try:
+                tags = json.loads(r["tags_json"])
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+            out.append(
+                BehaviorRecord(
+                    user_id=r["user_id"],
+                    question_id=r["question_id"],
+                    outcome=r["outcome"],
+                    difficulty=r["difficulty"],
+                    tags=tags if isinstance(tags, list) else [],
+                    time_spent_ms=r["time_spent_ms"],
+                )
+            )
+        return out
