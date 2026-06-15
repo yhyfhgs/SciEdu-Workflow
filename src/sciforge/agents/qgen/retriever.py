@@ -1,12 +1,14 @@
 """ContextRetriever — QGen 第 1 阶段：从 SQLite 检索上下文
 
-相比参考实现的"内存列表"版本，这里改为 SQLiteStorageBackend 驱动：
-1. 按 discipline + tag 过滤知识点
-2. 按难度窗口进一步筛选
-3. FTS5 全文检索补充相关条目
-4. 难度锚点（一个偏简单 + 一个偏难）
+SQLiteStorageBackend 驱动的混合检索：
+1. 按 discipline + subject + 难度窗口过滤知识点 / 参考题
+2. 混合排序：标签重叠度为主 + TF-IDF 内容语义相似度为辅（复用 prefilter，无外部依赖）
+3. 难度锚点（一个偏简单 + 一个偏难）
 
 返回 ContextBundle 给 QuestionGenerator 用。
+
+注：语义排序当前用 TF-IDF cosine；真 embedding 向量检索（sqlite-vec / pgvector）
+作为后续升级，待 storage schema 稳定 + embedding 来源确定后接入。
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from sciforge.agents.qgen.prefilter import _tf_vector, cosine_similarity
 from sciforge.core.models import (
     ContextBundle,
     Discipline,
@@ -76,6 +79,29 @@ class ContextRetriever:
             negative_examples=negatives[: self.MAX_NEGATIVES],
         )
 
+    @staticmethod
+    def _query_text(req: GenerationRequest) -> str:
+        """语义检索 query：变式用源题内容，自由生成用 topics + subject。"""
+        if req.source_question is not None:
+            return req.source_question.content
+        return " ".join(req.topics) + " " + (req.subject or "")
+
+    @staticmethod
+    def _hybrid_sort(
+        items: list[KnowledgePoint], query_text: str, topics: list[str]
+    ) -> list[KnowledgePoint]:
+        """混合排序键 (标签重叠度, TF-IDF 内容相似度) 降序：标签匹配优先，同档按语义相似。"""
+        query_vec = _tf_vector(query_text)
+        topic_set = set(topics)
+        return sorted(
+            items,
+            key=lambda kp: (
+                len(topic_set & set(kp.tags)),
+                cosine_similarity(query_vec, _tf_vector(kp.content)),
+            ),
+            reverse=True,
+        )
+
     def _match_knowledge(
         self,
         req: GenerationRequest,
@@ -95,15 +121,8 @@ class ContextRetriever:
         ids = self.storage.search_knowledge(filters)
         kps = self.storage.load_knowledge_by_ids(ids)
 
-        # 按 tag 重叠度排序
-        if req.topics:
-            topic_set = set(req.topics)
-            kps.sort(
-                key=lambda kp: len(topic_set & set(kp.tags)),
-                reverse=True,
-            )
-
-        return kps
+        # 混合排序：标签重叠度为主 + TF-IDF 内容语义相似度为辅
+        return self._hybrid_sort(kps, self._query_text(req), req.topics)
 
     def _match_questions(
         self,
@@ -126,8 +145,14 @@ class ContextRetriever:
         ids = self.storage.search_questions(filters)
         questions = self.storage.load_questions_by_ids(ids)
 
-        # 按难度接近目标排序
-        questions.sort(key=lambda q: abs(q.difficulty - req.difficulty_target))
+        # 难度接近为主 + 内容语义相似为辅（同难度档按 TF-IDF 相似度优先）
+        query_vec = _tf_vector(self._query_text(req))
+        questions.sort(
+            key=lambda q: (
+                abs(q.difficulty - req.difficulty_target),
+                -cosine_similarity(query_vec, _tf_vector(q.content)),
+            )
+        )
 
         # 难度锚点：一道偏简单 + 一道偏难
         anchors: list[Question] = []
