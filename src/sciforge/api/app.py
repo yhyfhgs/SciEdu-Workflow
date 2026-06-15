@@ -1,24 +1,25 @@
-"""SciForge FastAPI 网关（P2 第一步）
+"""SciForge FastAPI 网关（P2）
 
-工厂模式注入 agent，便于测试与依赖/资源管理：
+    app = create_app(qgen_factory, solve_factory, saas_store=...)
 
-    app = create_app(qgen_factory, solve_factory)
+- saas_store=None → 开放模式（无鉴权/计费，便于本地与测试）
+- 提供 saas_store → 启用 X-API-Key 鉴权 + 配额检查 + 用量计费（多租户）
 
 端点：
-- GET  /v1/health   健康检查
-- POST /v1/generate 单题生成（调 QGenAgent）
-- POST /v1/solve    求解（调 SolveAgent；支持 question_id 或直接传 content）
+- GET  /v1/health    健康检查
+- POST /v1/generate  单题生成（调 QGenAgent；成功后按租户计费）
+- POST /v1/solve     求解（调 SolveAgent；支持 question_id 或 content）
+- GET  /v1/usage     当前租户用量与配额
 
-注：身份鉴权 / 计费 / 多租户 / 异步批量 / 组卷导出需 storage schema 稳定后接入（P2 后续）。
-当前未做鉴权——生产前必须加 API Key / JWT 中间件。
+注：JWT 用户登录 / 异步批量 / 组卷导出 / PG 后端为 P2 后续；当前 token 计费用 GenerationTrace 估算。
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 
 from sciforge.api.schemas import (
     GeneratedQuestionOut,
@@ -33,6 +34,7 @@ from sciforge.core.models import (
     Question,
     VariantStrategy,
 )
+from sciforge.storage.saas import SaasStore, UsageSummary
 
 if TYPE_CHECKING:
     from sciforge.agents import QGenAgent, SolveAgent
@@ -48,16 +50,40 @@ def _parse_discipline(value: str) -> Discipline:
         raise HTTPException(status_code=422, detail=f"未知学科: {value}") from exc
 
 
-def create_app(qgen_factory: QGenFactory, solve_factory: SolveFactory) -> FastAPI:
-    """构造 FastAPI app；agent 经工厂注入（生产传真实工厂，测试传 mock）。"""
+def _trace_tokens(result: Any) -> int:
+    """从 QGenOutput.trace 估算 token 用量（用于计费）。"""
+    trace = getattr(result, "trace", None)
+    return int(getattr(trace, "total_tokens_est", 0)) if trace is not None else 0
+
+
+def create_app(
+    qgen_factory: QGenFactory,
+    solve_factory: SolveFactory,
+    *,
+    saas_store: SaasStore | None = None,
+) -> FastAPI:
+    """构造 FastAPI app；agent 经工厂注入，saas_store 提供时启用鉴权+计费。"""
     app = FastAPI(title="SciForge API", version="0.1.0")
+
+    async def require_tenant(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
+        """鉴权依赖：开放模式返回空租户；启用后校验 API Key + 配额，返回 tenant_id。"""
+        if saas_store is None:
+            return ""
+        info = saas_store.verify_api_key(x_api_key)
+        if info is None:
+            raise HTTPException(status_code=401, detail="无效或缺失 API Key")
+        if not saas_store.has_quota(info.tenant_id):
+            raise HTTPException(status_code=429, detail="配额已用尽")
+        return info.tenant_id
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "sciforge"}
 
     @app.post("/v1/generate", response_model=GenerateResponse)
-    async def generate(req: GenerateRequest) -> GenerateResponse:
+    async def generate(
+        req: GenerateRequest, tenant: str = Depends(require_tenant)
+    ) -> GenerateResponse:
         from sciforge.agents import QGenInput
 
         discipline = _parse_discipline(req.discipline)
@@ -78,6 +104,10 @@ def create_app(qgen_factory: QGenFactory, solve_factory: SolveFactory) -> FastAP
             return GenerateResponse(
                 success=False, rounds_used=result.rounds_used, reason=result.reason
             )
+        if saas_store is not None and tenant:
+            saas_store.record_usage(
+                tenant, "/v1/generate", billable_units=1, tokens_est=_trace_tokens(result)
+            )
         gq = result.generated
         return GenerateResponse(
             success=True,
@@ -93,7 +123,7 @@ def create_app(qgen_factory: QGenFactory, solve_factory: SolveFactory) -> FastAP
         )
 
     @app.post("/v1/solve", response_model=SolveResponse)
-    async def solve(req: SolveRequest) -> SolveResponse:
+    async def solve(req: SolveRequest, tenant: str = Depends(require_tenant)) -> SolveResponse:
         from sciforge.agents import SolveInput
 
         if not req.question_id and not req.content:
@@ -108,10 +138,18 @@ def create_app(qgen_factory: QGenFactory, solve_factory: SolveFactory) -> FastAP
         result = await agent.run(inp)
         if result.solution is None:
             return SolveResponse(success=False)
+        if saas_store is not None and tenant:
+            saas_store.record_usage(tenant, "/v1/solve", billable_units=1)
         return SolveResponse(
             success=True,
             solution=result.solution.solution_latex,
             confidence=result.confidence,
         )
+
+    @app.get("/v1/usage", response_model=UsageSummary)
+    async def usage(tenant: str = Depends(require_tenant)) -> UsageSummary:
+        if saas_store is None:
+            raise HTTPException(status_code=404, detail="鉴权/计费未启用")
+        return saas_store.get_usage(tenant)
 
     return app
