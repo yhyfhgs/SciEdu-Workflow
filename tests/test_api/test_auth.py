@@ -85,3 +85,44 @@ def test_open_mode_needs_no_key(tmp_path: Path) -> None:
     r = client.post("/v1/generate", json={"topics": ["x"]})
     assert r.status_code == 200 and r.json()["success"] is True
     assert client.get("/v1/usage").status_code == 404
+
+
+def test_register_and_login_flow(tmp_path: Path) -> None:
+    with SaasStore(tmp_path / "saas.db") as store:
+        client = TestClient(create_app(_qgen_factory(), _noop(), saas_store=store, jwt_secret="s"))
+        r = client.post("/v1/auth/register", json={"username": "alice", "password": "pw123"})
+        assert r.status_code == 200
+        assert r.json()["token"] and r.json()["tenant_id"]
+        # 重复注册 → 409
+        assert (
+            client.post("/v1/auth/register", json={"username": "alice", "password": "x"})
+        ).status_code == 409
+        # 登录
+        r3 = client.post("/v1/auth/login", json={"username": "alice", "password": "pw123"})
+        assert r3.status_code == 200 and r3.json()["token"]
+        # 错误密码 → 401
+        r4 = client.post("/v1/auth/login", json={"username": "alice", "password": "wrong"})
+        assert r4.status_code == 401
+
+
+def test_bearer_token_authorizes_generate(tmp_path: Path) -> None:
+    with SaasStore(tmp_path / "saas.db") as store:
+        client = TestClient(create_app(_qgen_factory(), _noop(), saas_store=store, jwt_secret="s"))
+        token = client.post(
+            "/v1/auth/register", json={"username": "bob", "password": "pw"}
+        ).json()["token"]
+        r = client.post(
+            "/v1/generate", json={"topics": ["x"]}, headers={"Authorization": f"Bearer {token}"}
+        )
+        assert r.status_code == 200 and r.json()["success"] is True
+
+
+def test_bad_bearer_token_401(tmp_path: Path) -> None:
+    with SaasStore(tmp_path / "saas.db") as store:
+        client = TestClient(create_app(_qgen_factory(), _noop(), saas_store=store))
+        r = client.post(
+            "/v1/generate",
+            json={"topics": ["x"]},
+            headers={"Authorization": "Bearer invalid.token"},
+        )
+        assert r.status_code == 401

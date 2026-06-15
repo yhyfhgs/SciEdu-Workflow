@@ -10,6 +10,7 @@ SaaS 元数据仅在共享后端存在）。
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import secrets
 import sqlite3
@@ -41,6 +42,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_apikey_tenant ON api_keys(tenant_id);
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS usage_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,6 +110,21 @@ def _hash_key(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _hash_password(password: str, salt: str | None = None) -> str:
+    """pbkdf2-sha256 密码哈希，格式 ``salt$digest``。"""
+    salt = salt or secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100_000)
+    return f"{salt}${dk.hex()}"
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        salt, _digest = stored.split("$", 1)
+    except ValueError:
+        return False
+    return hmac.compare_digest(_hash_password(password, salt), stored)
+
+
 class SaasStore:
     """租户 / API Key / 计费元数据存储（独立 SQLite DB）。"""
 
@@ -143,6 +167,41 @@ class SaasStore:
         return TenantInfo(
             id=row["id"], name=row["name"], plan=row["plan"], monthly_quota=row["monthly_quota"]
         )
+
+    # ── 用户 ──
+
+    def create_user(
+        self,
+        username: str,
+        password: str,
+        *,
+        tenant_id: str | None = None,
+        plan: str = "free",
+    ) -> tuple[str, str]:
+        """注册用户；未指定 tenant_id 则自动建租户。
+
+        返回 (user_id, tenant_id)；用户名重复抛 ValueError。
+        """
+        tid = tenant_id or self.create_tenant(username, plan=plan)
+        uid = str(uuid.uuid4())
+        try:
+            self._conn.execute(
+                "INSERT INTO users (id, username, password_hash, tenant_id) VALUES (?, ?, ?, ?)",
+                (uid, username, _hash_password(password), tid),
+            )
+            self._conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"用户名已存在: {username}") from exc
+        return uid, tid
+
+    def authenticate(self, username: str, password: str) -> tuple[str, str] | None:
+        """校验用户名+密码；成功返回 (user_id, tenant_id)，否则 None。"""
+        row = self._conn.execute(
+            "SELECT id, password_hash, tenant_id FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if row is None or not _verify_password(password, str(row["password_hash"])):
+            return None
+        return str(row["id"]), str(row["tenant_id"])
 
     # ── API Key ──
 

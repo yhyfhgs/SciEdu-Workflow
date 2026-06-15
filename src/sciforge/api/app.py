@@ -24,6 +24,8 @@ import structlog
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Response
 
 from sciforge.api.schemas import (
+    AuthRequest,
+    AuthResponse,
     GenerateBatchRequest,
     GeneratedQuestionOut,
     GenerateRequest,
@@ -35,6 +37,7 @@ from sciforge.api.schemas import (
     SolveRequest,
     SolveResponse,
 )
+from sciforge.api.security import sign_token, verify_token
 from sciforge.core.models import (
     Discipline,
     GenerationRequest,
@@ -149,24 +152,57 @@ def create_app(
     *,
     saas_store: SaasStore | None = None,
     storage_factory: StorageFactory | None = None,
+    jwt_secret: str = "dev-secret-change-me",
 ) -> FastAPI:
     """构造 FastAPI app；agent 经工厂注入，saas_store 提供时启用鉴权+计费。"""
     app = FastAPI(title="SciForge API", version="0.1.0")
 
-    async def require_tenant(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
-        """鉴权依赖：开放模式返回空租户；启用后校验 API Key + 配额，返回 tenant_id。"""
+    async def require_tenant(
+        x_api_key: str = Header(default="", alias="X-API-Key"),
+        authorization: str = Header(default=""),
+    ) -> str:
+        """鉴权：开放模式返回空租户；否则 Bearer token（C 端）或 X-API-Key（B2B）→ tenant_id。"""
         if saas_store is None:
             return ""
-        info = saas_store.verify_api_key(x_api_key)
-        if info is None:
-            raise HTTPException(status_code=401, detail="无效或缺失 API Key")
-        if not saas_store.has_quota(info.tenant_id):
+        if authorization.startswith("Bearer "):
+            payload = verify_token(authorization[7:], jwt_secret)
+            if payload is None:
+                raise HTTPException(status_code=401, detail="无效或过期的 token")
+            tenant_id = str(payload.get("tenant_id", ""))
+        else:
+            info = saas_store.verify_api_key(x_api_key)
+            if info is None:
+                raise HTTPException(status_code=401, detail="无效或缺失 API Key / token")
+            tenant_id = info.tenant_id
+        if not saas_store.has_quota(tenant_id):
             raise HTTPException(status_code=429, detail="配额已用尽")
-        return info.tenant_id
+        return tenant_id
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "sciforge"}
+
+    @app.post("/v1/auth/register", response_model=AuthResponse)
+    async def register(req: AuthRequest) -> AuthResponse:
+        if saas_store is None:
+            raise HTTPException(status_code=404, detail="用户系统未启用")
+        try:
+            user_id, tenant_id = saas_store.create_user(req.username, req.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        token = sign_token({"user_id": user_id, "tenant_id": tenant_id}, jwt_secret)
+        return AuthResponse(token=token, user_id=user_id, tenant_id=tenant_id)
+
+    @app.post("/v1/auth/login", response_model=AuthResponse)
+    async def login(req: AuthRequest) -> AuthResponse:
+        if saas_store is None:
+            raise HTTPException(status_code=404, detail="用户系统未启用")
+        result = saas_store.authenticate(req.username, req.password)
+        if result is None:
+            raise HTTPException(status_code=401, detail="用户名或密码错误")
+        user_id, tenant_id = result
+        token = sign_token({"user_id": user_id, "tenant_id": tenant_id}, jwt_secret)
+        return AuthResponse(token=token, user_id=user_id, tenant_id=tenant_id)
 
     @app.post("/v1/generate", response_model=GenerateResponse)
     async def generate(
