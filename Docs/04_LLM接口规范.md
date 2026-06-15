@@ -1,6 +1,21 @@
 # LLM 接口规范
 
-> 版本: v2.0 | 日期: 2026-03-31
+> 版本: v2.1 | 日期: 2026-06-15
+>
+> **2026-06-15 优化批次新增（详见 [PROGRESS.md](PROGRESS.md) §00）**：
+> - **真实 token usage 采集**（REC-08）：各 backend 写 `last_usage`（input/output/cache_read/creation_input_tokens），
+>   `LLMClient.last_usage` 暴露，`retry.llm_call_metrics` 用真实 token 替代 `chars//4` 估算
+> - **兼容网关 prompt cache opt-in**（REC-08）：`ProviderConfig.supports_prompt_cache`（默认 False）→
+>   anthropic_compatible 也对静态 system 前缀包 `cache_control`；能力矩阵放行 cache_control
+> - **thinking 默认值**（REC-13）：`LLMConfig.PRESETS` 内置——extract/vlm_convert=disabled（抄写提速 3×），
+>   review/tag/annotate_review=enabled 小 budget(512)；`from_app_config` 应用，task_cfg/CLI 可覆盖
+> - **JSON mode 默认**（REC-07）：`generate_json` 注入 `response_format={"type":"json_object"}`，
+>   能力矩阵过滤 → 仅 OpenAI/Gemini/OpenAI 兼容生效（Anthropic 系静默丢弃）
+> - **截断重抓**（REC-07）：Anthropic `generate` 检测 `stop_reason==max_tokens` → max_tokens 翻倍重抓一次（上限 32768）
+> - **Message Batches API**（REC-23）：`submit_message_batch`/`get_message_batch_status`/`fetch_message_batch_results`
+>   + `LLMClient.supports_batch`；适合非交互式批处理（约半价）
+> - **便宜模型分级路由模板**（REC-13）：`config/sciforge.example.toml` 提供 extract 强档、review/tag/annotate 便宜档示例
+> - **retry**（REC-24）：指数退避加 ±25% jitter（防目录并发 thundering herd）
 
 ## 1. 多提供者架构
 

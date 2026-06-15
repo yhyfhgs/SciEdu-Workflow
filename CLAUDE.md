@@ -43,8 +43,10 @@ uv run mypy
 uv run sciforge --help   # 或 `uv run sf --help`
 
 # Pipeline（默认 VLM 后端 + 5 页/批 + 500 行/窗口，学科默认 math）
-# schema v8 DB：任何 v8 之前的旧 DB 不兼容 → 首次升级需加 --restart 重建 DB
+# schema 当前 v10：v8/v9 旧库自动增量 ALTER 升级（见 _MIGRATIONS）；v8 之前需 --restart
+# REC-01：含文字层的 PDF 默认自动走 fitz（0 LLM、秒级）；脏文字层扫描件加 --force-vlm 强制 VLM
 uv run sciforge parse run path/to/file --db data/sciforge.db
+uv run sciforge parse run scanned.pdf --db data/sciforge.db --force-vlm
 
 # 处理物理材料
 uv run sciforge parse run physics.pdf --db data/sciforge.db -D physics
@@ -54,6 +56,9 @@ uv run sciforge parse run-book chap1.md chap2.md --db data/sciforge.db
 
 # 进度盘点
 uv run sciforge parse audit "Raw Data" --db data/sciforge.db
+
+# 跨文档题答联动（习题册 + 答案册分文件时；REC-29）
+uv run sciforge parse relink data/sciforge.db -D math
 
 # 数据库统计
 uv run sciforge parse db-stats data/sciforge.db
@@ -87,20 +92,21 @@ src/sciforge/
 ├── pipeline/    # 数据处理流水线 (5 阶段并发 Producer-Consumer)
 │                #   orchestrator (asyncio.gather 6 Task + 4 stage queue + 缓存直通重放
 │                #     + OrderIndexAllocator 跨文件全局 ID 分配 + detect_section_boundaries),
-│                #   recognizers / vlm_converter（system+user prompt 双路径学科化,
-│                #     detect_section_boundaries 识别章节结构）,
+│                #   recognizers (REC-01 pdf_has_extractable_text_layer 文字层探测→fitz 降级) /
+│                #     vlm_converter（system+user 学科化 + REC-02 批内 Semaphore 并发+保序+doc_lock）,
+│                #   source_classifier (REC-14 detect_genre 书本/试卷/讲义 + 文件名 baseline),
 │                #   reorder_buffer (Stage2 并发后按 item_id 恢复顺序),
-│                #   stages/stage1_extract.py     (批量滑动窗口提取 500→3000 行 +
-│                #     3 层防御：regex 预检 + 改进 force-consume + no_items_found 快速跳过;
-│                #     force-consume 对 regex 标记冲突只滑 base_window 不整窗丢弃(完整性);
-│                #     opt-in 时 run()→_run_parallel 走单文档内并行分段提取),
-│                #   stages/stage1_review.py      (batch 校验 + 条件化跳过 low-risk batch),
-│                #   stages/stage2_annotate.py    (单条打标 + 可选 N-worker 并发 + 局部 taxonomy 注入),
-│                #   stages/stage2_review.py      (annotation 审核 + 条件化跳过 + N-worker 并发),
-│                #   stages/stage3_persist.py     (合并 KP/Question 入库 + tag 受控词表统一，无 LLM),
-│                #   llm_schemas (Batch*/Single* Pydantic 强校验 + exercise near-tail guard + question_form),
-│                #   tag_tree (带 generation 缓存) / tag_canonicalizer (#6 受控词表) /
-│                #     taxonomy_validator (支持 branch_filter),
+│                #   stages/stage1_extract.py     (批量滑动窗口提取 500→3000 行 + 3 层防御 +
+│                #     REC-12 文末 force_extract 兜底 + REC-14 genre 探测调 fast-skip + REC-20 章节先验注入;
+│                #     REC-17 窗口管理点 _sync_state 节流; opt-in 时 _run_parallel 单文档并行),
+│                #   stages/stage1_review.py      (batch 校验 + REC-06 风险信号制条件跳过),
+│                #   stages/stage2_annotate.py    (REC-04 批量打标 BatchAnnotationLLM + REC-09 tag_tree 只读快照 + N-worker 并发),
+│                #   stages/stage2_review.py      (annotation 审核 + REC-05 默认关闭),
+│                #   stages/stage3_persist.py     (REC-10 批量入库+count_existing_content 去重 + REC-15 自动纠正 +
+│                #     REC-18 figures 抽取 + REC-19 options 直通; tag 受控词表统一，无 LLM),
+│                #   llm_schemas (Batch*/Single*/BatchAnnotationLLM 强校验 + near-tail guard + options/blanks),
+│                #   tag_tree (TagTreeSnapshot 只读快照 REC-09 + generation 缓存) / tag_canonicalizer /
+│                #     taxonomy_validator (branch_filter + REC-15 discipline 防跨学科漂移),
 │                #   入库后 post-pass(无 LLM): numbering_audit(#2) / answer_linker(#3) /
 │                #     relation_inference(#6 知识图谱边) / reconciliation(#7 复核),
 │                #   document_segmenter + parallel_extract (#1 单文档并行,
@@ -116,10 +122,13 @@ src/sciforge/
 │                #   templates/pipeline|generation|solving|verification/*.txt
 ├── core/sentinel.py  # 共享 SENTINEL 单例（5 stage queue 通知流结束）
 ├── storage/     # 存储：protocol.py(StorageBackend),
-│                #   sqlite_backend.py(discipline 列 + filter + SchemaVersionMismatch +
-│                #     relation_rows/save_relations/reconciliation_rows/validation_report),
-│                #   schema.sql (v8 — number_canonical/seq_*/question_form/content_hash UNIQUE/item_relations 边表)
-├── cli/         # CLI: main.py + parse.py (run/run-book/audit/validate/migrate-legacy/db-stats)
+│                #   sqlite_backend.py(discipline 列 + filter + SchemaVersionMismatch + _MIGRATIONS 增量迁移 +
+│                #     relation_rows/save_relations/reconciliation_rows/validation_report +
+│                #     count_existing_content(批量去重) + save_figures/figures_for_item + load_questions_by_discipline +
+│                #     update_kp_type(REC-15 纠正) + delete_question 级联清边(REC-28)),
+│                #   schema.sql (v10 — number_canonical/seq_*/question_form/content_hash UNIQUE/item_relations 边表 +
+│                #     questions.options/correct_option/blanks(REC-19) + figures 表(REC-18) + order_index 单列索引(REC-16))
+├── cli/         # CLI: main.py + parse.py (run[--force-vlm]/run-book/audit/relink/validate/migrate-legacy/db-stats)
 │                #   + generate.py (free/solve/batch/lecture + variant/evolve/solve-deep 占位)
 │                #   + config_cmd.py (config show/validate)
 └── config/      # 配置：settings.py (env_prefix=SCIFORGE_), logging.py
@@ -146,23 +155,26 @@ logical_document  (单文件 or 多个分卷)
    - 镜像到 items/stage1/item_<id>.json + emit ExtractedBatch 到 q_raw
       ↓ asyncio.Queue q_raw
  [Stage1Review] batch 校验（LLM 调用 2，**条件化**）
-   - **Phase 4 条件化跳过**：all-low-risk + stop_reason=all_complete + 编号连续 +
-     ≤ 3 items + solution_status 一致 → 直通不调 LLM
+   - **REC-06 风险信号制条件跳过**（取代旧的"高危类型一律强审"）：仅在 stop_reason≠all_complete /
+     习题贴近窗口末尾且声称无解 / 编号跳号（用 core/numbering 确定性解析）时才调 LLM；
+     纯定义/定理 + 干净提取 + 编号连续 → 直通
    - 否则：用原 window + items JSON 批量复核（一次 LLM 修复 N 条）
    - retry 耗尽 → 降级用原始 items
    - emit ReviewedItem 到 q_rev（按 item_id 顺序拆分）
       ↓ asyncio.Queue q_rev
- [Stage2Annotate] 单条标注（LLM 调用 3，可 N-worker 并发）
-   - 输入 item + tag_tree + 局部 taxonomy（按 structural_context 推断 branch）→ SingleAnnotationLLM
-   - **Phase 3**: tag_tree 序列化带 generation 缓存，taxonomy 全量预缓存
-   - **Phase 5**: stage2_annotate_concurrency > 1 时 N-worker 并发 + ReorderBuffer 恢复顺序
-   - fallback 时写空标注（tags=uncategorized、difficulty=5）
+ [Stage2Annotate] 标注（LLM 调用 3，**REC-04 批量打标** + 可 N-worker 并发）
+   - **REC-04**: 同来源 batch（同 block_index）的 N 条合并为**一次** LLM 调用（BatchAnnotationLLM，
+     1:1 长度校验 + 单条失败降级逐条）；stage2_annotate_batch=True 默认开。800→~180 次
+   - 输入 item + tag_tree 只读快照(REC-09) + 局部 taxonomy（按 structural_context 推断 branch）
+   - **REC-09**: Stage2 读 TagTreeSnapshot（消除 Stage3 每条 insert 触发的序列化缓存失效 + 读写隔离）
+   - **REC-03**: stage2_annotate_concurrency 默认 4，N-worker 并发 + ReorderBuffer 恢复顺序
+   - fallback 时写兜底标注（tags=uncategorized、taxonomy=学科纯根 REC-15、difficulty=5）
    - emit AnnotatedItem 到 q_ann
       ↓ asyncio.Queue q_ann
- [Stage2Review] annotation 审核（LLM 调用 4，**条件化 + 可并发**）
-   - **Phase 4 条件化跳过**：tag 根正确 + taxonomy 前缀正确 + 3 ≤ difficulty ≤ 8 +
-     非高危 item_type + 段数合理 → 直通
-   - 可 config 关闭（stage2_review_enabled=false）或部分并发（stage2_review_concurrency）
+ [Stage2Review] annotation 审核（LLM 调用 4，**REC-05 默认关闭**）
+   - **REC-05**: stage2_review_enabled 默认 **false**——其校验职责（学科根/tag/taxonomy）
+     与 Stage3 确定性规则重叠，关闭后这一轮 LLM 调用归零（700→0）；需 LLM 复核显式置 true
+   - 开启时：条件化跳过 + 可并发（stage2_review_concurrency 默认 2）
    - emit ReviewedAnnotatedItem 到 q_done
       ↓ asyncio.Queue q_done
  [Stage3Persist] 合并入库（无 LLM）
@@ -173,10 +185,12 @@ logical_document  (单文件 or 多个分卷)
    - 禁止 item_id 倒退；允许 Stage1Review 拒绝 item 后形成 gap
 ```
 
-**Exercise 漏 solution bug 三道防线**:
+**Exercise 漏 solution bug 四道防线**:
 1. Stage1Extract prompt 显式规则：exercise/example/problem 未扫到下一条正式条目前禁标 no_solution_in_source
 2. Pydantic `BatchItemExtractPayloadLLM` validator：`solution_status=no_solution_in_source` + item_type ∈ {exercise,example,problem} + end_line 距窗口末行 < 10 → ValueError 触发 retry
 3. Stage1Review：发现问题时对应位置设 null，让 Stage1Extract 下一轮重扫
+4. **REC-12 文末兜底**：文档/章节末尾窗口若 regex 有标记但 LLM 返空 → `_extract_batch(force_extract=True)`
+   关 near-tail guard 再尽力提取一次（solution_deferred），避免试卷最后几题/章末习题在 EOF 永久漏失
 
 **Retry with feedback**:
 - `call_llm_json_with_schema_retry_with_feedback(llm, prompt_builder, model, stage_name=...)`
@@ -190,16 +204,24 @@ logical_document  (单文件 or 多个分卷)
 - **OrderIndexAllocator**：目录并发处理多文件时，单一全局 counter + asyncio.Lock 保证跨文件 item_id 不重复
 - `tag` 是有序的 `english:中文` 段列表（如 `["math:数学","algebra:代数","group_theory:群论"]`）
 - 断点恢复：state.json 记录 `next_item_id / current_window_size / consecutive_empty / stageN_extracted_count / stageN_completed / last_persisted_item_id / tag_tree_json / vlm_batches_done`
-- **v8 之前的 DB / 旧 state.json 不兼容**：启动时检测 → raise SchemaVersionMismatch → 用户加 `--restart` 清库重跑
+- **schema v10**：v8/v9 旧库自动增量 ALTER 升级（`_MIGRATIONS`）；v8 之前 → raise SchemaVersionMismatch → 加 `--restart`
 - 多文件分卷：`*_part_N_M.ext` 自动按页码分组，单个 logical_document 顺序识别
 - 目录并发：每 logical_document 独立 `SQLiteStorageBackend` 实例（WAL + busy_timeout）+ 共享 OrderIndexAllocator
 
-**Pipeline 优化开关（AppConfig）**:
-- `empty_window_fast_skip: bool = True` — Phase 2.5 窗口标记预检
-- `review_conditional_enabled: bool = True` — Phase 4 条件化 review
-- `stage2_annotate_concurrency: int = 1` / `stage2_review_concurrency: int = 1` — Phase 5 并发 worker 数（>1 启用 ReorderBuffer）
+**Pipeline 优化开关（AppConfig，2026Q2 优化批次后默认值）**:
+- `empty_window_fast_skip: bool = True` — Phase 2.5 窗口标记预检（REC-14：试卷/讲义自动关以提召回）
+- `review_conditional_enabled: bool = True` — 条件化 review（REC-06 风险信号制）
+- **REC-03**: `stage2_annotate_concurrency: int = 4` / `stage2_review_concurrency: int = 2` /
+  `pipeline_stage_queue_size: int = 8` / `max_concurrent_llm_calls: int = 8`（默认开 Stage2 并发，依赖 REC-09 快照）
+- **REC-04**: `stage2_annotate_batch: bool = True` / `stage2_annotate_batch_size: int = 8`（批量打标）
+- **REC-05**: `stage2_review_enabled: bool = False`（默认关 Stage2Review）
+- **REC-01**: `vlm_auto_text_detect: bool = True` / `vlm_text_layer_min_chars_per_page: int = 100`（文字层探测走 fitz）
+- **REC-09**: `tag_tree_snapshot_refresh_gap: int = 16`（Stage2 读 tag_tree 只读快照）
+- **REC-15**: `reconciliation_autofix: bool = False`（高置信 kp_type 误判回改 DB，保守默认关）
+- **REC-13**: LLMConfig.PRESETS 内置 thinking 默认（extract/vlm=disabled，review/tag/annotate=小 budget）
+- **REC-08**: ProviderConfig/LLMConfig `supports_prompt_cache: bool = False`（兼容网关 prompt cache opt-in）
 - `qgen_lightweight_prefilter: bool = True` / `qgen_merge_difficulty_into_verify: bool = True` — Phase 6 QGen 优化
-- `pipeline_prompt_cache_enabled: bool = True` — #9 静态指令拆到可缓存 system 前缀（纯 Anthropic 自动缓存）
+- `pipeline_prompt_cache_enabled: bool = True` — #9 静态指令拆到可缓存 system 前缀
 - `answer_linking_enabled / relation_inference_enabled / reconciliation_enabled: bool = True` — 入库后 post-pass 开关（#3/#6/#7）
 - `intra_doc_parallel_extract: bool = False` / `intra_doc_segment_concurrency: int = 4`
   / `intra_doc_min_segment_lines: int = 40` — #1 单文档内并行（**已接入** Stage1Extract，opt-in）。

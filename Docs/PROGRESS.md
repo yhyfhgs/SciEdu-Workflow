@@ -1,7 +1,33 @@
 # SciForge 开发进度总览
 
-> 更新日期: 2026-06-02 CST
+> 更新日期: 2026-06-15 CST
 > 当前阶段: 本地 CLI MVP。主线是 **5 阶段并发 Pipeline** + **多 Agent 生成系统** + **学科参数化**。
+
+---
+
+## 00. 2026-06-15 Pipeline 优化批次（30 条 REC，全部落地 + 审计绿）
+
+基于对全 pipeline 逐行精读产出的 30 条优化建议（plan: `~/.claude/plans/workflow-pipeline-llm-bubbly-avalanche.md`），
+围绕**效率 / 准确率 / LLM 调用控制 / 多格式识别 / 内容提取 / 标准化入库**系统落地。schema 升至 **v10**。
+
+- **LLM 调用压降**（一本 300 页书 ~1930→~390）：REC-04 Stage2 批量打标（N 条合 1 次，800→~180）、
+  REC-05 Stage2Review 默认关闭（700→0，职责交 Stage3 确定性规则）、REC-06 Stage1Review 改风险信号制条件跳过（250→~90）、
+  REC-01 文本型 PDF 探测文字层走 fitz（Task0 VLM 调用→0）。
+- **效率/吞吐**：REC-02 VLM 批内 Semaphore 并发+保序+截断检测、REC-03 Stage2 默认并发(4/2)+加深 stage queue(8)、
+  REC-09 tag_tree 只读快照（消除并发竞争+缓存抖动）、REC-10 Stage3 批量入库、REC-17 post-pass/预扫 to_thread、
+  REC-22/26 分支推断与 numbering/content_hash 记忆化、REC-27 LLM 日志截断+轮转、REC-24 retry jitter。
+- **准确率/召回**：REC-11 resume 复原 Stage1Review 原文、REC-12 文末 force-extract 兜底、REC-07 截断翻倍重抓、
+  REC-15 reconciliation 高置信自动纠正(opt-in)+跨学科 fuzzy 防漂移、REC-20 确定性章节边界注入提取 prompt。
+- **多格式 / 内容广度**：REC-14 detect_genre 书本/试卷/讲义识别（试卷/讲义关 fast-skip 提召回）、
+  REC-19 选择/填空结构化(options/correct_option/blanks)、REC-18 figures 图表落库、REC-16 题型双维度去污染+索引。
+- **成本/可观测**：REC-08 兼容网关 prompt cache opt-in + 真实 token usage 采集、REC-13 thinking 默认值+便宜模型分级路由模板、
+  REC-23 Anthropic Message Batches API（约半价，API 层完成）、REC-07 JSON mode 默认(OpenAI 系)。
+- **存储/一致性**：schema v10 增量迁移（options/blanks/figures/order_index 索引）、REC-28 delete 级联清边、
+  REC-29 `parse relink` 跨文档题答联动（习题册+答案册分文件）、REC-30 配置默认对齐。
+- **测试**：704 全量通过（+115），ruff check + ruff format + mypy strict 全干净（86 源文件）。
+
+> 两处有意架构边界：REC-23 流式管线的 `--batch` 执行模式（提取本质串行，留待专门设计）；
+> REC-07 对兼容网关不强制 tool-use（用 response_format + 截断重抓 + thinking 覆盖）。
 
 ---
 
@@ -36,8 +62,8 @@
 | 模块 | 状态 | 当前进度 |
 |------|------|----------|
 | 项目脚手架 | ✅ 完成 | `uv` + Python 3.11+ + Pydantic v2 + Typer/Rich + structlog |
-| SQLite 存储 | ✅ 完成 | schema **v8**：`knowledge_points`/`questions`（+ number_canonical/seq_*/question_form/content_hash UNIQUE）+ FTS5 + `discipline_tag_trees` + `item_relations` 边表 |
-| Pipeline 主线 | ✅ 完成 | Task0 + 5 Stage + 4 queue；Stage1 已升级为**批量窗口提取**，Stage2 支持可选并发 |
+| SQLite 存储 | ✅ 完成 | schema **v10**：`knowledge_points`/`questions`（+ number_canonical/seq_*/question_form/content_hash UNIQUE + options/correct_option/blanks）+ FTS5 + `discipline_tag_trees` + `item_relations` + `figures` 表；增量迁移 v8→v9→v10 |
+| Pipeline 主线 | ✅ 完成 | Task0 + 5 Stage + 4 queue；Stage1 批量窗口提取，Stage2 **默认并发 + 批量打标**，Stage2Review 默认关 |
 | LLM 配置 | ✅ 完成 | v2 TOML schema：`[providers.*]` + `[tasks.*]`，支持 provider_ref、env 插值、per-model 并发限流 |
 | 多学科参数化 | ✅ 完成 | 顶层 `Discipline` + `DisciplineSpec`；数学/物理 spec 已落地 |
 | Agent 系统 | ✅ 完成 MVP | QGen / Solve / Tag / DocAssembly-lite 完整；KB/Recommend/Format/OCR/ContentTagger 为 Post-MVP 骨架 |
