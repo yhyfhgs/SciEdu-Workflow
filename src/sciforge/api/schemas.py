@@ -33,6 +33,30 @@ class GenerateBatchRequest(GenerateRequest):
     count: int = Field(default=5, ge=1, le=50)
 
 
+class PaperItem(BaseModel):
+    id: str
+    content: str
+    difficulty: int
+    question_type: str
+    solution: str = ""
+
+
+class PaperRequest(BaseModel):
+    discipline: str = "math"
+    subject: str = ""
+    question_type: str = ""
+    difficulty_min: int = Field(default=1, ge=1, le=10)
+    difficulty_max: int = Field(default=10, ge=1, le=10)
+    count: int = Field(default=10, ge=1, le=100)
+    title: str = ""
+
+
+class PaperResponse(BaseModel):
+    title: str
+    count: int
+    questions: list[PaperItem] = Field(default_factory=list)
+
+
 class SolveRequest(BaseModel):
     question_id: str = ""
     content: str = ""

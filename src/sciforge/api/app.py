@@ -28,6 +28,9 @@ from sciforge.api.schemas import (
     GeneratedQuestionOut,
     GenerateRequest,
     GenerateResponse,
+    PaperItem,
+    PaperRequest,
+    PaperResponse,
     SolveRequest,
     SolveResponse,
 )
@@ -41,11 +44,13 @@ from sciforge.storage.saas import SaasStore, TaskInfo, UsageSummary
 
 if TYPE_CHECKING:
     from sciforge.agents import QGenAgent, SolveAgent
+    from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 logger = structlog.get_logger()
 
 QGenFactory = Callable[[Discipline], "QGenAgent"]
 SolveFactory = Callable[[Discipline], "SolveAgent"]
+StorageFactory = Callable[[], "SQLiteStorageBackend"]
 
 
 def _parse_discipline(value: str) -> Discipline:
@@ -110,6 +115,7 @@ def create_app(
     solve_factory: SolveFactory,
     *,
     saas_store: SaasStore | None = None,
+    storage_factory: StorageFactory | None = None,
 ) -> FastAPI:
     """构造 FastAPI app；agent 经工厂注入，saas_store 提供时启用鉴权+计费。"""
     app = FastAPI(title="SciForge API", version="0.1.0")
@@ -234,5 +240,46 @@ def create_app(
         if info is None:
             raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
         return info
+
+    @app.post("/v1/papers", response_model=PaperResponse)
+    async def papers(req: PaperRequest, tenant: str = Depends(require_tenant)) -> PaperResponse:
+        if storage_factory is None:
+            raise HTTPException(status_code=503, detail="组卷需注入题库 storage")
+        if req.difficulty_min > req.difficulty_max:
+            raise HTTPException(status_code=422, detail="difficulty_min 不能大于 difficulty_max")
+        discipline = _parse_discipline(req.discipline)
+        storage = storage_factory()
+        try:
+            filters: dict[str, object] = {
+                "discipline": discipline.value,
+                "difficulty_range": (req.difficulty_min, req.difficulty_max),
+            }
+            if req.subject:
+                filters["subject"] = req.subject
+            if req.question_type:
+                filters["question_type"] = req.question_type
+            ids = storage.search_questions(filters)
+            bank = storage.load_questions_by_ids(list(ids)[: req.count])
+            items = [
+                PaperItem(
+                    id=q.id,
+                    content=q.content,
+                    difficulty=q.difficulty,
+                    question_type=str(q.question_type),
+                    solution=q.solution_content or "",
+                )
+                for q in bank
+            ]
+        finally:
+            close = getattr(storage, "close", None)
+            if callable(close):
+                close()
+        if tenant and saas_store is not None and items:
+            saas_store.record_usage(tenant, "/v1/papers", billable_units=len(items))
+        return PaperResponse(
+            title=req.title or f"{discipline.value} 试卷",
+            count=len(items),
+            questions=items,
+        )
 
     return app
