@@ -1,0 +1,230 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1900" height="1540" viewBox="0 0 1900 1540" role="img" aria-labelledby="title desc">
+<title id="title">SciForge Pipeline 5-stage Producer-Consumer Workflow</title>
+<desc id="desc">Task0 recognizer, Stage1Extract, Stage1Review, Stage2Annotate, Stage2Review, Stage3Persist, queues, payload types, state/mirror and post-pass.</desc>
+<defs>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.55" opacity="0.8"/>
+  </pattern>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+  </marker>
+  <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#fb923c"/>
+  </marker>
+  <style>
+    .bg { fill:#0d1117; }
+    .card { fill:#020617; stroke:#334155; stroke-width:1.2; }
+    .title { font-family:'SF Mono','JetBrains Mono','Fira Code',monospace; font-size:18px; font-weight:700; }
+    .subtitle { font-family:'SF Mono','JetBrains Mono','Fira Code',monospace; font-size:12px; fill:#cbd5e1; }
+    .small { font-family:'SF Mono','JetBrains Mono','Fira Code',monospace; font-size:11px; fill:#e2e8f0; }
+    .tiny { font-family:'SF Mono','JetBrains Mono','Fira Code',monospace; font-size:9.5px; fill:#94a3b8; }
+    .queue-title { font-family:'SF Mono','JetBrains Mono','Fira Code',monospace; font-size:13px; font-weight:700; }
+    .heading { font-family:'SF Mono','JetBrains Mono','Fira Code',monospace; font-size:24px; font-weight:800; fill:#e5e7eb; }
+    .subheading { font-family:'SF Mono','JetBrains Mono','Fira Code',monospace; font-size:13px; fill:#94a3b8; }
+    .metric { font-family:'SF Mono','JetBrains Mono','Fira Code',monospace; font-size:11px; fill:#e2e8f0; }
+    .metric-key { fill:#38bdf8; font-weight:700; }
+    .legend { font-family:'SF Mono','JetBrains Mono','Fira Code',monospace; font-size:10px; fill:#cbd5e1; }
+  </style>
+</defs>
+<rect class="bg" width="1900" height="1540"/>
+<rect width="1900" height="1540" fill="url(#grid)" opacity="0.9"/>
+
+<!-- Header -->
+<text x="70" y="46" class="heading">SciForge / MathForge Pipeline Workflow</text>
+<text x="70" y="70" class="subheading">Task0 + Stage1Extract + Stage1Review + Stage2Annotate + Stage2Review + Stage3Persist · asyncio.Queue + SENTINEL · Pydantic v2 payloads</text>
+
+<!-- main boundary -->
+<rect x="45" y="82" width="1430" height="1288" rx="18" class="card" opacity="0.72"/>
+<text x="70" y="126" class="subheading" fill="#64748b">Main pipeline: single logical_document (single file or *_part_N_M group)</text>
+
+<!-- right sidebars -->
+<rect x="1495" y="82" width="350" height="600" rx="16" fill="#020617" stroke="#334155" stroke-width="1.2"/>
+<text x="1518" y="118" class="title" fill="#38bdf8">Runtime metrics / defaults</text>
+<text x="1518" y="150" class="metric"><tspan class="metric-key">pages_per_batch</tspan> = 5</text>
+<text x="1518" y="172" class="metric"><tspan class="metric-key">q_md</tspan> maxsize = pipeline_queue_size = 4</text>
+<text x="1518" y="194" class="metric"><tspan class="metric-key">stage queues</tspan> maxsize = pipeline_stage_queue_size = 8</text>
+<text x="1518" y="216" class="metric"><tspan class="metric-key">Stage1 window</tspan> = 500 → 3000, step 500</text>
+<text x="1518" y="238" class="metric"><tspan class="metric-key">empty_force_limit</tspan> = 2</text>
+<text x="1518" y="260" class="metric"><tspan class="metric-key">max_concurrent_llm_calls</tspan> = 8</text>
+<text x="1518" y="282" class="metric"><tspan class="metric-key">stage2_annotate_concurrency</tspan> = 4</text>
+<text x="1518" y="304" class="metric"><tspan class="metric-key">stage2_annotate_batch</tspan> = true, size = 8</text>
+<text x="1518" y="326" class="metric"><tspan class="metric-key">stage2_review_enabled</tspan> = false (opt-in)</text>
+<text x="1518" y="348" class="metric"><tspan class="metric-key">stage2_review_concurrency</tspan> = 2</text>
+<text x="1518" y="370" class="metric"><tspan class="metric-key">stage3_persist_batch_size</tspan> = 16</text>
+<text x="1518" y="392" class="metric"><tspan class="metric-key">tag_tree_snapshot_refresh_gap</tspan> = 16</text>
+<text x="1518" y="414" class="metric"><tspan class="metric-key">checkpoint_flush_interval</tspan> ≈ 3s</text>
+<text x="1518" y="450" class="title" fill="#a78bfa">LLM task routing</text>
+<text x="1518" y="482" class="metric">vlm_convert → Task0 VLM recognizer</text>
+<text x="1518" y="504" class="metric">extract_and_classify → Stage1Extract</text>
+<text x="1518" y="526" class="metric">review → Stage1Review</text>
+<text x="1518" y="548" class="metric">tag → Stage2Annotate</text>
+<text x="1518" y="570" class="metric">annotate_review → Stage2Review</text>
+<text x="1518" y="610" class="tiny">All structured calls use call_llm_json_with_schema_retry_with_feedback()</text>
+<text x="1518" y="630" class="tiny">Pydantic ValidationError is injected as retry_feedback.</text>
+
+<rect x="1495" y="705" width="350" height="335" rx="16" fill="#020617" stroke="#334155" stroke-width="1.2"/>
+<text x="1518" y="742" class="title" fill="#34d399">Checkpoint / resume</text>
+<text x="1518" y="774" class="metric">state.json: FileExtractionState</text>
+<text x="1518" y="796" class="metric">recognize/file_NNN_stem/page_NNN-NNN.md</text>
+<text x="1518" y="818" class="metric">items/stage1/item_000001.json</text>
+<text x="1518" y="840" class="metric">items/stage1_review/item_*.json</text>
+<text x="1518" y="862" class="metric">items/stage2/item_*.json</text>
+<text x="1518" y="884" class="metric">items/stage2_review/item_*.json</text>
+<text x="1518" y="906" class="metric">items/persisted/item_*.json</text>
+<text x="1518" y="940" class="tiny">Resume replay starts downstream consumers first,</text>
+<text x="1518" y="960" class="tiny">then replays mirror payloads into queues.</text>
+<text x="1518" y="990" class="tiny">SENTINEL always propagates in finally blocks.</text>
+
+<rect x="1495" y="1062" width="350" height="308" rx="16" fill="#020617" stroke="#334155" stroke-width="1.2"/>
+<text x="1518" y="1098" class="title" fill="#fb7185">Post-pass after Stage3</text>
+<text x="1518" y="1130" class="metric">numbering_audit → audit_report.json</text>
+<text x="1518" y="1152" class="metric">answer_linker → update solution/delete answer</text>
+<text x="1518" y="1174" class="metric">relation_inference → item_relations</text>
+<text x="1518" y="1196" class="metric">reconciliation → reconciliation_report.json</text>
+<text x="1518" y="1218" class="metric">reconciliation_autofix=false by default</text>
+<text x="1518" y="1252" class="tiny">These are deterministic; no LLM call.</text>
+<text x="1518" y="1272" class="tiny">They run only on SQLiteStorageBackend.</text>
+
+<!-- arrows behind boxes -->
+<path d="M660,210 C660,231.5 660,231.5 660,253" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M660,343 C660,390.5 660,390.5 660,438" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M660,528 C660,575.5 660,575.5 660,623" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M660,713 C660,760.5 660,760.5 660,808" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M660,898 C660,945.5 660,945.5 660,993" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M660,1083 C660,1130.5 660,1130.5 660,1178" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1250,1268 C1330,1268 1405,1210 1495,1210" fill="none" stroke="#fb7185" stroke-width="2" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+
+<!-- Pipeline blocks -->
+<g class="block">
+<rect x="70" y="140" width="1180" height="112" rx="14" fill="#0f172a"/>
+<rect x="70" y="140" width="1180" height="112" rx="14" fill="rgba(30,41,59,0.58)" stroke="#94a3b8" stroke-width="1.8"/>
+<text x="88" y="168" class="title" fill="#94a3b8">Input logical_document</text>
+<text x="88" y="190" class="subtitle">CLI: uv run sciforge parse run &lt;path&gt; / parse run-book</text>
+<text x="88" y="212" class="small">Single file, directory item, or *_part_N_M grouped logical_document</text>
+<text x="88" y="230" class="small">compute_file_hash(files) → checkpoint/&lt;file_hash&gt;/state.json</text>
+<text x="88" y="248" class="small">AppConfig + per-task LLMClient + SQLiteStorageBackend/NoopStorageBackend</text>
+</g>
+<g class="queue">
+  <rect x="485" y="242" width="350" height="56" rx="10" fill="#111827" stroke="#64748b" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="660" y="264" class="queue-title" text-anchor="middle" fill="#64748b">Task0 input</text>
+  <text x="660" y="284" class="tiny" text-anchor="middle">Path | list[Path] · DocumentFormat · Recognizer factory</text>
+</g>
+<g class="block">
+<rect x="70" y="300" width="1180" height="118" rx="14" fill="#0f172a"/>
+<rect x="70" y="300" width="1180" height="118" rx="14" fill="rgba(120,53,15,0.34)" stroke="#fbbf24" stroke-width="1.8"/>
+<text x="88" y="328" class="title" fill="#fbbf24">Task0 Producer — document recognition</text>
+<text x="88" y="350" class="subtitle">pipeline/recognizers.py + vlm_converter.py</text>
+<text x="88" y="372" class="small">VlmRecognizer / PyMuPdfRecognizer / PdfToTextRecognizer / MarkdownRecognizer</text>
+<text x="88" y="390" class="small">BatchResult(page_start,page_end,md_text,md_path,is_failed)</text>
+<text x="88" y="408" class="small">detect_section_boundaries(md_text.splitlines()) and push MdBlockSource</text>
+</g>
+<g class="queue">
+  <rect x="485" y="427" width="350" height="56" rx="10" fill="#111827" stroke="#f97316" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="660" y="449" class="queue-title" text-anchor="middle" fill="#f97316">q_md</text>
+  <text x="660" y="469" class="tiny" text-anchor="middle">MdBlockSource(file_path,page_start,page_end,md_path,md_text,block_index,section_boundaries)</text>
+</g>
+<g class="block">
+<rect x="70" y="485" width="1180" height="118" rx="14" fill="#0f172a"/>
+<rect x="70" y="485" width="1180" height="118" rx="14" fill="rgba(88,28,135,0.45)" stroke="#c084fc" stroke-width="1.8"/>
+<text x="88" y="513" class="title" fill="#c084fc">Stage1Extract — sliding-window batch extraction</text>
+<text x="88" y="535" class="subtitle">stages/stage1_extract.py · LLM task: extract_and_classify</text>
+<text x="88" y="557" class="small">line_buffer + global line prefix; window 500 → 3000; fast-skip strict regex + weak signals</text>
+<text x="88" y="575" class="small">BatchItemExtractPayloadLLM(items, stop_reason, last_consumed_line, issues)</text>
+<text x="88" y="593" class="small">OrderIndexAllocator.reserve(N) → contiguous item_ids; mirror items/stage1/</text>
+</g>
+<g class="queue">
+  <rect x="485" y="612" width="350" height="56" rx="10" fill="#111827" stroke="#f97316" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="660" y="634" class="queue-title" text-anchor="middle" fill="#f97316">q_raw</text>
+  <text x="660" y="654" class="tiny" text-anchor="middle">ExtractedBatch(item_ids,items,window_lines,window_line_range,window_last_line,block_index,source_file,stop_reason)</text>
+</g>
+<g class="block">
+<rect x="70" y="670" width="1180" height="118" rx="14" fill="#0f172a"/>
+<rect x="70" y="670" width="1180" height="118" rx="14" fill="rgba(154,52,18,0.42)" stroke="#fb923c" stroke-width="1.8"/>
+<text x="88" y="698" class="title" fill="#fb923c">Stage1Review — batch item review / correction</text>
+<text x="88" y="720" class="subtitle">stages/stage1_review.py · LLM task: review</text>
+<text x="88" y="742" class="small">Conditional skip unless stop_reason risk, near-tail no-solution exercise, or numbering gap</text>
+<text x="88" y="760" class="small">BatchReviewPayloadLLM(reviewed_items[1:1], issues); null rejects an item and creates gap</text>
+<text x="88" y="778" class="small">emit ReviewedItem(item_id,item,block_index,source_file,page_start,page_end)</text>
+</g>
+<g class="queue">
+  <rect x="485" y="797" width="350" height="56" rx="10" fill="#111827" stroke="#22c55e" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="660" y="819" class="queue-title" text-anchor="middle" fill="#22c55e">q_rev</text>
+  <text x="660" y="839" class="tiny" text-anchor="middle">ReviewedItem(item_id,item,block_index,source_file,page_start,page_end)</text>
+</g>
+<g class="block">
+<rect x="70" y="855" width="1180" height="118" rx="14" fill="#0f172a"/>
+<rect x="70" y="855" width="1180" height="118" rx="14" fill="rgba(6,78,59,0.42)" stroke="#34d399" stroke-width="1.8"/>
+<text x="88" y="883" class="title" fill="#34d399">Stage2Annotate — tags / taxonomy / difficulty</text>
+<text x="88" y="905" class="subtitle">stages/stage2_annotate.py · LLM task: tag</text>
+<text x="88" y="927" class="small">Same block_index group → BatchAnnotationLLM (stage2_annotate_batch=true)</text>
+<text x="88" y="945" class="small">N-worker concurrency + ReorderBuffer; TagTreeSnapshot + TaxonomyValidator prompt context</text>
+<text x="88" y="963" class="small">emit AnnotatedItem(item_id,item,annotation,block_index,source_file,page_start,page_end)</text>
+</g>
+<g class="queue">
+  <rect x="485" y="982" width="350" height="56" rx="10" fill="#111827" stroke="#14b8a6" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="660" y="1004" class="queue-title" text-anchor="middle" fill="#14b8a6">q_ann</text>
+  <text x="660" y="1024" class="tiny" text-anchor="middle">AnnotatedItem(item_id,item,annotation,block_index,source_file,page_start,page_end)</text>
+</g>
+<g class="block">
+<rect x="70" y="1040" width="1180" height="118" rx="14" fill="#0f172a"/>
+<rect x="70" y="1040" width="1180" height="118" rx="14" fill="rgba(8,51,68,0.42)" stroke="#22d3ee" stroke-width="1.8"/>
+<text x="88" y="1068" class="title" fill="#22d3ee">Stage2Review — optional annotation review</text>
+<text x="88" y="1090" class="subtitle">stages/stage2_review.py · LLM task: annotate_review</text>
+<text x="88" y="1112" class="small">Default disabled; when enabled: conditional skip + optional N-worker ReorderBuffer</text>
+<text x="88" y="1130" class="small">Checks tag root/branch, taxonomy prefix, difficulty range, high-risk type consistency</text>
+<text x="88" y="1148" class="small">emit ReviewedAnnotatedItem(item_id,item,annotation,block_index,source_file,page_start,page_end)</text>
+</g>
+<g class="queue">
+  <rect x="485" y="1167" width="350" height="56" rx="10" fill="#111827" stroke="#38bdf8" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="660" y="1189" class="queue-title" text-anchor="middle" fill="#38bdf8">q_done</text>
+  <text x="660" y="1209" class="tiny" text-anchor="middle">ReviewedAnnotatedItem(item_id,item,annotation,block_index,source_file,page_start,page_end)</text>
+</g>
+<g class="block">
+<rect x="70" y="1225" width="1180" height="118" rx="14" fill="#0f172a"/>
+<rect x="70" y="1225" width="1180" height="118" rx="14" fill="rgba(76,29,149,0.42)" stroke="#a78bfa" stroke-width="1.8"/>
+<text x="88" y="1253" class="title" fill="#a78bfa">Stage3Persist — deterministic normalize + batch save</text>
+<text x="88" y="1275" class="subtitle">stages/stage3_persist.py · no LLM</text>
+<text x="88" y="1297" class="small">_ensure_discipline_root → TagCanonicalizer → TaxonomyValidator.validate → tag_tree.insert_path</text>
+<text x="88" y="1315" class="small">Build KnowledgePoint or Question; pass options/correct_option/blanks and figure links</text>
+<text x="88" y="1333" class="small">asyncio.to_thread(storage.save_batch); mirror items/persisted/; update state + tag_tree_json</text>
+</g>
+
+<!-- DB and side outputs -->
+<g>
+  <rect x="1268" y="1236" width="185" height="95" rx="12" fill="#111827" stroke="#a78bfa" stroke-width="1.6"/>
+  <text x="1360" y="1268" class="queue-title" text-anchor="middle" fill="#a78bfa">SQLite + FTS5</text>
+  <text x="1360" y="1294" class="tiny" text-anchor="middle">knowledge_points / questions</text>
+  <text x="1360" y="1312" class="tiny" text-anchor="middle">figures / tag_trees / item_relations</text>
+</g>
+<path d="M1250,1286 L1268,1286" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrow)"/>
+
+<!-- Post-pass mini blocks -->
+<g>
+  <rect x="70" y="1396" width="310" height="82" rx="12" fill="rgba(136,19,55,0.32)" stroke="#fb7185"/>
+  <text x="88" y="1424" class="title" fill="#fb7185">numbering_audit</text>
+  <text x="88" y="1448" class="tiny">numbering_rows(source_file, discipline)</text>
+  <text x="88" y="1466" class="tiny">write audit_report.json</text>
+  <rect x="400" y="1396" width="310" height="82" rx="12" fill="rgba(136,19,55,0.32)" stroke="#fb7185"/>
+  <text x="418" y="1424" class="title" fill="#fb7185">answer_linker</text>
+  <text x="418" y="1448" class="tiny">match by subject + number_canonical</text>
+  <text x="418" y="1466" class="tiny">backfill solution_content</text>
+  <rect x="730" y="1396" width="310" height="82" rx="12" fill="rgba(136,19,55,0.32)" stroke="#fb7185"/>
+  <text x="748" y="1424" class="title" fill="#fb7185">relation_inference</text>
+  <text x="748" y="1448" class="tiny">corollary_of / tests / successor</text>
+  <text x="748" y="1466" class="tiny">save_relations()</text>
+  <rect x="1060" y="1396" width="390" height="82" rx="12" fill="rgba(136,19,55,0.32)" stroke="#fb7185"/>
+  <text x="1078" y="1424" class="title" fill="#fb7185">reconciliation</text>
+  <text x="1078" y="1448" class="tiny">duplicate groups + type mismatch report</text>
+  <text x="1078" y="1466" class="tiny">optional kp_type autofix only</text>
+</g>
+
+<!-- Legend -->
+<g transform="translate(70,1498)">
+  <rect x="0" y="0" width="14" height="14" fill="rgba(120,53,15,0.5)" stroke="#fbbf24"/><text x="22" y="12" class="legend">Task0 recognizer</text>
+  <rect x="170" y="0" width="14" height="14" fill="rgba(88,28,135,0.5)" stroke="#c084fc"/><text x="192" y="12" class="legend">Stage1 extraction</text>
+  <rect x="365" y="0" width="14" height="14" fill="rgba(154,52,18,0.5)" stroke="#fb923c"/><text x="387" y="12" class="legend">Review</text>
+  <rect x="500" y="0" width="14" height="14" fill="rgba(6,78,59,0.5)" stroke="#34d399"/><text x="522" y="12" class="legend">Annotation</text>
+  <rect x="655" y="0" width="14" height="14" fill="rgba(76,29,149,0.5)" stroke="#a78bfa"/><text x="677" y="12" class="legend">Persist/DB</text>
+  <line x1="815" y1="7" x2="865" y2="7" stroke="#fb7185" stroke-dasharray="8 6"/><text x="875" y="12" class="legend">deterministic post-pass / optional path</text>
+</g>
+</svg>
