@@ -244,6 +244,10 @@ class AppConfig(BaseSettings):
     # §E.0（M1）：format/genre profile——extended 体裁探测（含 problem_set）+
     # 密度自适应窗口 + halo/carry 先验。关闭时体裁探测走 REC-14 白名单路径。
     format_profile_enabled: bool = False
+    # III.1（M1）：marker ledger 覆盖率审计——对每个已消费窗口段做标记台账对账，
+    # 只写 structlog 指标 + ExtractedBatch.ledger_audit 附件，**不改任何提取行为**。
+    # M1 使命：在真实文档上度量 T4 真值质量（误报/漏报率），M4 才注入 harness prompt。
+    marker_ledger_enabled: bool = False
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）

@@ -161,6 +161,8 @@ class Stage1Extract:
         self.profile_enabled: bool = bool(getattr(config, "format_profile_enabled", False))
         self.format_profile: Any | None = None
         self.genre_profile: Any | None = None
+        # v11 III.1（M1，opt-in）：marker ledger 覆盖率审计（纯观测，不改提取行为）。
+        self.ledger_enabled: bool = bool(getattr(config, "marker_ledger_enabled", False))
         # REC-20：当前 block 的确定性章节结构（detect_section_boundaries 产物），注入提取 prompt
         # 作为 structural_context 的权威先验，消灭"串行路径白跑 section_boundaries"的死逻辑。
         self._section_hint: str = ""
@@ -233,6 +235,65 @@ class Stage1Extract:
             ocr_noisy=format_profile.ocr_noisy,
             halo_suggestion=format_profile.suggested_halo_lines,
         )
+
+    @staticmethod
+    def _strip_line_prefix(line: str) -> str:
+        """剥离 ``_annotate`` 的 7 位行号前缀（``NNNNNNN | 正文``）；无前缀原样返回。"""
+        head, sep, rest = line.partition(" | ")
+        return rest if sep and head.strip().isdigit() else line
+
+    def _audit_consumed_window(
+        self,
+        window: list[str],
+        window_start: int,
+        consumed: int,
+        payload: Any,
+        item_ids: list[int],
+    ) -> dict[str, Any] | None:
+        """v11 III.1（M1 观测层）：对**已消费**窗口段做 marker 覆盖率对账。
+
+        只写 structlog 指标 + 返回 ``ExtractedBatch.ledger_audit`` 附件——不改
+        items、不改滑窗、不注入 prompt（M1 使命是度量 T4 真值质量，M4 才把
+        台账注入 harness prompt）。只审计已消费段：尾部延迟条目下窗重扫，
+        计入会造成假 missed。审计失败静默降级（观测层永不阻断流水线）。
+        """
+        if not self.ledger_enabled:
+            return None
+        try:
+            from sciforge.pipeline.boundary_patch import (
+                AuditItem,
+                audit_coverage,
+                build_marker_ledger,
+            )
+
+            raw_lines = [self._strip_line_prefix(ln) for ln in window[:consumed]]
+            ledger = build_marker_ledger(raw_lines, line_base=window_start)
+            audit_items = [
+                AuditItem(
+                    item_ref=str(item_id),
+                    category=item.category,
+                    item_type=item.item_type,
+                    solution_status=item.solution_status,
+                    start_line=item.start_line,
+                    end_line=max(item.end_line, item.start_line),
+                )
+                for item_id, item in zip(item_ids, payload.items, strict=True)
+            ]
+            report = audit_coverage(ledger, audit_items)
+            logger.info(
+                "stage1_ledger_audit",
+                clean=report.clean,
+                markers_total=report.markers_total,
+                markers_covered=report.markers_covered,
+                missed=[m.global_line for m in report.missed_markers],
+                boundary_suspects=len(report.boundary_suspects),
+                pairing_suspects=len(report.pairing_suspects),
+                line_range=f"{window_start}-{window_start + consumed - 1}",
+            )
+            return report.model_dump()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stage1_ledger_audit_failed", error=str(exc))
+            return None
 
     async def _run_streaming(
         self,
@@ -563,6 +624,11 @@ class Stage1Extract:
             window_range = (self.line_offset + 1, self.line_offset + window_len)
             window_copy = list(window)
 
+            # v11 III.1（M1 观测层）：对已消费窗口段做 marker 覆盖率对账（0 LLM）
+            ledger_audit = self._audit_consumed_window(
+                window, window_start_int, consumed, payload, item_ids
+            )
+
             batch = ExtractedBatch(
                 item_ids=item_ids,
                 items=items,
@@ -574,6 +640,7 @@ class Stage1Extract:
                 page_start=current_block.page_start if current_block else None,
                 page_end=current_block.page_end if current_block else None,
                 stop_reason=payload.stop_reason,
+                ledger_audit=ledger_audit,
             )
 
             self._mirror_batch(batch, state, stage_dir="stage1")

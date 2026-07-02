@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -749,6 +749,10 @@ class ExtractedBatch(BaseModel):
     # Phase 4 条件化 review：Stage1Extract 填入 LLM 的 stop_reason
     # 默认 "all_complete" 以兼容老 checkpoint 回放（无 stop_reason）
     stop_reason: str = "all_complete"
+    # v11 III.1（M1，marker_ledger_enabled 时填充）：已消费窗口段的覆盖率审计
+    # 结论（AuditReport.model_dump()）。纯观测附件——下游可读不改行为；
+    # Stage1Review 后续可据此进一步减少重复校验（I.5）。
+    ledger_audit: dict[str, Any] | None = None
 
 
 class ReviewedItem(BaseModel):
