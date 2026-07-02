@@ -248,6 +248,10 @@ class AppConfig(BaseSettings):
     # 只写 structlog 指标 + ExtractedBatch.ledger_audit 附件，**不改任何提取行为**。
     # M1 使命：在真实文档上度量 T4 真值质量（误报/漏报率），M4 才注入 harness prompt。
     marker_ledger_enabled: bool = False
+    # II.4（M1）：字符级 span——prompt 追加锚点输出指令，LLM 抄边界逐字短串，
+    # resolve_span 确定性定位精确 offset 落 start_char/end_char 列（exact/fuzzy/
+    # line_fallback 三态降级，最坏退回行级=现状）。不覆写 corrected_content。
+    extract_char_span_enabled: bool = False
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）

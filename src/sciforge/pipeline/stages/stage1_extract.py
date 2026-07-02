@@ -120,6 +120,19 @@ class Stage1Extract:
             get_extract_stage1_initial_template(discipline),
             self.prompt_cache_enabled,
         )
+        # v11 II.4（M1，opt-in）：char span 锚点——仅 flag 开时把锚点输出指令拼进
+        # prompt（system 已 format 直接追加；合并 user 模板未 format 需转义花括号）。
+        # flag 关时 prompt 与 v10 字节级一致。
+        self.char_span_enabled: bool = bool(getattr(config, "extract_char_span_enabled", False))
+        if self.char_span_enabled:
+            from sciforge.prompts.templates import get_extract_anchors_addendum
+
+            addendum = get_extract_anchors_addendum()
+            if self.system_prompt is not None:
+                self.system_prompt = f"{self.system_prompt}\n\n{addendum}"
+            else:
+                escaped = addendum.replace("{", "{{").replace("}", "}}")
+                self.user_template = f"{self.user_template}\n\n{escaped}"
 
         # Runtime 状态
         self.line_buffer: list[str] = []
@@ -241,6 +254,44 @@ class Stage1Extract:
         """剥离 ``_annotate`` 的 7 位行号前缀（``NNNNNNN | 正文``）；无前缀原样返回。"""
         head, sep, rest = line.partition(" | ")
         return rest if sep and head.strip().isdigit() else line
+
+    def _resolve_item_spans(self, window: list[str], window_start: int, payload: Any) -> None:
+        """v11 II.4（M1）：对带锚点的 item 调 resolve_span 回填精确字符偏移。
+
+        只填 ``resolved_start_char/resolved_end_char``（Stage3 落 char 列），
+        不覆写 corrected_content（锚点覆盖整条目含解答，覆写会破坏题/解分离）。
+        锚点缺失或解析退化到 line_fallback → 保持 None（行级 = 现状）。
+        """
+        if not self.char_span_enabled:
+            return
+        try:
+            from sciforge.pipeline.char_span import resolve_span
+
+            raw_lines = [self._strip_line_prefix(ln) for ln in window]
+            for item in payload.items:
+                anchors = getattr(item, "anchors", None)
+                if anchors is None:
+                    continue
+                span = resolve_span(
+                    anchors.start_anchor,
+                    anchors.end_anchor,
+                    raw_lines,
+                    line_base=window_start,
+                    start_line=item.start_line,
+                    end_line=item.end_line,
+                )
+                if span.confidence == "line_fallback":
+                    continue  # 行级兜底 = 现状，不写偏移
+                item.resolved_start_char = span.start_char
+                item.resolved_end_char = span.end_char
+                logger.debug(
+                    "stage1_char_span_resolved",
+                    number=item.number,
+                    confidence=span.confidence,
+                    note=span.resolver_note,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stage1_char_span_failed", error=str(exc))
 
     def _audit_consumed_window(
         self,
@@ -623,6 +674,9 @@ class Stage1Extract:
 
             window_range = (self.line_offset + 1, self.line_offset + window_len)
             window_copy = list(window)
+
+            # v11 II.4（M1）：锚点 → 精确字符偏移（0 LLM，确定性；失败静默留行级）
+            self._resolve_item_spans(window, window_start_int, payload)
 
             # v11 III.1（M1 观测层）：对已消费窗口段做 marker 覆盖率对账（0 LLM）
             ledger_audit = self._audit_consumed_window(

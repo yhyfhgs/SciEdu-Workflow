@@ -38,6 +38,19 @@ class StructuralContextLLM(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class ItemAnchorsLLM(BaseModel):
+    """v11 II.4（M1，extract_char_span_enabled 时 LLM 输出）：条目边界锚点短串。
+
+    LLM 只抄"条目真正开头/结尾（含解答）的逐字短串"，精确 offset 由
+    ``pipeline/char_span.resolve_span`` 确定性定位（不让 LLM 数字符）。
+    """
+
+    start_anchor: str = Field(min_length=2, max_length=40)
+    end_anchor: str = Field(min_length=2, max_length=40)
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class SingleItemExtractLLM(BaseModel):
     """Stage1 输出的单条提取条目（纯内容+题答配对+位置信息）
 
@@ -71,6 +84,11 @@ class SingleItemExtractLLM(BaseModel):
     structural_context: StructuralContextLLM = Field(default_factory=StructuralContextLLM)
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
+    # v11 II.4（M1，可选）：LLM 输出的边界锚点；flag 关时 prompt 不提及 → 恒 None
+    anchors: ItemAnchorsLLM | None = None
+    # 内部字段（非 LLM 输出）：resolve_span 定位后回填，Stage3 落 start_char/end_char 列
+    resolved_start_char: int | None = None
+    resolved_end_char: int | None = None
 
     model_config = ConfigDict(extra="ignore")
 

@@ -26,6 +26,7 @@ _SECTION_DELIM_RE = re.compile(r"━{3,}\n#\s*\d+\.\s*([^\n]*)\n━{3,}")
 
 _VLM_TEMPLATE_RAW = load_prompt("pipeline/vlm_convert.txt")
 _EXTRACT_STAGE1_INITIAL_RAW = load_prompt("pipeline/extract_stage1_initial.txt")
+_EXTRACT_ANCHORS_ADDENDUM_RAW = load_prompt("pipeline/extract_anchors_addendum.txt")
 _EXTRACT_STAGE1_REVIEW_RAW = load_prompt("pipeline/extract_stage1_review.txt")
 _ANNOTATE_STAGE2_INITIAL_RAW = load_prompt("pipeline/annotate_stage2_initial.txt")
 _ANNOTATE_STAGE2_BATCH_RAW = load_prompt("pipeline/annotate_stage2_batch.txt")
@@ -90,6 +91,15 @@ def build_pipeline_prompt_io(
     if cache_enabled and dynamic:
         return static.format(), dynamic
     return None, full_template
+
+
+def get_extract_anchors_addendum() -> str:
+    """v11 II.4（M1）锚点输出附加指令（仅 extract_char_span_enabled 时拼进 prompt）。
+
+    返回最终文本（无占位符）：拼进已 ``.format()`` 的 system 时直接追加；
+    拼进未 format 的合并 user 模板时调用方须先做 ``{``→``{{`` 转义。
+    """
+    return _EXTRACT_ANCHORS_ADDENDUM_RAW.strip()
 
 
 def get_extract_stage1_initial_parts(discipline: Discipline) -> tuple[str, str]:
