@@ -240,6 +240,11 @@ class AppConfig(BaseSettings):
     # REC-10：Stage3 攒小批再一次 save_batch+commit（WAL fsync N→N/批），去重计数批量预查。
     stage3_persist_batch_size: int = 16
 
+    # ── Pipeline v11 开关（全部默认关 = 行为与 v10 完全一致）──
+    # §E.0（M1）：format/genre profile——extended 体裁探测（含 problem_set）+
+    # 密度自适应窗口 + halo/carry 先验。关闭时体裁探测走 REC-14 白名单路径。
+    format_profile_enabled: bool = False
+
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）
     # minimax 5h/4500 次场景建议 300s；其他 provider 可调小

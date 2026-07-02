@@ -156,6 +156,11 @@ class Stage1Extract:
         # 试卷/讲义关 fast-skip（卷末密集短题、讲义无编号要点易被 regex 预检误跳）→ 提召回。
         self._genre: str = "unknown"
         self._genre_detected: bool = False
+        # v11 §E.0（M1，opt-in）：format/genre profile——extended 体裁探测（含 problem_set）
+        # + 窗口自适应 + halo/carry 先验。默认 False 走上面 REC-14 白名单路径，行为不变。
+        self.profile_enabled: bool = bool(getattr(config, "format_profile_enabled", False))
+        self.format_profile: Any | None = None
+        self.genre_profile: Any | None = None
         # REC-20：当前 block 的确定性章节结构（detect_section_boundaries 产物），注入提取 prompt
         # 作为 structural_context 的权威先验，消灭"串行路径白跑 section_boundaries"的死逻辑。
         self._section_hint: str = ""
@@ -183,6 +188,52 @@ class Stage1Extract:
         else:
             await self._run_streaming(in_queue, out_queue, state)
 
+    def _apply_genre_policy(self, md_text: str) -> None:
+        """首个 block 的一次性体裁策略（幂等，只在第一次调用生效）。
+
+        - 默认（v10/REC-14）：``detect_genre`` 四值 + 试卷/讲义白名单关 fast-skip。
+        - ``format_profile_enabled=True``（v11 §E.0）：extended 体裁（含 problem_set）
+          + 策略表驱动 fast-skip + 密度自适应窗口 + halo/carry 先验（供后续里程碑）。
+          窗口自适应只在当前窗口仍为配置初始值时改写 current_window_size，
+          不干扰 resume 恢复的扩窗状态。
+        """
+        if self._genre_detected:
+            return
+        self._genre_detected = True
+        if not self.profile_enabled:
+            self._genre = detect_genre(md_text)
+            if self._genre in ("exam_paper", "lecture"):
+                self.fast_skip_enabled = False
+            logger.info(
+                "stage1_genre_detected",
+                genre=self._genre,
+                fast_skip_enabled=self.fast_skip_enabled,
+            )
+            return
+
+        from sciforge.pipeline.format_profile import compute_format_profile, compute_genre_profile
+
+        genre_profile = compute_genre_profile(md_text)
+        format_profile = compute_format_profile(md_text, genre=genre_profile.genre)
+        self._genre = genre_profile.genre
+        self.genre_profile = genre_profile
+        self.format_profile = format_profile
+        # 只收紧不放宽：用户显式关掉的 fast-skip 不被画像重新打开
+        self.fast_skip_enabled = self.fast_skip_enabled and genre_profile.fast_skip_recommended
+        config_base = int(getattr(self.config, "extract_window_lines", 500))
+        if self.current_window_size == config_base:
+            self.current_window_size = format_profile.suggested_base_window
+        self.base_window = format_profile.suggested_base_window
+        logger.info(
+            "stage1_profile_applied",
+            genre=self._genre,
+            density=format_profile.density,
+            base_window=self.base_window,
+            fast_skip_enabled=self.fast_skip_enabled,
+            ocr_noisy=format_profile.ocr_noisy,
+            halo_suggestion=format_profile.suggested_halo_lines,
+        )
+
     async def _run_streaming(
         self,
         in_queue: asyncio.Queue[Any],
@@ -208,16 +259,8 @@ class Stage1Extract:
                     current_block = msg
 
                     # REC-14：首个 block 内容探测体裁；试卷/讲义关 fast-skip 提召回
-                    if not self._genre_detected:
-                        self._genre_detected = True
-                        self._genre = detect_genre(current_block.md_text)
-                        if self._genre in ("exam_paper", "lecture"):
-                            self.fast_skip_enabled = False
-                        logger.info(
-                            "stage1_genre_detected",
-                            genre=self._genre,
-                            fast_skip_enabled=self.fast_skip_enabled,
-                        )
+                    # （format_profile_enabled 时升级为 §E.0 画像路径，见 _apply_genre_policy）
+                    self._apply_genre_policy(current_block.md_text)
 
                     # REC-20：用确定性章节边界作 structural_context 先验（取本 block 的标题）
                     if current_block.section_boundaries:
