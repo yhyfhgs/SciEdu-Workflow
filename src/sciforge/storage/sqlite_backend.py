@@ -37,9 +37,9 @@ logger = structlog.get_logger()
 
 
 # ── SQL 常量（executemany 批量写入复用）──────────────────
-# schema v9：questions 新增生成元数据列（is_generated / generator_model /
-# generated_at / generation_session_id / tenant_id）；提供 v8→v9 增量迁移
-_SCHEMA_VERSION = 10
+# schema v11（v11 §F M1 段）：kp/questions 各加字符级溯源列 start_char/end_char/page。
+# 注意：M5 concept 表 / M6 评价表按计划走 v12+（_MIGRATIONS 版本号一次性消耗，R4）。
+_SCHEMA_VERSION = 11
 
 # schema 增量迁移：{from_version: [该版本→下一版的 ALTER 语句]}。
 # 每条 ALTER 容忍 "duplicate column"（幂等，应对中断重跑）。
@@ -59,6 +59,15 @@ _MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_kp_order_only ON knowledge_points(order_index)",
         "CREATE INDEX IF NOT EXISTS idx_q_order_only ON questions(order_index)",
     ],
+    # v10→v11（v11 §F M1：字符级溯源列，默认 0/NULL = 行级，关闭开关时等价现状）
+    10: [
+        "ALTER TABLE knowledge_points ADD COLUMN start_char INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE knowledge_points ADD COLUMN end_char INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE knowledge_points ADD COLUMN page INTEGER",
+        "ALTER TABLE questions ADD COLUMN start_char INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE questions ADD COLUMN end_char INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE questions ADD COLUMN page INTEGER",
+    ],
 }
 
 # 用 INSERT OR IGNORE：content_hash 唯一索引命中（重复内容）或 id 冲突时静默跳过，
@@ -68,8 +77,8 @@ INSERT OR IGNORE INTO knowledge_points
     (id, discipline, kp_type, number, number_canonical,
      seq_chapter, seq_section, seq_index,
      content, proof_content, difficulty, subject, taxonomy_path, tags, source_file,
-     start_line, end_line, order_index, content_hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     start_line, end_line, start_char, end_char, page, order_index, content_hash)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _Q_INSERT_SQL = """
@@ -78,9 +87,9 @@ INSERT OR IGNORE INTO questions
      seq_chapter, seq_section, seq_index,
      content, solution_content, options, correct_option, blanks,
      difficulty, subject, taxonomy_path, tags, source_file,
-     start_line, end_line, order_index, content_hash,
+     start_line, end_line, start_char, end_char, page, order_index, content_hash,
      is_generated, generator_model, generated_at, generation_session_id, tenant_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -97,6 +106,11 @@ def _content_hash(text: str) -> str:
     """
     normalized = " ".join(text.split())
     return hashlib.sha256(normalized.encode()).hexdigest()[:32]
+
+
+def _row_value(row: sqlite3.Row, col: str, default: Any) -> Any:
+    """按列名安全取值：列不存在（旧查询/裁剪 SELECT）时返回默认值。"""
+    return row[col] if col in row.keys() else default  # noqa: SIM118 - sqlite3.Row 无 __contains__
 
 
 def _safe_json_list(row: sqlite3.Row, col: str) -> list[str]:
@@ -131,6 +145,9 @@ def _kp_to_tuple(kp: KnowledgePoint) -> tuple[Any, ...]:
         kp.source_file,
         kp.start_line,
         kp.end_line,
+        kp.start_char,
+        kp.end_char,
+        kp.page,
         kp.order_index,
         _content_hash(kp.content),
     )
@@ -160,6 +177,9 @@ def _question_to_tuple(q: Question) -> tuple[Any, ...]:
         q.source_file,
         q.start_line,
         q.end_line,
+        q.start_char,
+        q.end_char,
+        q.page,
         q.order_index,
         _content_hash(q.content),
         int(q.is_generated),
@@ -857,6 +877,9 @@ class SQLiteStorageBackend:
             source_file=row["source_file"] or "",
             start_line=row["start_line"] or 0,
             end_line=row["end_line"] or 0,
+            start_char=_row_value(row, "start_char", 0) or 0,
+            end_char=_row_value(row, "end_char", 0) or 0,
+            page=_row_value(row, "page", None),
             order_index=row["order_index"] or 0,
         )
 
@@ -888,6 +911,9 @@ class SQLiteStorageBackend:
             source_file=row["source_file"] or "",
             start_line=row["start_line"] or 0,
             end_line=row["end_line"] or 0,
+            start_char=_row_value(row, "start_char", 0) or 0,
+            end_char=_row_value(row, "end_char", 0) or 0,
+            page=_row_value(row, "page", None),
             order_index=row["order_index"] or 0,
             is_generated=bool(row["is_generated"]),
             generator_model=row["generator_model"] or "",

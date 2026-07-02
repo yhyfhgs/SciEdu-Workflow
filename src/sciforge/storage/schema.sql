@@ -20,7 +20,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;
 
 -- ── 知识点 ──
 
@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     source_file TEXT NOT NULL DEFAULT '',
     start_line INTEGER NOT NULL DEFAULT 0,
     end_line INTEGER NOT NULL DEFAULT 0,
+    -- 字符级溯源（v11 §F M1）：行内偏移，0 = 行级；page 为源 PDF 页码
+    start_char INTEGER NOT NULL DEFAULT 0,
+    end_char INTEGER NOT NULL DEFAULT 0,
+    page INTEGER,
     order_index INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT DEFAULT ''
 );
@@ -73,6 +77,10 @@ CREATE TABLE IF NOT EXISTS questions (
     source_file TEXT NOT NULL DEFAULT '',
     start_line INTEGER NOT NULL DEFAULT 0,
     end_line INTEGER NOT NULL DEFAULT 0,
+    -- 字符级溯源（v11 §F M1）
+    start_char INTEGER NOT NULL DEFAULT 0,
+    end_char INTEGER NOT NULL DEFAULT 0,
+    page INTEGER,
     order_index INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT DEFAULT '',
     -- 生成元数据（v9）

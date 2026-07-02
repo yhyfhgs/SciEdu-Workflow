@@ -122,13 +122,13 @@ def test_defaults_for_non_generated(tmp_path: Path) -> None:
 
 
 def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
-    """旧 v8 库打开 → 自动 ALTER 链式升级到当前版本(v10)，不删库、保留旧数据"""
+    """旧 v8 库打开 → 自动 ALTER 链式升级到当前版本(v11)，不删库、保留旧数据"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
 
     backend = SQLiteStorageBackend(db)
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 11
         # 旧数据保留，新列以默认值可读
         old = backend.load_question("q-old")
         assert old.content == "旧题内容"
@@ -137,6 +137,10 @@ def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
         # REC-19：v10 结构化题型列迁移后可写可读
         assert old.options == []
         assert old.correct_option is None
+        # v11 §F：字符级溯源列迁移后旧行取默认值（行级）
+        assert old.start_char == 0
+        assert old.end_char == 0
+        assert old.page is None
         # 迁移后能写入并读回带生成元数据的新题
         q = Question(
             discipline=Discipline.MATH,
@@ -151,13 +155,71 @@ def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
 
 
 def test_migration_idempotent_rerun(tmp_path: Path) -> None:
-    """已迁移到当前版本的库再次打开不报错、版本仍为 v10"""
+    """已迁移到当前版本的库再次打开不报错、版本仍为 v11"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
     SQLiteStorageBackend(db).close()  # 首次迁移
     backend = SQLiteStorageBackend(db)  # 二次打开
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 11
+    finally:
+        backend.close()
+
+
+def test_v10_to_v11_char_span_migration(tmp_path: Path) -> None:
+    """v10 库（含 v9/v10 全部列）→ v11 只加字符级溯源列（M1 段，R4）"""
+    db = tmp_path / "v10.db"
+    _make_old_db(db, version=8)
+    SQLiteStorageBackend(db).close()  # 先升满
+    # 人工降回 v10 并去掉 v11 列不可行（SQLite DROP COLUMN 限制多），
+    # 改为直接验证：v10 段迁移语句幂等（重复执行容忍 duplicate column）
+    backend = SQLiteStorageBackend(db)
+    try:
+        from sciforge.storage.sqlite_backend import _MIGRATIONS
+
+        for stmt in _MIGRATIONS[10]:
+            try:
+                backend._conn.execute(stmt)
+            except Exception as exc:
+                assert "duplicate column" in str(exc).lower()
+        cols_kp = {r[1] for r in backend._conn.execute("PRAGMA table_info(knowledge_points)")}
+        cols_q = {r[1] for r in backend._conn.execute("PRAGMA table_info(questions)")}
+        assert {"start_char", "end_char", "page"} <= cols_kp
+        assert {"start_char", "end_char", "page"} <= cols_q
+    finally:
+        backend.close()
+
+
+def test_char_span_roundtrip(tmp_path: Path) -> None:
+    """v11 字符级溯源字段 save → load 往返（KP 与 Question）"""
+    from sciforge.core.models import KnowledgePoint
+
+    backend = SQLiteStorageBackend(tmp_path / "new.db")
+    try:
+        kp = KnowledgePoint(
+            discipline=Discipline.MATH,
+            kp_type="theorem",
+            content="定理内容：连续函数在闭区间上有界。",
+            start_line=10,
+            end_line=12,
+            start_char=3,
+            end_char=25,
+            page=181,
+        )
+        backend.save_knowledge_point(kp)
+        loaded_kp = backend.load_knowledge_point(kp.id)
+        assert (loaded_kp.start_char, loaded_kp.end_char, loaded_kp.page) == (3, 25, 181)
+
+        q = Question(
+            discipline=Discipline.MATH,
+            content="题目内容：证明该定理的推论成立。",
+            start_char=7,
+            end_char=40,
+            page=182,
+        )
+        backend.save_question(q)
+        loaded_q = backend.load_question(q.id)
+        assert (loaded_q.start_char, loaded_q.end_char, loaded_q.page) == (7, 40, 182)
     finally:
         backend.close()
 

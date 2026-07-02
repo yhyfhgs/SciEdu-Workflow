@@ -135,6 +135,11 @@ class KnowledgePoint(BaseModel):
     source_file: str = ""  # 源 logical_document 的文件路径（首个分卷路径，便于追溯）
     start_line: int = 0
     end_line: int = 0
+    # v11 §F（M1）字符级溯源：start_line 行内起始偏移 / end_line 行内 exclusive 偏移。
+    # 默认 0 = 行级（未启用 char span 时等价现状）；由 resolve_span（II.4）填充。
+    start_char: int = 0
+    end_char: int = 0
+    page: int | None = None  # 源 PDF 页码（MdBlockSource.page_start；文本格式为 None）
     order_index: int = 0
 
     model_config = ConfigDict(validate_assignment=True)
@@ -212,6 +217,10 @@ class Question(BaseModel):
     source_file: str = ""  # 源 logical_document 的文件路径（首个分卷路径，便于追溯）
     start_line: int = 0
     end_line: int = 0
+    # v11 §F（M1）字符级溯源（同 KnowledgePoint；默认 0 = 行级，等价现状）
+    start_char: int = 0
+    end_char: int = 0
+    page: int | None = None
     order_index: int = 0
     # ── 生成元数据（v9）：区分生成题/手动题，支撑版权归属、计费与统计追溯 ──
     is_generated: bool = False

@@ -206,6 +206,10 @@ class Stage3Persist:
                 source_file=msg.source_file,
                 start_line=item.start_line,
                 end_line=item.end_line,
+                # v11 §F：字符级溯源（WP-14 resolve_span 填充，未启用时 0=行级）+ 页码
+                start_char=int(getattr(item, "resolved_start_char", 0) or 0),
+                end_char=int(getattr(item, "resolved_end_char", 0) or 0),
+                page=msg.page_start,
                 order_index=msg.item_id,
             )
             return kp, None
@@ -238,6 +242,10 @@ class Stage3Persist:
             source_file=msg.source_file,
             start_line=item.start_line,
             end_line=item.end_line,
+            # v11 §F：字符级溯源（WP-14 resolve_span 填充，未启用时 0=行级）+ 页码
+            start_char=int(getattr(item, "resolved_start_char", 0) or 0),
+            end_char=int(getattr(item, "resolved_end_char", 0) or 0),
+            page=msg.page_start,
             order_index=msg.item_id,
         )
         return None, q
