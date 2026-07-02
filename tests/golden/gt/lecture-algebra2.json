@@ -1,0 +1,1135 @@
+{
+  "doc_id": "lecture-algebra2",
+  "source_fixture": "lecture-algebra2.md",
+  "genre": "lecture",
+  "discipline": "math",
+  "markers": [
+    {
+      "line": 39,
+      "kind": "lemma",
+      "number": "2.1.1"
+    },
+    {
+      "line": 41,
+      "kind": "theorem",
+      "number": "2.1.2"
+    },
+    {
+      "line": 67,
+      "kind": "corollary",
+      "number": "2.1.3"
+    },
+    {
+      "line": 85,
+      "kind": "theorem",
+      "number": "2.1.4"
+    },
+    {
+      "line": 140,
+      "kind": "definition",
+      "number": "2.1.5"
+    },
+    {
+      "line": 164,
+      "kind": "definition",
+      "number": "2.2.1"
+    },
+    {
+      "line": 181,
+      "kind": "definition",
+      "number": "2.2.2"
+    },
+    {
+      "line": 194,
+      "kind": "definition",
+      "number": "2.2.3"
+    },
+    {
+      "line": 227,
+      "kind": "definition",
+      "number": "2.2.4"
+    },
+    {
+      "line": 235,
+      "kind": "example",
+      "number": "2.2.1"
+    },
+    {
+      "line": 237,
+      "kind": "theorem",
+      "number": "2.2.5"
+    },
+    {
+      "line": 245,
+      "kind": "definition",
+      "number": "2.2.6"
+    },
+    {
+      "line": 247,
+      "kind": "proposition",
+      "number": "2.2.7"
+    },
+    {
+      "line": 258,
+      "kind": "definition",
+      "number": "2.3.1"
+    },
+    {
+      "line": 262,
+      "kind": "proposition",
+      "number": "2.3.2"
+    },
+    {
+      "line": 300,
+      "kind": "proposition",
+      "number": "2.3.3"
+    },
+    {
+      "line": 346,
+      "kind": "definition",
+      "number": "2.4.1"
+    },
+    {
+      "line": 366,
+      "kind": "proposition",
+      "number": "2.4.2"
+    },
+    {
+      "line": 384,
+      "kind": "theorem",
+      "number": "2.4.3"
+    },
+    {
+      "line": 386,
+      "kind": "theorem",
+      "number": "2.4.4"
+    },
+    {
+      "line": 404,
+      "kind": "corollary",
+      "number": "2.4.5"
+    },
+    {
+      "line": 433,
+      "kind": "theorem",
+      "number": "2.4.6"
+    },
+    {
+      "line": 478,
+      "kind": "example",
+      "number": "2.4.1"
+    },
+    {
+      "line": 518,
+      "kind": "definition",
+      "number": "2.5.1"
+    },
+    {
+      "line": 523,
+      "kind": "definition",
+      "number": "2.5.2"
+    },
+    {
+      "line": 525,
+      "kind": "theorem",
+      "number": "2.5.3"
+    },
+    {
+      "line": 534,
+      "kind": "definition",
+      "number": "2.5.4"
+    },
+    {
+      "line": 569,
+      "kind": "lemma",
+      "number": "2.5.5"
+    },
+    {
+      "line": 578,
+      "kind": "lemma",
+      "number": "2.5.6"
+    },
+    {
+      "line": 580,
+      "kind": "theorem",
+      "number": "2.5.7"
+    },
+    {
+      "line": 584,
+      "kind": "proposition",
+      "number": "2.5.8"
+    },
+    {
+      "line": 592,
+      "kind": "theorem",
+      "number": "2.5.10"
+    },
+    {
+      "line": 606,
+      "kind": "proposition",
+      "number": "2.5.11"
+    },
+    {
+      "line": 618,
+      "kind": "proposition",
+      "number": "2.5.12"
+    },
+    {
+      "line": 641,
+      "kind": "proposition",
+      "number": "2.5.13"
+    },
+    {
+      "line": 659,
+      "kind": "theorem",
+      "number": "2.6.1"
+    },
+    {
+      "line": 719,
+      "kind": "theorem",
+      "number": "2.6.2"
+    },
+    {
+      "line": 743,
+      "kind": "example",
+      "number": "2.6.1"
+    },
+    {
+      "line": 813,
+      "kind": "problem",
+      "number": "1"
+    },
+    {
+      "line": 839,
+      "kind": "problem",
+      "number": "2"
+    },
+    {
+      "line": 864,
+      "kind": "problem",
+      "number": "3"
+    },
+    {
+      "line": 890,
+      "kind": "problem",
+      "number": "4"
+    },
+    {
+      "line": 911,
+      "kind": "problem",
+      "number": "5"
+    },
+    {
+      "line": 917,
+      "kind": "exercise",
+      "number": "1"
+    },
+    {
+      "line": 919,
+      "kind": "exercise",
+      "number": "2"
+    },
+    {
+      "line": 923,
+      "kind": "exercise",
+      "number": "3"
+    },
+    {
+      "line": 927,
+      "kind": "exercise",
+      "number": "4"
+    },
+    {
+      "line": 929,
+      "kind": "exercise",
+      "number": "5"
+    },
+    {
+      "line": 931,
+      "kind": "exercise",
+      "number": "6"
+    },
+    {
+      "line": 933,
+      "kind": "exercise",
+      "number": "7"
+    },
+    {
+      "line": 935,
+      "kind": "exercise",
+      "number": "8"
+    },
+    {
+      "line": 937,
+      "kind": "exercise",
+      "number": "9"
+    },
+    {
+      "line": 946,
+      "kind": "exercise",
+      "number": "10"
+    },
+    {
+      "line": 948,
+      "kind": "exercise",
+      "number": "11"
+    },
+    {
+      "line": 952,
+      "kind": "exercise",
+      "number": "12"
+    },
+    {
+      "line": 956,
+      "kind": "exercise",
+      "number": "13"
+    },
+    {
+      "line": 968,
+      "kind": "exercise",
+      "number": "14"
+    },
+    {
+      "line": 984,
+      "kind": "exercise",
+      "number": "15"
+    },
+    {
+      "line": 989,
+      "kind": "exercise",
+      "number": "16"
+    },
+    {
+      "line": 991,
+      "kind": "exercise",
+      "number": "17"
+    },
+    {
+      "line": 996,
+      "kind": "exercise",
+      "number": "18"
+    },
+    {
+      "line": 1001,
+      "kind": "exercise",
+      "number": "19"
+    },
+    {
+      "line": 1003,
+      "kind": "exercise",
+      "number": "20"
+    },
+    {
+      "line": 1007,
+      "kind": "exercise",
+      "number": "21"
+    },
+    {
+      "line": 1020,
+      "kind": "exercise",
+      "number": "22"
+    },
+    {
+      "line": 1026,
+      "kind": "exercise",
+      "number": "23"
+    },
+    {
+      "line": 1030,
+      "kind": "exercise",
+      "number": "24"
+    },
+    {
+      "line": 1032,
+      "kind": "exercise",
+      "number": "25"
+    },
+    {
+      "line": 1034,
+      "kind": "exercise",
+      "number": "26"
+    },
+    {
+      "line": 1036,
+      "kind": "exercise",
+      "number": "27"
+    },
+    {
+      "line": 1038,
+      "kind": "exercise",
+      "number": "28"
+    },
+    {
+      "line": 1040,
+      "kind": "exercise",
+      "number": "29"
+    },
+    {
+      "line": 1051,
+      "kind": "exercise",
+      "number": "30"
+    },
+    {
+      "line": 1059,
+      "kind": "exercise",
+      "number": "31"
+    },
+    {
+      "line": 1063,
+      "kind": "exercise",
+      "number": "32"
+    }
+  ],
+  "items": [
+    {
+      "gt_id": "lem-2.1.1",
+      "category": "knowledge",
+      "kind": "lemma",
+      "number": "2.1.1",
+      "start_line": 39,
+      "end_line": 39,
+      "solution_status": "no_solution_in_source",
+      "note": "无证明（前文'不难验证'）"
+    },
+    {
+      "gt_id": "thm-2.1.2",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.1.2",
+      "start_line": 41,
+      "end_line": 65,
+      "solution_status": "complete",
+      "note": "证明为手写归纳法批注（47-63 行），OCR 符号严重损坏；64-65 行过渡句按边界规则并入"
+    },
+    {
+      "gt_id": "cor-2.1.3",
+      "category": "knowledge",
+      "kind": "corollary",
+      "number": "2.1.3",
+      "start_line": 67,
+      "end_line": 83,
+      "solution_status": "no_solution_in_source",
+      "note": "由定理 2.1.2 继续初等变换直接得出，无单独证明"
+    },
+    {
+      "gt_id": "thm-2.1.4",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.1.4",
+      "start_line": 85,
+      "end_line": 138,
+      "solution_status": "no_solution_in_source",
+      "note": "无证明正文；111-138 行为引入矩阵表示的过渡叙述，按边界规则并入"
+    },
+    {
+      "gt_id": "def-2.1.5",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.1.5",
+      "start_line": 140,
+      "end_line": 160,
+      "solution_status": "no_solution_in_source",
+      "note": "145-160 行为增广矩阵行变换叙述，按边界规则并入"
+    },
+    {
+      "gt_id": "def-2.2.1",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.2.1",
+      "start_line": 164,
+      "end_line": 179,
+      "solution_status": "no_solution_in_source",
+      "note": "标签'｜拒阵］'为'【矩阵】'的 OCR 噪声"
+    },
+    {
+      "gt_id": "def-2.2.2",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.2.2",
+      "start_line": 181,
+      "end_line": 190,
+      "solution_status": "no_solution_in_source",
+      "note": "185-188 行为插入的手写批注（零矩阵/单位阵/对角阵）；192 行 '## 域 F 上的矩阵集…' 为命题被 OCR 误升级为标题，不计 marker，本条目在其前截断"
+    },
+    {
+      "gt_id": "def-2.2.3",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.2.3",
+      "start_line": 194,
+      "end_line": 225,
+      "solution_status": "no_solution_in_source",
+      "note": "224-225 行乘法可行性说明按边界规则并入"
+    },
+    {
+      "gt_id": "def-2.2.4",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.2.4",
+      "start_line": 227,
+      "end_line": 233,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "eg-2.2.1",
+      "category": "question",
+      "kind": "example",
+      "number": "2.2.1",
+      "start_line": 235,
+      "end_line": 235,
+      "solution_status": "complete",
+      "note": "逆矩阵结论直接嵌在题面中给出、无推导过程，按含答案计 complete"
+    },
+    {
+      "gt_id": "thm-2.2.5",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.2.5",
+      "start_line": 237,
+      "end_line": 243,
+      "solution_status": "complete",
+      "note": "238 行为手写唯一性证明；239-243 行为逆矩阵运算律及 GL_n 说明，按边界规则并入"
+    },
+    {
+      "gt_id": "def-2.2.6",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.2.6",
+      "start_line": 245,
+      "end_line": 245,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "prop-2.2.7",
+      "category": "knowledge",
+      "kind": "proposition",
+      "number": "2.2.7",
+      "start_line": 247,
+      "end_line": 253,
+      "solution_status": "no_solution_in_source",
+      "note": "'不难验证'，无证明"
+    },
+    {
+      "gt_id": "def-2.3.1",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.3.1",
+      "start_line": 258,
+      "end_line": 260,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "prop-2.3.2",
+      "category": "knowledge",
+      "kind": "proposition",
+      "number": "2.3.2",
+      "start_line": 262,
+      "end_line": 298,
+      "solution_status": "no_solution_in_source",
+      "note": "'由定义显然有'，公式为陈述本体，无证明"
+    },
+    {
+      "gt_id": "prop-2.3.3",
+      "category": "knowledge",
+      "kind": "proposition",
+      "number": "2.3.3",
+      "start_line": 300,
+      "end_line": 340,
+      "solution_status": "no_solution_in_source",
+      "note": "'不难证明'，无证明"
+    },
+    {
+      "gt_id": "def-2.4.1",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.4.1",
+      "start_line": 346,
+      "end_line": 364,
+      "solution_status": "no_solution_in_source",
+      "note": "348/363 行为 Mathpix 图片，(i)(ii)(iii) 公式 OCR 损坏严重"
+    },
+    {
+      "gt_id": "prop-2.4.2",
+      "category": "knowledge",
+      "kind": "proposition",
+      "number": "2.4.2",
+      "start_line": 366,
+      "end_line": 382,
+      "solution_status": "no_solution_in_source",
+      "note": "逆矩阵公式为陈述本体；376-382 行为指向推论 2.4.5 的手写笔记，按边界规则并入"
+    },
+    {
+      "gt_id": "thm-2.4.3",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.4.3",
+      "start_line": 384,
+      "end_line": 384,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "thm-2.4.4",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.4.4",
+      "start_line": 386,
+      "end_line": 402,
+      "solution_status": "no_solution_in_source",
+      "note": "395-402 行'从而由性质 2.4.2 知…'为定理陈述的延伸"
+    },
+    {
+      "gt_id": "cor-2.4.5",
+      "category": "knowledge",
+      "kind": "corollary",
+      "number": "2.4.5",
+      "start_line": 404,
+      "end_line": 432,
+      "solution_status": "complete",
+      "note": "405-431 行手写证明 OCR 严重损坏；432 行含'标准形'的未编号定义，按边界规则并入"
+    },
+    {
+      "gt_id": "thm-2.4.6",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.4.6",
+      "start_line": 433,
+      "end_line": 476,
+      "solution_status": "complete",
+      "note": "435-476 行手写唯一性证明，OCR 严重损坏"
+    },
+    {
+      "gt_id": "eg-2.4.1",
+      "category": "question",
+      "kind": "example",
+      "number": "2.4.1",
+      "start_line": 478,
+      "end_line": 512,
+      "solution_status": "complete",
+      "note": "含完整初等变换求逆过程，矩阵元素 OCR 有错位"
+    },
+    {
+      "gt_id": "def-2.5.1",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.5.1",
+      "start_line": 518,
+      "end_line": 521,
+      "solution_status": "no_solution_in_source",
+      "note": "标签'［积］'为'【秩】'的 OCR 噪声；520-521 行说明并入"
+    },
+    {
+      "gt_id": "def-2.5.2",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.5.2",
+      "start_line": 523,
+      "end_line": 523,
+      "solution_status": "no_solution_in_source",
+      "note": "标签'［萝秩］'为'【等秩】'的 OCR 噪声"
+    },
+    {
+      "gt_id": "thm-2.5.3",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.5.3",
+      "start_line": 525,
+      "end_line": 532,
+      "solution_status": "complete",
+      "note": "526-530 行含手写相抵充要性证明；532 行过渡句并入"
+    },
+    {
+      "gt_id": "def-2.5.4",
+      "category": "knowledge",
+      "kind": "definition",
+      "number": "2.5.4",
+      "start_line": 534,
+      "end_line": 567,
+      "solution_status": "complete",
+      "note": "标签为'定义'但内容为可逆性六条等价刻画（疑原书为定理，照录 kind=definition）；540-547 行手写证明片段；551-567 行秩的计算方法与行/列秩叙述按边界规则并入"
+    },
+    {
+      "gt_id": "lem-2.5.5",
+      "category": "knowledge",
+      "kind": "lemma",
+      "number": "2.5.5",
+      "start_line": 569,
+      "end_line": 576,
+      "solution_status": "complete",
+      "note": "570-574 行为三类行变换的手写证明"
+    },
+    {
+      "gt_id": "lem-2.5.6",
+      "category": "knowledge",
+      "kind": "lemma",
+      "number": "2.5.6",
+      "start_line": 578,
+      "end_line": 579,
+      "solution_status": "no_solution_in_source",
+      "note": "579 行手写注记'A中行秩=A^T中列秩'并入，非证明"
+    },
+    {
+      "gt_id": "thm-2.5.7",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.5.7",
+      "start_line": 580,
+      "end_line": 582,
+      "solution_status": "no_solution_in_source",
+      "note": "581 行 Mathpix 图片疑含证明，文字层无证明正文；582 行混入手写片段"
+    },
+    {
+      "gt_id": "prop-2.5.8",
+      "category": "knowledge",
+      "kind": "proposition",
+      "number": "2.5.8",
+      "start_line": 584,
+      "end_line": 591,
+      "solution_status": "no_solution_in_source",
+      "note": "由定理 2.5.3 直接得出；590 行含未编号引理（V_A/W_A 刻画）；591 行图片疑为缺失的定理 2.5.9 陈述，无文字层无法单独标注，并入本区间尾部"
+    },
+    {
+      "gt_id": "thm-2.5.10",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.5.10",
+      "start_line": 592,
+      "end_line": 604,
+      "solution_status": "complete",
+      "note": "编号自 2.5.8 后跳过 2.5.9（疑丢失于 591 行图片）；本条含 r(AB)≤r(A) 与 r(AB)≤r(B) 证明"
+    },
+    {
+      "gt_id": "prop-2.5.11",
+      "category": "knowledge",
+      "kind": "proposition",
+      "number": "2.5.11",
+      "start_line": 606,
+      "end_line": 616,
+      "solution_status": "complete",
+      "note": "608-616 行手写证明，OCR 损坏"
+    },
+    {
+      "gt_id": "prop-2.5.12",
+      "category": "knowledge",
+      "kind": "proposition",
+      "number": "2.5.12",
+      "start_line": 618,
+      "end_line": 639,
+      "solution_status": "complete",
+      "note": "619-639 行手写证明，OCR 严重损坏"
+    },
+    {
+      "gt_id": "prop-2.5.13",
+      "category": "knowledge",
+      "kind": "proposition",
+      "number": "2.5.13",
+      "start_line": 641,
+      "end_line": 655,
+      "solution_status": "complete",
+      "note": "Sylvester/Frobenius 不等式；644-655 行手写证明，OCR 严重损坏"
+    },
+    {
+      "gt_id": "thm-2.6.1",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.6.1",
+      "start_line": 659,
+      "end_line": 717,
+      "solution_status": "no_solution_in_source",
+      "note": "无证明正文；663-717 行解空间/基础解系叙述性推导按边界规则并入"
+    },
+    {
+      "gt_id": "thm-2.6.2",
+      "category": "knowledge",
+      "kind": "theorem",
+      "number": "2.6.2",
+      "start_line": 719,
+      "end_line": 741,
+      "solution_status": "no_solution_in_source",
+      "note": "由前文基础解系推导直接得出；722-741 行为无关的邻接矩阵手写笔记，按边界规则并入"
+    },
+    {
+      "gt_id": "eg-2.6.1",
+      "category": "question",
+      "kind": "example",
+      "number": "2.6.1",
+      "start_line": 743,
+      "end_line": 792,
+      "solution_status": "complete",
+      "note": "含完整消元求解过程；解答尾部（基础解系 η1/η2 与通解）被 OCR 移位至 §2.7 标题后（796-812 行），未计入本区间"
+    },
+    {
+      "gt_id": "app-1",
+      "category": "question",
+      "kind": "problem",
+      "number": "1",
+      "start_line": 813,
+      "end_line": 837,
+      "solution_status": "complete",
+      "note": "染色/线性方程组应用题，815-837 行手写证明"
+    },
+    {
+      "gt_id": "app-2",
+      "category": "question",
+      "kind": "problem",
+      "number": "2",
+      "start_line": 839,
+      "end_line": 862,
+      "solution_status": "complete",
+      "note": "奇偶交集集合题，841-863 行手写证明（内积线性无关论证）"
+    },
+    {
+      "gt_id": "app-3",
+      "category": "question",
+      "kind": "problem",
+      "number": "3",
+      "start_line": 864,
+      "end_line": 886,
+      "solution_status": "complete",
+      "note": "石头剪刀布锦标赛题；865 行题面被图片截断，867-886 行手写证明，OCR 严重损坏"
+    },
+    {
+      "gt_id": "app-4",
+      "category": "question",
+      "kind": "problem",
+      "number": "4",
+      "start_line": 890,
+      "end_line": 909,
+      "solution_status": "complete",
+      "note": "子集并相等题，896-909 行手写证明；887-888 行 OCR 噪声标题 '## 2002－0 w…' 不属任何条目"
+    },
+    {
+      "gt_id": "app-5",
+      "category": "question",
+      "kind": "problem",
+      "number": "5",
+      "start_line": 911,
+      "end_line": 911,
+      "solution_status": "no_solution_in_source",
+      "note": "魔术师多项式题，无解答"
+    },
+    {
+      "gt_id": "ex-1",
+      "category": "question",
+      "kind": "exercise",
+      "number": "1",
+      "start_line": 917,
+      "end_line": 917,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-2",
+      "category": "question",
+      "kind": "exercise",
+      "number": "2",
+      "start_line": 919,
+      "end_line": 921,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-3",
+      "category": "question",
+      "kind": "exercise",
+      "number": "3",
+      "start_line": 923,
+      "end_line": 925,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-4",
+      "category": "question",
+      "kind": "exercise",
+      "number": "4",
+      "start_line": 927,
+      "end_line": 927,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-5",
+      "category": "question",
+      "kind": "exercise",
+      "number": "5",
+      "start_line": 929,
+      "end_line": 929,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-6",
+      "category": "question",
+      "kind": "exercise",
+      "number": "6",
+      "start_line": 931,
+      "end_line": 931,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-7",
+      "category": "question",
+      "kind": "exercise",
+      "number": "7",
+      "start_line": 933,
+      "end_line": 933,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-8",
+      "category": "question",
+      "kind": "exercise",
+      "number": "8",
+      "start_line": 935,
+      "end_line": 935,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-9",
+      "category": "question",
+      "kind": "exercise",
+      "number": "9",
+      "start_line": 937,
+      "end_line": 944,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-10",
+      "category": "question",
+      "kind": "exercise",
+      "number": "10",
+      "start_line": 946,
+      "end_line": 946,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-11",
+      "category": "question",
+      "kind": "exercise",
+      "number": "11",
+      "start_line": 948,
+      "end_line": 950,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-12",
+      "category": "question",
+      "kind": "exercise",
+      "number": "12",
+      "start_line": 952,
+      "end_line": 954,
+      "solution_status": "no_solution_in_source",
+      "note": "行尾'严植对角占伦'为手写批注'严格对角占优'的 OCR 噪声"
+    },
+    {
+      "gt_id": "ex-13",
+      "category": "question",
+      "kind": "exercise",
+      "number": "13",
+      "start_line": 956,
+      "end_line": 966,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-14",
+      "category": "question",
+      "kind": "exercise",
+      "number": "14",
+      "start_line": 968,
+      "end_line": 980,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-15",
+      "category": "question",
+      "kind": "exercise",
+      "number": "15",
+      "start_line": 984,
+      "end_line": 987,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-16",
+      "category": "question",
+      "kind": "exercise",
+      "number": "16",
+      "start_line": 989,
+      "end_line": 989,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-17",
+      "category": "question",
+      "kind": "exercise",
+      "number": "17",
+      "start_line": 991,
+      "end_line": 994,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-18",
+      "category": "question",
+      "kind": "exercise",
+      "number": "18",
+      "start_line": 996,
+      "end_line": 999,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-19",
+      "category": "question",
+      "kind": "exercise",
+      "number": "19",
+      "start_line": 1001,
+      "end_line": 1001,
+      "solution_status": "no_solution_in_source",
+      "note": "原文编号误印为'10．'（OCR 噪声），介于 18 与 20 之间，判定为 19"
+    },
+    {
+      "gt_id": "ex-20",
+      "category": "question",
+      "kind": "exercise",
+      "number": "20",
+      "start_line": 1003,
+      "end_line": 1005,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-21",
+      "category": "question",
+      "kind": "exercise",
+      "number": "21",
+      "start_line": 1007,
+      "end_line": 1018,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-22",
+      "category": "question",
+      "kind": "exercise",
+      "number": "22",
+      "start_line": 1020,
+      "end_line": 1022,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-23",
+      "category": "question",
+      "kind": "exercise",
+      "number": "23",
+      "start_line": 1026,
+      "end_line": 1028,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-24",
+      "category": "question",
+      "kind": "exercise",
+      "number": "24",
+      "start_line": 1030,
+      "end_line": 1030,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-25",
+      "category": "question",
+      "kind": "exercise",
+      "number": "25",
+      "start_line": 1032,
+      "end_line": 1032,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-26",
+      "category": "question",
+      "kind": "exercise",
+      "number": "26",
+      "start_line": 1034,
+      "end_line": 1034,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-27",
+      "category": "question",
+      "kind": "exercise",
+      "number": "27",
+      "start_line": 1036,
+      "end_line": 1036,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-28",
+      "category": "question",
+      "kind": "exercise",
+      "number": "28",
+      "start_line": 1038,
+      "end_line": 1038,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-29",
+      "category": "question",
+      "kind": "exercise",
+      "number": "29",
+      "start_line": 1040,
+      "end_line": 1049,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-30",
+      "category": "question",
+      "kind": "exercise",
+      "number": "30",
+      "start_line": 1051,
+      "end_line": 1057,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-31",
+      "category": "question",
+      "kind": "exercise",
+      "number": "31",
+      "start_line": 1059,
+      "end_line": 1061,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    },
+    {
+      "gt_id": "ex-32",
+      "category": "question",
+      "kind": "exercise",
+      "number": "32",
+      "start_line": 1063,
+      "end_line": 1063,
+      "solution_status": "no_solution_in_source",
+      "note": ""
+    }
+  ]
+}

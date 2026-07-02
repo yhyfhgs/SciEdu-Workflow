@@ -1,0 +1,130 @@
+{
+  "doc_id": "exam-2024yishi",
+  "source_fixture": "exam-2024yishi.md",
+  "genre": "exam_paper",
+  "discipline": "math",
+  "markers": [
+    {
+      "line": 5,
+      "kind": "problem",
+      "number": "1"
+    },
+    {
+      "line": 186,
+      "kind": "problem",
+      "number": "2"
+    },
+    {
+      "line": 494,
+      "kind": "problem",
+      "number": "3"
+    },
+    {
+      "line": 808,
+      "kind": "problem",
+      "number": "4"
+    },
+    {
+      "line": 1273,
+      "kind": "problem",
+      "number": "5"
+    },
+    {
+      "line": 1448,
+      "kind": "problem",
+      "number": "6"
+    },
+    {
+      "line": 1748,
+      "kind": "problem",
+      "number": "7"
+    },
+    {
+      "line": 2015,
+      "kind": "problem",
+      "number": "8"
+    }
+  ],
+  "items": [
+    {
+      "gt_id": "prob-1",
+      "category": "question",
+      "kind": "problem",
+      "number": "1",
+      "start_line": 5,
+      "end_line": 181,
+      "solution_status": "complete",
+      "note": "题干 + 全部备选解法（多个 solution 环境属同一条目）"
+    },
+    {
+      "gt_id": "prob-2",
+      "category": "question",
+      "kind": "problem",
+      "number": "2",
+      "start_line": 186,
+      "end_line": 492,
+      "solution_status": "complete",
+      "note": "题干 + 全部备选解法（多个 solution 环境属同一条目）"
+    },
+    {
+      "gt_id": "prob-3",
+      "category": "question",
+      "kind": "problem",
+      "number": "3",
+      "start_line": 494,
+      "end_line": 802,
+      "solution_status": "complete",
+      "note": "题干 + 全部备选解法（多个 solution 环境属同一条目）"
+    },
+    {
+      "gt_id": "prob-4",
+      "category": "question",
+      "kind": "problem",
+      "number": "4",
+      "start_line": 808,
+      "end_line": 1270,
+      "solution_status": "complete",
+      "note": "题干 + 全部备选解法（多个 solution 环境属同一条目）"
+    },
+    {
+      "gt_id": "prob-5",
+      "category": "question",
+      "kind": "problem",
+      "number": "5",
+      "start_line": 1273,
+      "end_line": 1445,
+      "solution_status": "complete",
+      "note": "题干 + 全部备选解法（多个 solution 环境属同一条目）"
+    },
+    {
+      "gt_id": "prob-6",
+      "category": "question",
+      "kind": "problem",
+      "number": "6",
+      "start_line": 1448,
+      "end_line": 1745,
+      "solution_status": "complete",
+      "note": "题干 + 全部备选解法（多个 solution 环境属同一条目）"
+    },
+    {
+      "gt_id": "prob-7",
+      "category": "question",
+      "kind": "problem",
+      "number": "7",
+      "start_line": 1748,
+      "end_line": 2010,
+      "solution_status": "complete",
+      "note": "题干 + 全部备选解法（多个 solution 环境属同一条目）"
+    },
+    {
+      "gt_id": "prob-8",
+      "category": "question",
+      "kind": "problem",
+      "number": "8",
+      "start_line": 2015,
+      "end_line": 2232,
+      "solution_status": "complete",
+      "note": "题干 + 全部备选解法（多个 solution 环境属同一条目）"
+    }
+  ]
+}
