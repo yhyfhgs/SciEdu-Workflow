@@ -12,9 +12,27 @@ from sciforge.llm.config import LLMConfig, LLMProvider
 
 logger = structlog.get_logger()
 
-# system prompt 自动缓存阈值（字符）。低于此不主动缓存（Anthropic 对 <1024 token 块
-# 本就忽略 cache_control）；中文指令很密，>500 字基本已超最小可缓存粒度。
-_AUTO_CACHE_MIN_CHARS = 500
+# system prompt 自动缓存阈值（字符），按模型家族路由。Anthropic 对低于最小 token
+# 门槛的 block 会**静默忽略** cache_control（Opus/Sonnet 系 1024 tok、Haiku 系
+# 4096 tok），且每请求只有 4 个缓存断点，不应浪费在缓存不了的短 block 上。
+# 取 ~2× token 门槛的字符数作安全边际（中文约 0.5–1 tok/字，2048 字中文
+# ≈ 1000–2000 tok）；未知模型（兼容网关等）取保守默认。显式 config.cache_control
+# 不受阈值限制（_system_param 中优先）。
+_AUTO_CACHE_MIN_CHARS_DEFAULT = 2048
+_AUTO_CACHE_MIN_CHARS_BY_FAMILY: dict[str, int] = {
+    "haiku": 8192,
+    "opus": 2048,
+    "sonnet": 2048,
+}
+
+
+def _auto_cache_min_chars(model: str) -> int:
+    """按模型家族返回自动加 cache_control 的最小 system 字符数。"""
+    lowered = model.lower()
+    for family, min_chars in _AUTO_CACHE_MIN_CHARS_BY_FAMILY.items():
+        if family in lowered:
+            return min_chars
+    return _AUTO_CACHE_MIN_CHARS_DEFAULT
 
 # REC-07：检测到 max_tokens 截断时，把 max_tokens 翻倍重抓一次的上限（避免静默丢尾部条目）。
 # 仅在原 max_tokens 有余量时触发；上限保守，避免超过模型输出上限触发 4xx。
@@ -89,7 +107,7 @@ class AnthropicBackend(BaseBackend):
             self.config.provider == LLMProvider.ANTHROPIC_COMPATIBLE
             and getattr(self.config, "supports_prompt_cache", False)
         )
-        auto = cacheable_provider and len(system) >= _AUTO_CACHE_MIN_CHARS
+        auto = cacheable_provider and len(system) >= _auto_cache_min_chars(self.config.model)
         if not (self.config.cache_control or auto):
             return system
         spec = self.config.cache_control or {"type": "ephemeral"}

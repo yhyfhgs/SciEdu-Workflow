@@ -90,7 +90,7 @@ class TestAnthropicParamRouting:
         mock_response.content = [MagicMock(text="ok")]
         backend.client.messages.create.return_value = mock_response
 
-        long_system = "指令" * 400  # 800 字 > 阈值 500
+        long_system = "指令" * 1200  # 2400 字 > 阈值 2048（按模型家族路由，默认 2048）
         backend.generate_sync(prompt="hi", system=long_system)
 
         system = backend.client.messages.create.call_args.kwargs["system"]
