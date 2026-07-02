@@ -4,11 +4,12 @@
 
 ## 项目概述
 
-SciForge 是 AI 驱动的**理工科知识处理与生成平台**，当前阶段为 CLI MVP。核心功能：
+SciForge 是 AI 驱动的**理工科知识处理与生成平台**，当前阶段为 CLI MVP + Web SaaS MVP。核心功能：
 
 1. **数据处理 Pipeline** — 通用格式（PDF/DOCX/MD/TeX）→ 结构化知识点和题目 → SQLite + FTS5 知识库，按学科参数化
-2. **多 Agent 生成引擎** — QGen / Solve / Tag / DocAssembly-lite 四个完整 Agent + 6 个 Post-MVP 骨架，基于 BaseAgent + 极简 StateGraph（不依赖 LangGraph）
+2. **多 Agent 生成引擎** — QGen / Solve / Tag / DocAssembly-lite 四个完整 Agent + Post-MVP 骨架，基于 BaseAgent + 极简 StateGraph（不依赖 LangGraph）
 3. **学科参数化** — 顶层 `Discipline` 枚举（math/physics/chemistry/biology/other）+ `DisciplineSpec` 配置每个学科的允许类型、tag 根、prompt 变量。MVP 阶段完整支持数学和物理
+4. **Web SaaS 层** — `sciforge serve` 启动统一后端：FastAPI 网关（`/v1/*`）+ 内置控制台（`/app/`）+ 多租户鉴权计费（SaasStore）+ 个性化推荐（RecommendEngine），详见下文"Web SaaS 层"
 
 ## 技术栈
 
@@ -19,6 +20,7 @@ SciForge 是 AI 驱动的**理工科知识处理与生成平台**，当前阶段
 - **日志**: structlog
 - **LLM**: Anthropic / OpenAI / Gemini，通过统一 LLMClient 接口调用
 - **存储**: SQLite（FTS5 全文检索、内容去重），通过 StorageBackend Protocol 抽象
+- **Web 服务**: FastAPI + uvicorn（`server` extra，`sciforge serve` 启动）
 - **测试**: pytest + pytest-asyncio
 - **Lint**: ruff（line-length=100, target py311）
 - **类型检查**: mypy（strict mode）
@@ -26,11 +28,13 @@ SciForge 是 AI 驱动的**理工科知识处理与生成平台**，当前阶段
 ## 常用命令
 
 ```bash
-# 安装依赖
-uv sync --all-extras
+# 安装依赖（注意：pdf-ml 与 pdf-mineru 互斥，--all-extras 会因 uv conflicts 失败，
+# 必须用 all 聚合 extra；`uv run sciforge` 入口失效时补 `uv pip install -e .`）
+uv sync --extra all
 
-# 运行测试
+# 运行测试（tests/ 按模块分包：test_pipeline/ test_agents/ test_api/ ...）
 uv run pytest
+uv run pytest tests/test_pipeline -k stage1   # 单目录 / 按名过滤
 
 # 代码检查
 uv run ruff check src/ tests/
@@ -76,6 +80,11 @@ uv run sciforge generate solve <question_id> --db data/sciforge.db
 uv run sciforge generate lecture -D math \
   -t "math:数学,analysis:数学分析" \
   --title "连续函数专题" -o data/lectures/
+
+# 启动统一后端（API + 内置 SaaS 控制台；`/` → /app/ 控制台，/docs → OpenAPI）
+# 默认鉴权+计费开启（SaaS 元数据存 data/saas.db）；--open 无鉴权，仅本地调试
+uv run sciforge serve --port 8000
+uv run sciforge serve --open
 ```
 
 ## 项目结构
@@ -117,20 +126,31 @@ src/sciforge/
 │                #   base.py + state.py + graph.py (BaseAgent + 极简 StateGraph)
 │                #   qgen/: 5 阶段闭环 agent + retriever/generator/solver/verifier/annotator
 │                #   solve_agent / tag_agent / doc_agent: 独立 Agent 封装
-│                #   stub_agents: 6 个 Post-MVP 骨架 (KB/Recommend/...)
+│                #   recommend/engine.py: RecommendEngine（P4 纯算法推荐，无 LLM——
+│                #     BehaviorRecord 流水 → UserProfile → 最近发展区难度 + 薄弱标签打分）
+│                #   stub_agents: 6 个 Post-MVP 骨架 (KB/Recommend/...；推荐引擎已在 recommend/ 实装，
+│                #     RecommendAgent 占位仍保留)
+├── api/         # Web SaaS 层（P2）：app.py(create_app 工厂 + /v1/* 端点),
+│                #   schemas.py(请求/响应模型), security.py(HMAC-SHA256 无状态 token，标准库实现),
+│                #   static/index.html(内置控制台，挂载 /app)
+├── export/      # 组卷/讲义导出：render_markdown(零依赖) + DOCX(python-docx 延迟 import)
 ├── prompts/     # 提示词模板：templates.py 做两阶段学科注入 +
-│                #   templates/pipeline|generation|solving|verification/*.txt
+│                #   templates/pipeline|generation|solving|verification|classification|evolution|strategies/*.txt
 ├── core/sentinel.py  # 共享 SENTINEL 单例（5 stage queue 通知流结束）
-├── storage/     # 存储：protocol.py(StorageBackend),
+├── storage/     # 存储：protocol.py(StorageBackend + MultiTenantStorageBackend),
 │                #   sqlite_backend.py(discipline 列 + filter + SchemaVersionMismatch + _MIGRATIONS 增量迁移 +
 │                #     relation_rows/save_relations/reconciliation_rows/validation_report +
 │                #     count_existing_content(批量去重) + save_figures/figures_for_item + load_questions_by_discipline +
 │                #     update_kp_type(REC-15 纠正) + delete_question 级联清边(REC-28)),
+│                #   multitenant.py(MultiTenantSQLiteBackend — tenant_id 行级隔离 + item_embeddings
+│                #     线性 cosine 语义检索；云端换 PG/pgvector 实现同协议),
+│                #   saas.py(SaasStore — 独立 data/saas.db：tenants/api_keys/users/usage_records/tasks；
+│                #     API Key 仅存 sha256；与题库 DB 解耦，便于私有化部署),
 │                #   schema.sql (v10 — number_canonical/seq_*/question_form/content_hash UNIQUE/item_relations 边表 +
 │                #     questions.options/correct_option/blanks(REC-19) + figures 表(REC-18) + order_index 单列索引(REC-16))
 ├── cli/         # CLI: main.py + parse.py (run[--force-vlm]/run-book/audit/relink/validate/migrate-legacy/db-stats)
 │                #   + generate.py (free/solve/batch/lecture + variant/evolve/solve-deep 占位)
-│                #   + config_cmd.py (config show/validate)
+│                #   + serve.py (统一后端: uvicorn + create_app 组装) + config_cmd.py (config show/validate)
 └── config/      # 配置：settings.py (env_prefix=SCIFORGE_), logging.py
 ```
 
@@ -244,6 +264,26 @@ logical_document  (单文件 or 多个分卷)
 `generate variant/evolve/solve-deep` 保留为 Post-MVP 占位。架构见 `src/sciforge/agents/`
 和 [`Docs/16_Agent系统MVP.md`](Docs/16_Agent系统MVP.md)。
 
+## Web SaaS 层（P2/P4，`sciforge serve`）
+
+- **组装方式**：`cli/serve.py` 构造 QGen/Solve 工厂 + 长生命周期检索 storage（WAL 并发读）
+  + `SaasStore`，注入 `api/app.py:create_app(qgen_factory, solve_factory, saas_store=...,
+  storage_factory=..., jwt_secret=..., cors_origins=..., serve_console=...)`。agent 经工厂注入，
+  便于测试替换；`saas_store=None`（CLI `--open`）= 无鉴权开放模式
+- **端点**（`/v1/*`）：health / auth/register / auth/login / generate / solve / usage /
+  behavior / recommend / generate/batch（异步任务）/ tasks/{id} / papers（组卷）/
+  papers/export（markdown/DOCX，走 `export/`）；`/` 重定向内置控制台 `/app/`，`/docs` OpenAPI
+- **双通道鉴权**：B2B 用 `X-API-Key`（SaasStore 校验 sha256），C 端用 `Bearer <token>`
+  （`api/security.py` HMAC-SHA256 无状态 token，标准库实现无 PyJWT，payload 含 exp/user_id/tenant_id）。
+  重端点走 `require_tenant`（校验配额 429），轻端点（behavior/recommend）走 `require_identity`（不计配额）
+- **数据分离**：题库 `data/sciforge.db`（内容）与 SaaS 元数据 `data/saas.db`（租户/Key/用户/用量/任务）
+  分库，私有化部署时题库可独立交付
+- **多租户题库**：`MultiTenantSQLiteBackend` 检索强制注入 `tenant_id` 过滤（行级隔离），
+  附加 `item_embeddings` 表做线性 cosine 语义检索（幂等建表，不入核心 schema 迁移）
+- **推荐**：`agents/recommend/engine.py` 纯算法（无 LLM），行为流水聚合 UserProfile →
+  最近发展区（掌握难度 + 步长）+ 薄弱标签命中打分；冷启动退化为默认难度
+- 后续 P3（多端 + 网关 + 统一身份）见 [`Docs/17_前端产品化实施计划.md`](Docs/17_前端产品化实施计划.md)
+
 ## 学科参数化（Discipline）
 
 - **顶层枚举**：`Discipline` (math/physics/chemistry/biology/other)，定义在 `core/models.py`
@@ -280,5 +320,8 @@ logical_document  (单文件 or 多个分卷)
 - `.env` 包含 API Key，绝不提交
 - LLM 后端通过 `llm/backends/` 下的适配器实现，新增后端只需实现统一接口
 - Pipeline 统一入口为 `sciforge parse run`，默认 VLM 多模态识别 PDF/DOCX
-- 存储默认 SQLite（`--db data/sciforge.db`）
+- 存储默认 SQLite（题库 `--db data/sciforge.db`；SaaS 元数据独立 `data/saas.db`）
 - Pipeline checkpoint 在 `data/checkpoint/<file_hash>/`，含 `state.json` 与 `recognize/file_NNN_<stem>/page_NNN-NNN.md`
+- **云同步冲突副本**：仓库位于 iCloud 目录，会产生 `xxx 2.py` / `xxx 2/` 冲突副本
+  （如 `prompts/templates/pipeline 2/`）。pytest 已通过 `addopts --ignore-glob` 忽略、
+  .gitignore 已排除——遇到时不要引用或"修复"它们，可安全删除
