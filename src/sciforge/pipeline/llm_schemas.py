@@ -38,6 +38,36 @@ class StructuralContextLLM(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+# v11 III.2（M2）：跨窗尾部条目的四态判别。区分"无答案"的四种真相，
+# 取代一律误判 no_solution 的被动行为：
+# - truly_no_answer    真无答案（习题集只有题、定义无证明）→ 收尾 no_solution_in_source
+# - answer_deferred    答案延后（题在前、答案集中卷末/书末）→ 收尾 solution_deferred
+# - content_truncated  内容被窗口物理截断（正文/解答中途断）→ carry 下窗续接
+# - stem_unfinished    题干本身没说完 → carry 下窗续题干
+TailState = Literal["truly_no_answer", "answer_deferred", "content_truncated", "stem_unfinished"]
+
+
+class IncompleteItemCarry(BaseModel):
+    """v11 III.2（M2）：跨窗结构化交接——上一窗末尾未闭合条目的上下文。
+
+    是 ``stop_reason=incomplete_at_tail`` 被动防御的结构化升级：滑窗仍只推进到
+    最后一条完整条目（尾部下窗重扫，v10 语义不变），carry 额外携带"尾部有什么、
+    处于哪一态"注入下窗 prompt，指导 LLM 优先定案而非再次推迟。
+    不持久化到 checkpoint state：中断恢复后丢失 carry = 退回 v10 被动重扫（安全降级）。
+    """
+
+    item_type: str = ""
+    number: str = ""
+    category: Literal["knowledge", "question"] = "question"
+    head_anchor_start: str = ""  # 条目开头逐字短串（下窗匹配用）
+    head_content: str = Field(default="", max_length=2000)  # 已见正文（截断省 token）
+    tail_state: TailState = "content_truncated"
+    original_start_line: int = Field(ge=1, default=1)  # 全局行号
+    carry_window_count: int = Field(ge=1, default=1)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ItemAnchorsLLM(BaseModel):
     """v11 II.4（M1，extract_char_span_enabled 时 LLM 输出）：条目边界锚点短串。
 

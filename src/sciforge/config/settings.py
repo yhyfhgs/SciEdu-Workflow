@@ -252,6 +252,13 @@ class AppConfig(BaseSettings):
     # resolve_span 确定性定位精确 offset 落 start_char/end_char 列（exact/fuzzy/
     # line_fallback 三态降级，最坏退回行级=现状）。不覆写 corrected_content。
     extract_char_span_enabled: bool = False
+    # III.2（M2）：carry 四态——窗口尾部未闭合条目的结构化跨窗交接。
+    # 确定性判别 truly_no_answer/answer_deferred/content_truncated/stem_unfinished
+    # 注入下窗 prompt 指导定案；滑窗语义不变（尾部仍下窗重扫 = v10 兜底）。
+    extract_active_carry_enabled: bool = False
+    # 同一条目连续跨窗未闭合的上限：到顶下一窗 force_extract 强制收尾
+    # （solution_deferred），再不闭合则放弃 carry 退回 v10 被动重扫。
+    extract_carry_max_windows: int = 3
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）

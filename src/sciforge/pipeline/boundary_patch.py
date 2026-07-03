@@ -1,31 +1,41 @@
-"""BoundaryAndPatchEngine（v11 子系统 III）——查漏底座：marker ledger + 覆盖率审计。
+"""BoundaryAndPatchEngine（v11 子系统 III）——查漏底座 + carry 四态。
 
-本模块 M1 落地 III.1（``build_marker_ledger`` + ``audit_coverage``，纯确定性 0 LLM）；
-III.2 carry 四态（M2）、III.3 PatchInstruction（M3）、III.4 halo 仲裁（M2）后续在此扩展。
+- III.1（M1）：``build_marker_ledger`` + ``audit_coverage``（覆盖率对账查漏）
+- III.2（M2）：``classify_tail_state`` + ``build_carry`` + ``carry_matches_item``
+  （跨窗尾部条目的四态判别与结构化交接）
+- III.3 PatchInstruction（M3）、III.4 halo 仲裁（WP-23）后续在此扩展
 
-审计输出 ``AuditReport`` 从第一天就是 M3 PatchInstruction 可直接消费的结构
-（missed_markers / boundary_suspects / pairing_suspects），避免后续重构。
+全部纯确定性 0 LLM。审计输出 ``AuditReport`` 从第一天就是 M3 PatchInstruction
+可直接消费的结构（missed_markers / boundary_suspects / pairing_suspects）。
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sciforge.core.numbering import canonicalize_number
+from sciforge.pipeline.llm_schemas import IncompleteItemCarry, TailState
 from sciforge.pipeline.text_tools.markers import ITEM_KINDS, MarkerEntry, find_item_markers
+from sciforge.pipeline.text_tools.math_balance import check_math_balance
 
 __all__ = [
     "AuditItem",
     "AuditReport",
     "BoundarySuspect",
     "CoverageInterval",
+    "IncompleteItemCarry",
     "MarkerEntry",
     "MarkerLedger",
     "PairingSuspect",
     "audit_coverage",
+    "build_carry",
     "build_marker_ledger",
+    "carry_matches_item",
+    "classify_tail_state",
 ]
 
 
@@ -215,3 +225,104 @@ def audit_coverage(ledger: MarkerLedger, items: Sequence[AuditItem]) -> AuditRep
         markers_total=len(ledger.markers),
         markers_covered=covered_count,
     )
+
+
+# ── III.2（M2）：carry 四态判别与结构化交接 ──────────────
+
+_SOLUTION_MARKER_RE = re.compile(
+    r"(?:^|\n)\s*(?:解答?|证明?|答案?|Solution|Proof)\s*[:：.．]|\\begin\{(?:solution|proof)\}"
+)
+# 句子终止标点（题干完结的弱信号）
+_TERMINAL_PUNCT = tuple("。？！?!.；;：:$")
+
+
+def classify_tail_state(
+    tail_lines: list[str],
+    *,
+    genre: str = "unknown",
+    carry_prior: TailState = "content_truncated",
+) -> TailState:
+    """对窗口末尾未闭合区域做四态判别（T12 + 解答标记 + genre 先验三路交叉）。
+
+    判定顺序（强信号优先）：
+    1. T12 数学环境不平衡（``open_env_at_tail``）→ content_truncated（公式中途断）
+    2. 尾部已出现解答/证明标记 → content_truncated（解答写了一半被切断）
+    3. 末行无终止标点 → stem_unfinished（题干本身没说完）
+    4. 题干完整收尾 → genre 先验：exam_paper → answer_deferred（答案集中卷末）；
+       problem_set → truly_no_answer（习题集常无解答）；其余 → carry_prior
+    """
+    text_lines = [ln for ln in tail_lines if ln.strip()]
+    if not text_lines:
+        return carry_prior
+    if check_math_balance(text_lines).open_env_at_tail:
+        return "content_truncated"
+    if _SOLUTION_MARKER_RE.search("\n".join(text_lines)):
+        return "content_truncated"
+    if not text_lines[-1].rstrip().endswith(_TERMINAL_PUNCT):
+        return "stem_unfinished"
+    if genre == "exam_paper":
+        return "answer_deferred"
+    if genre == "problem_set":
+        return "truly_no_answer"
+    return carry_prior
+
+
+def build_carry(
+    tail_lines: list[str],
+    *,
+    line_base: int,
+    genre: str = "unknown",
+    carry_prior: TailState = "content_truncated",
+    prev_count: int = 0,
+) -> IncompleteItemCarry | None:
+    """从窗口未消费尾部构建结构化 carry；尾部无条目起始标记时返回 None。
+
+    ``tail_lines`` 为已剥离行号前缀的未消费行；``line_base`` 为其首行全局行号。
+    取尾部**最后一个**强条目标记作条目头（其后所有内容属该条目）。
+    """
+    markers = [
+        m
+        for m in find_item_markers(tail_lines, line_base=line_base)
+        if m.kind in ITEM_KINDS and m.strength == "strong"
+    ]
+    if not markers:
+        return None
+    head = markers[-1]
+    head_idx = head.global_line - line_base
+    item_lines = tail_lines[head_idx:]
+    head_content = "\n".join(item_lines).strip()[:2000]
+    tail_state = classify_tail_state(item_lines, genre=genre, carry_prior=carry_prior)
+    first_line = item_lines[0].strip() if item_lines else ""
+    return IncompleteItemCarry(
+        item_type=head.kind,
+        number=head.number_hint,
+        category="knowledge"
+        if head.kind in {"definition", "theorem", "lemma", "corollary", "proposition"}
+        else "question",
+        head_anchor_start=first_line[:40],
+        head_content=head_content,
+        tail_state=tail_state,
+        original_start_line=head.global_line,
+        carry_window_count=prev_count + 1,
+    )
+
+
+def carry_matches_item(carry: IncompleteItemCarry, item: object) -> bool:
+    """判断提取条目是否续完/定案了 carry 条目（编号 → 行号 → 锚点三路降级）。
+
+    ``item`` 鸭子类型：需有 number / start_line / corrected_content 属性
+    （即 SingleItemExtractLLM）。
+    """
+    carry_num = canonicalize_number(carry.number) if carry.number else ""
+    item_num = canonicalize_number(getattr(item, "number", "") or "")
+    if carry_num and item_num:
+        return carry_num == item_num
+    start_line = int(getattr(item, "start_line", 0) or 0)
+    if abs(start_line - carry.original_start_line) <= 2:
+        return True
+    anchor = carry.head_anchor_start.strip()
+    if len(anchor) >= 4:
+        content = str(getattr(item, "corrected_content", "") or "")
+        # 锚点含标记头（如"习题 3.1 求…"），条目 content 通常去掉了标记头 → 双向包含
+        return anchor in content[:120] or content[:40].strip() in anchor
+    return False

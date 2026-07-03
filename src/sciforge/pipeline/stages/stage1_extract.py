@@ -20,7 +20,7 @@ import json as _json_mod
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import structlog
 
@@ -176,6 +176,12 @@ class Stage1Extract:
         self.genre_profile: Any | None = None
         # v11 III.1（M1，opt-in）：marker ledger 覆盖率审计（纯观测，不改提取行为）。
         self.ledger_enabled: bool = bool(getattr(config, "marker_ledger_enabled", False))
+        # v11 III.2（M2，opt-in）：carry 四态跨窗交接。滑窗语义不变（尾部仍重扫），
+        # carry 只额外携带"尾部条目是什么、处于哪一态"注入下窗 prompt 指导定案。
+        # 不持久化：resume 后丢失 carry = 退回 v10 被动重扫（安全降级）。
+        self.carry_enabled: bool = bool(getattr(config, "extract_active_carry_enabled", False))
+        self.carry_max_windows: int = max(1, int(getattr(config, "extract_carry_max_windows", 3)))
+        self._carry: Any | None = None
         # REC-20：当前 block 的确定性章节结构（detect_section_boundaries 产物），注入提取 prompt
         # 作为 structural_context 的权威先验，消灭"串行路径白跑 section_boundaries"的死逻辑。
         self._section_hint: str = ""
@@ -254,6 +260,133 @@ class Stage1Extract:
         """剥离 ``_annotate`` 的 7 位行号前缀（``NNNNNNN | 正文``）；无前缀原样返回。"""
         head, sep, rest = line.partition(" | ")
         return rest if sep and head.strip().isdigit() else line
+
+    # v11 III.2：四态 → 下窗 prompt 处置指令
+    _CARRY_DIRECTIVES: ClassVar[dict[str, str]] = {
+        "content_truncated": (
+            "该条目在上一窗口被**物理截断**（正文/解答中途断开）。本窗口开头是其续写，"
+            "必须把 items[0] 作为该条目**续完后的完整条目**提取（题干+解答合并），不得再次推迟。"
+        ),
+        "stem_unfinished": (
+            "该条目**题干**在上一窗口未写完。本窗口开头是题干续写，items[0] 应为完整题干"
+            "（及其解答，若有），不得把一道题拆成两条。"
+        ),
+        "answer_deferred": (
+            "该条目的答案很可能**集中在卷末/书末**（不在紧邻下文）。若本窗口内确无解答，"
+            "直接以 solution_status=solution_deferred 定案提取该条目，不要再推迟。"
+        ),
+        "truly_no_answer": (
+            "该体裁（习题集类）通常**不附解答**。若本窗口内确无解答，直接以 "
+            "solution_status=no_solution_in_source 定案提取该条目，不要因缺少解答而推迟。"
+        ),
+    }
+
+    def _carry_prompt_section(self) -> str | None:
+        """carry 注入段（动态内容，随窗口进 user，不污染 system 缓存前缀）。"""
+        if not (self.carry_enabled and self._carry is not None):
+            return None
+        c = self._carry
+        return (
+            "## 上一窗口末尾未闭合条目（跨窗交接，最高优先级）\n"
+            f"- 类型/编号：{c.item_type} {c.number or '（无编号）'}；"
+            f"原始起始行：{c.original_start_line}；已跨 {c.carry_window_count} 个窗口\n"
+            f"- 已见开头：{c.head_content[:300]}\n"
+            f"- 判定状态：{c.tail_state}\n"
+            f"**处置要求**：{self._CARRY_DIRECTIVES[c.tail_state]}"
+        )
+
+    def _update_carry_after_window(
+        self,
+        items: list[Any],
+        stop_reason: str,
+        window: list[str],
+        window_start: int,
+        consumed: int,
+        window_len: int,
+    ) -> None:
+        """v11 III.2 carry 状态机（emit 路径每窗调用一次，确定性 0 LLM）。
+
+        ① 定案匹配：本窗任一条目匹配 carry（编号→行号→锚点）→ 清除。
+        ② 尾部重建：仍有未消费尾部 → 从中重建 carry；同一条目（原始起始行相同）
+           跨窗计数继承 +1，超过 max+1（已 force 过仍未闭合）→ 放弃（退回 v10 重扫）。
+        ③ 窗口全闭合且未匹配 → 放弃 carry（条目可能被合并/改编号提出）。
+        任何异常 → 清 carry 降级，不阻断流水线。
+        """
+        if not self.carry_enabled:
+            return
+        try:
+            from sciforge.pipeline.boundary_patch import build_carry, carry_matches_item
+
+            if self._carry is not None and items:
+                if any(carry_matches_item(self._carry, it) for it in items):
+                    logger.info(
+                        "stage1_carry_resolved",
+                        number=self._carry.number,
+                        tail_state=self._carry.tail_state,
+                        windows=self._carry.carry_window_count,
+                    )
+                    self._carry = None
+
+            if stop_reason == "incomplete_at_tail" and consumed < window_len:
+                from sciforge.pipeline.llm_schemas import TailState
+
+                tail_raw = [self._strip_line_prefix(ln) for ln in window[consumed:window_len]]
+                prior_raw = str(
+                    getattr(self.genre_profile, "carry_prior", "content_truncated")
+                    if self.genre_profile is not None
+                    else "content_truncated"
+                )
+                valid_states = (
+                    "truly_no_answer",
+                    "answer_deferred",
+                    "content_truncated",
+                    "stem_unfinished",
+                )
+                prior = cast(
+                    "TailState", prior_raw if prior_raw in valid_states else "content_truncated"
+                )
+                new_carry = build_carry(
+                    tail_raw,
+                    line_base=window_start + consumed,
+                    genre=self._genre,
+                    carry_prior=prior,
+                )
+                if (
+                    new_carry is not None
+                    and self._carry is not None
+                    and new_carry.original_start_line == self._carry.original_start_line
+                ):
+                    count = self._carry.carry_window_count + 1
+                    if count > self.carry_max_windows + 1:
+                        logger.warning(
+                            "stage1_carry_abandoned",
+                            number=new_carry.number,
+                            windows=count,
+                            reason="force_extract 后仍未闭合，退回被动重扫",
+                        )
+                        self._carry = None
+                        return
+                    new_carry = new_carry.model_copy(update={"carry_window_count": count})
+                self._carry = new_carry
+                if new_carry is not None:
+                    logger.info(
+                        "stage1_carry_built",
+                        number=new_carry.number,
+                        item_type=new_carry.item_type,
+                        tail_state=new_carry.tail_state,
+                        start_line=new_carry.original_start_line,
+                        windows=new_carry.carry_window_count,
+                    )
+            elif self._carry is not None:
+                logger.info(
+                    "stage1_carry_dropped",
+                    number=self._carry.number,
+                    reason="窗口全部闭合但未匹配到 carry 条目",
+                )
+                self._carry = None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stage1_carry_update_failed", error=str(exc))
+            self._carry = None
 
     def _resolve_item_spans(self, window: list[str], window_start: int, payload: Any) -> None:
         """v11 II.4（M1）：对带锚点的 item 调 resolve_span 回填精确字符偏移。
@@ -482,8 +615,16 @@ class Stage1Extract:
                 await self._sync_state(state, force=True)
                 continue
 
+            # v11 III.2：carry 跨窗到顶 → force_extract 强制收尾（solution_deferred）
+            carry_overdue = (
+                self.carry_enabled
+                and self._carry is not None
+                and self._carry.carry_window_count >= self.carry_max_windows
+            )
             try:
-                payload = await self._extract_batch(window, window_start_int, window_last_int)
+                payload = await self._extract_batch(
+                    window, window_start_int, window_last_int, force_extract=carry_overdue
+                )
             except RetryExhausted as exc:
                 # 判断失败根因：429 / rate-limit 类（临时性）vs schema / content（永久性）
                 from sciforge.core.exceptions import LLMRateLimitError
@@ -712,6 +853,11 @@ class Stage1Extract:
             for it in items:
                 self._update_examples(it)
 
+            # v11 III.2：carry 状态机——本窗定案匹配 / 新尾部重建 / 到顶放弃
+            self._update_carry_after_window(
+                items, payload.stop_reason, window, window_start_int, consumed, window_len
+            )
+
             logger.info(
                 "stage1_extract_batch_emitted",
                 count=len(items),
@@ -761,6 +907,10 @@ class Stage1Extract:
                 "即使解答看起来不完整/被截断；对习题/例题若解答可能在他处，用 "
                 "`solution_status=solution_deferred`（**不要**因靠近窗口末尾而推迟或留空）。"
             )
+        # v11 III.2：carry 跨窗交接注入（动态段，随窗口进 user）
+        carry_section = self._carry_prompt_section()
+        if carry_section:
+            extra_sections.append(carry_section)
         extra_sections.append(
             "## 当前窗口行号范围（**反跳过校验基准**）\n"
             f"- 起点行号：{window_start_line}\n"
