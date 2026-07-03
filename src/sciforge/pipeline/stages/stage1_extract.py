@@ -1015,6 +1015,8 @@ class Stage1Extract:
                 segment_extract_fn=self._extract_segment_windows,
                 window_lines=big,
                 concurrency=self.segment_concurrency,
+                # v11 III.4：>0 启用段重叠 + 边界仲裁（安全并行，跨段条目不漏）
+                halo_lines=int(getattr(self.config, "segment_halo_lines", 0)),
             )
             grouped: list[tuple[DocSegment, list[Any]]] = await extractor.extract_grouped(
                 all_lines, boundary_indices, min_segment_lines=self.min_segment_lines

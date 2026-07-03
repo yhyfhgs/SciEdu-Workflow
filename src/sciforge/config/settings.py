@@ -259,6 +259,10 @@ class AppConfig(BaseSettings):
     # 同一条目连续跨窗未闭合的上限：到顶下一窗 force_extract 强制收尾
     # （solution_deferred），再不闭合则放弃 carry 退回 v10 被动重扫。
     extract_carry_max_windows: int = 3
+    # III.4（M2）：segment halo——intra_doc_parallel_extract 时每段向后多读 N 行
+    # 重叠区，跨段边界条目被前段完整看到，仲裁器确定性去重（安全并行）。
+    # 默认 0 = 关（段间零重叠 = 现状）；建议按体裁 60-120（> 典型条目长度）。
+    segment_halo_lines: int = 0
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）

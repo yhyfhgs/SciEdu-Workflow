@@ -40,6 +40,7 @@ class ParallelSegmentExtractor:
         concurrency: int = 4,
         line_no_of: Callable[[str], int] | None = None,
         segment_extract_fn: Callable[[list[str]], Awaitable[list[Any]]] | None = None,
+        halo_lines: int = 0,
     ) -> None:
         """
         Args:
@@ -51,6 +52,10 @@ class ParallelSegmentExtractor:
                 也能按滑动窗口 + carry 完整提取、不在 chunk 边界切断条目（完整性优先）。
                 提供它时 ``window_lines`` 只用于 :func:`segment_document` 的过大段硬切阈值，
                 生产应传较大值以**仅按 section 边界切段**。
+            halo_lines: **v11 III.4 段重叠区**（默认 0 = 关，行为与现状完全一致）。
+                >0 时每段（除末段）的提取输入向后多读 halo 行——跨段边界的条目
+                被前段完整看到；随后 :func:`arbitrate_halo_overlap` 对相邻段重叠区
+                确定性去重合并。halo 应大于典型条目长度；超长跨界由段内 carry 兜底。
         """
         if extract_fn is None and segment_extract_fn is None:
             raise ValueError("extract_fn 与 segment_extract_fn 必须至少提供一个")
@@ -58,6 +63,7 @@ class ParallelSegmentExtractor:
         self.segment_extract_fn = segment_extract_fn
         self.window_lines = max(1, window_lines)
         self.concurrency = max(1, concurrency)
+        self.halo_lines = max(0, halo_lines)
         # 从 annotated 行取全局行号（默认解析 "NNN | text"）
         self._line_no_of = line_no_of or self._default_line_no
 
@@ -111,17 +117,43 @@ class ParallelSegmentExtractor:
             return []
 
         sem = asyncio.Semaphore(self.concurrency)
+        n = len(lines)
 
         async def run_segment(seg: Any) -> list[Any]:
             async with sem:
+                # v11 III.4：halo——除末段外，提取输入向后多读 halo 行（只读重叠，
+                # 段的规范范围不变；重叠区产物由下方仲裁器去重）
+                if self.halo_lines > 0 and seg.end_idx < n:
+                    ext_lines = lines[seg.start_idx : min(n, seg.end_idx + self.halo_lines)]
+                    return await self._extract_segment(seg, ext_lines=ext_lines)
                 return await self._extract_segment(seg)
 
         # gather 保持顺序：per_seg[i] 对应 segments[i]（段序）
         per_seg: list[list[Any]] = await asyncio.gather(*(run_segment(s) for s in segments))
+
+        # v11 III.4：相邻段 halo 重叠区确定性仲裁（0 LLM）
+        if self.halo_lines > 0 and len(segments) > 1:
+            from sciforge.pipeline.boundary_patch import arbitrate_halo_overlap
+
+            total_dropped = 0
+            for i in range(len(segments) - 1):
+                boundary_line = self._line_no_of(lines[segments[i + 1].start_idx])
+                kept_prev, kept_next, dropped = arbitrate_halo_overlap(
+                    per_seg[i], per_seg[i + 1], boundary_line=boundary_line
+                )
+                per_seg[i], per_seg[i + 1] = kept_prev, kept_next
+                total_dropped += dropped
+            if total_dropped:
+                logger.info(
+                    "halo_arbitration_done",
+                    segments=len(segments),
+                    halo_lines=self.halo_lines,
+                    deduped=total_dropped,
+                )
         return list(zip(segments, per_seg, strict=True))
 
-    async def _extract_segment(self, seg: Any) -> list[Any]:
-        """段内提取。
+    async def _extract_segment(self, seg: Any, *, ext_lines: list[str] | None = None) -> list[Any]:
+        """段内提取。``ext_lines`` 为含 halo 的扩展输入（III.4，None = 段原始行）。
 
         - 若提供 ``segment_extract_fn``（生产 carry-aware 路径）→ 整段交给它，
           段内由其自行滑窗 + carry，**不在 chunk 边界切断条目**。
@@ -129,11 +161,11 @@ class ParallelSegmentExtractor:
           ``window_lines`` 顺序分块（段内串行、无 carry）。
         """
         if self.segment_extract_fn is not None:
-            return list(await self.segment_extract_fn(seg.lines))
+            return list(await self.segment_extract_fn(ext_lines or seg.lines))
 
         assert self.extract_fn is not None  # __init__ 已保证二者不全空
         items: list[Any] = []
-        seg_lines = seg.lines
+        seg_lines = ext_lines or seg.lines
         for chunk_start in range(0, len(seg_lines), self.window_lines):
             chunk = seg_lines[chunk_start : chunk_start + self.window_lines]
             if not chunk:

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,6 +31,7 @@ __all__ = [
     "MarkerEntry",
     "MarkerLedger",
     "PairingSuspect",
+    "arbitrate_halo_overlap",
     "audit_coverage",
     "build_carry",
     "build_marker_ledger",
@@ -305,6 +306,82 @@ def build_carry(
         original_start_line=head.global_line,
         carry_window_count=prev_count + 1,
     )
+
+
+# ── III.4（M2）：segment halo 边界仲裁器 ──────────────────
+
+
+def _item_completeness(item: object) -> tuple[bool, int, int]:
+    """条目完整度排序键：有解答/证明 > 行跨度长 > 起始行早。"""
+    has_payload = bool(getattr(item, "corrected_proof", None)) or bool(
+        getattr(item, "corrected_solution", None)
+    )
+    start = int(getattr(item, "start_line", 0) or 0)
+    end = int(getattr(item, "end_line", 0) or 0)
+    return (has_payload, end - start, -start)
+
+
+def _items_overlap(a: object, b: object) -> bool:
+    """两条目视为同一条：行区间相交，或规范化编号相同（非空时）。"""
+    a_s, a_e = int(getattr(a, "start_line", 0)), int(getattr(a, "end_line", 0))
+    b_s, b_e = int(getattr(b, "start_line", 0)), int(getattr(b, "end_line", 0))
+    if max(a_s, b_s) <= min(a_e, b_e):
+        return True
+    a_num = canonicalize_number(str(getattr(a, "number", "") or ""))
+    b_num = canonicalize_number(str(getattr(b, "number", "") or ""))
+    return bool(a_num) and a_num == b_num
+
+
+def arbitrate_halo_overlap(
+    prev_items: list[Any],
+    next_items: list[Any],
+    *,
+    boundary_line: int,
+) -> tuple[list[Any], list[Any], int]:
+    """相邻段 halo 重叠区的确定性去重合并（III.4 boundary arbiter，0 LLM）。
+
+    ``boundary_line`` = 下一段首行的全局行号（前段 halo 从此行起）。规则：
+
+    - 前段条目**完全在本段内**（end < boundary）→ 保留
+    - 前段条目**完全在 halo 内**（start ≥ boundary）→ 丢弃（邻段领土，邻段会提）
+    - 前段**跨边界**条目 → 与后段重叠对手比完整度（有解答 > 跨度长 > 行号早）：
+      前段更完整 → 保前段、剔除对手；否则丢前段保后段。
+      后段无对手（漏提）→ 保前段——这正是 halo 兜住跨界条目的价值。
+    - 超长跨界（条目长于 halo）由 III.2 carry 在段内滑窗层兜底，此处不特殊处理。
+
+    返回 ``(kept_prev, kept_next, dropped)``；Stage3 content_hash + INSERT OR
+    IGNORE 是最后的二保险。
+    """
+    kept_prev: list[Any] = []
+    cross: list[Any] = []
+    dropped = 0
+    for item in prev_items:
+        start = int(getattr(item, "start_line", 0) or 0)
+        end = int(getattr(item, "end_line", 0) or 0)
+        if end < boundary_line:
+            kept_prev.append(item)
+        elif start < boundary_line:
+            cross.append(item)
+        else:
+            dropped += 1  # 完全落在 halo（邻段领土）
+
+    kept_next = list(next_items)
+    for item in cross:
+        rivals = [r for r in kept_next if _items_overlap(item, r)]
+        if not rivals:
+            kept_prev.append(item)
+            continue
+        best_rival = max(rivals, key=_item_completeness)
+        if _item_completeness(item) >= _item_completeness(best_rival):
+            kept_prev.append(item)
+            for rival in rivals:
+                kept_next.remove(rival)
+                dropped += 1
+        else:
+            dropped += 1  # 后段版本更完整 → 丢前段跨界残片
+
+    kept_prev.sort(key=lambda i: int(getattr(i, "start_line", 0) or 0))
+    return kept_prev, kept_next, dropped
 
 
 def carry_matches_item(carry: IncompleteItemCarry, item: object) -> bool:
