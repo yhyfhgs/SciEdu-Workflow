@@ -130,6 +130,8 @@ _LINE_MARKER_RE = re.compile(
     r"(?P<kw_num>[0-9０-９][0-9０-９.．、]*)?"
     # ③ 中文序数题：第 3 题 / 第３题
     r"|第\s*(?P<ord_num>[0-9０-９]+)\s*题"
+    # ③b 中文解答/证明起始行："解：" / "证明。" / "答案："（无编号、带标点）
+    r"|(?P<sol_kw>解答?|证明?|答案?)\s*[:：.．]"
     # ④ 裸编号行（弱标记）：12. 设 … / 3、证明 …（要求编号后有正文）
     r"|(?P<bare_num>\d{1,3})\s*[.、．)）]\s+\S"
     # ⑤ 章节：markdown 标题 / \section / 第X章节
@@ -161,6 +163,9 @@ def _classify(match: re.Match[str]) -> tuple[MarkerKind, str, str]:
         return kind, number, "strong"
     if match.group("ord_num"):
         return "problem", canonicalize_number(match.group("ord_num")), "strong"
+    if match.group("sol_kw"):
+        kw = match.group("sol_kw")
+        return ("proof" if kw.startswith("证") else "solution"), "", "strong"
     if match.group("bare_num"):
         return "problem", canonicalize_number(match.group("bare_num")), "weak"
     return "section", "", "strong"
