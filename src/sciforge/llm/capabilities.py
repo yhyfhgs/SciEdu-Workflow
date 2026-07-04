@@ -31,6 +31,9 @@ PROVIDER_CAPABILITIES: dict[LLMProvider, frozenset[str]] = {
             "cache_control",
             "service_tier",
             "extra_body",
+            # v11 §G.3（C1）：GA 原生 JSON Schema 输出通道——注意是 output_config，
+            # 不是 response_format（后者不在此能力集，会被静默丢弃）。
+            "output_config",
         }
     ),
     LLMProvider.ANTHROPIC_COMPATIBLE: frozenset(
@@ -49,6 +52,7 @@ PROVIDER_CAPABILITIES: dict[LLMProvider, frozenset[str]] = {
             # 显式配置时不被能力矩阵静默丢弃。
             "cache_control",
             "extra_body",
+            "output_config",
         }
     ),
     LLMProvider.OPENAI: frozenset(
@@ -111,6 +115,7 @@ ALL_OPTIONAL_PARAMS: frozenset[str] = frozenset(
         "metadata",
         "cache_control",
         "extra_body",
+        "output_config",
     }
 )
 

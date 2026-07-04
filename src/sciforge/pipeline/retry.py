@@ -315,7 +315,8 @@ async def call_llm_json_with_schema_retry_with_feedback(
             kw: dict[str, Any] = {"system": system}
             if max_tokens is not None:
                 kw["max_tokens"] = max_tokens
-            raw = await llm.generate_json(prompt, **kw)
+            # v11 §G.3：传 schema_model 供 opt-in 的严格 JSON Schema 输出（默认关闭时无影响）
+            raw = await llm.generate_json(prompt, schema_model=model, **kw)
             if not isinstance(raw, dict):
                 raise ValueError(f"llm returned non-dict: {type(raw).__name__}")
             result = model.model_validate(raw, context=validation_context)

@@ -109,6 +109,10 @@ class LLMConfig(BaseModel):
     timeout: int = 120
     max_retries: int = 3
     supports_prompt_cache: bool = False  # REC-08：见 ProviderConfig.supports_prompt_cache
+    # v11 §G.3（M4，opt-in）：generate_json 传 schema_model 时，按 provider 下发
+    # 严格 JSON Schema（Anthropic output_config.format / OpenAI response_format
+    # strict）而非笼统的 json_object。默认 False：现状不变（json_object）。
+    output_config_json_schema_enabled: bool = False
 
     # 扩展参数（所有 Optional，None 表示不传给 SDK）
     top_p: float | None = None

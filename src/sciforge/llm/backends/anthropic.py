@@ -34,6 +34,7 @@ def _auto_cache_min_chars(model: str) -> int:
             return min_chars
     return _AUTO_CACHE_MIN_CHARS_DEFAULT
 
+
 # REC-07：检测到 max_tokens 截断时，把 max_tokens 翻倍重抓一次的上限（避免静默丢尾部条目）。
 # 仅在原 max_tokens 有余量时触发；上限保守，避免超过模型输出上限触发 4xx。
 _TRUNCATION_REFETCH_CEILING = 32768
@@ -81,12 +82,18 @@ class AnthropicBackend(BaseBackend):
           ``messages.create()`` 没有 ``thinking`` 形参会直接 TypeError；且 anthropic 兼容
           网关（MiniMax / Kimi 等）本就从请求 body 读 ``thinking``。extra_body 是 SDK 官方
           逃生通道，版本无关。典型用途：``thinking={"type":"disabled"}`` 关闭 MiniMax-M3 推理。
+        - output_config（v11 §G.3，C1）同理经 ``extra_body`` 透传：GA 原生 JSON Schema
+          输出通道尚新，不假设当前 anthropic SDK 版本原生支持该关键字参数。
         """
         params = {k: v for k, v in neutral.items() if k != "cache_control"}
         thinking = params.pop("thinking", None)
-        if thinking is not None:
+        output_config = params.pop("output_config", None)
+        if thinking is not None or output_config is not None:
             extra = dict(params.get("extra_body") or {})
-            extra.setdefault("thinking", thinking)
+            if thinking is not None:
+                extra.setdefault("thinking", thinking)
+            if output_config is not None:
+                extra.setdefault("output_config", output_config)
             params["extra_body"] = extra
         return params
 

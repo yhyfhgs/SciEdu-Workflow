@@ -9,6 +9,7 @@ from datetime import UTC
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import structlog
+from pydantic import BaseModel
 
 from sciforge.core.exceptions import LLMVisionError, ToolCallError
 from sciforge.core.models import ConversationMessage, ToolCall, ToolResult
@@ -225,26 +226,75 @@ class LLMClient:
         self._log_exchange(prompt, result, elapsed)
         return result
 
-    def _default_json_mode(self, kwargs: dict[str, Any]) -> None:
+    def _default_json_mode(
+        self, kwargs: dict[str, Any], schema_model: type[BaseModel] | None = None
+    ) -> None:
         """REC-07：JSON 调用默认启用原生 JSON 模式，降低非法 JSON → 减少重试。
 
         只在调用方与 config 都未显式设置 response_format 时注入。能力矩阵会按 provider 过滤：
         OpenAI / Gemini / OpenAI 兼容保留生效；Anthropic / anthropic 兼容不支持 → 静默丢弃
         （故对生产兼容网关零影响，依旧靠 prompt + thinking 控制）。
+
+        v11 §G.3（C1/C5，opt-in ``config.output_config_json_schema_enabled``）：
+        提供 ``schema_model`` 且开关打开时，按 provider 下发**严格** JSON Schema
+        而非笼统的 ``json_object``——Anthropic 走 GA 的 ``output_config.format``
+        （非 ``response_format``，能力矩阵已放行）；OpenAI/OpenAI 兼容走
+        ``response_format.json_schema`` + ``strict:true``。schema 经
+        ``to_strict_json_schema`` 转换（全字段 required + additionalProperties:
+        false，避开 min/maxLength）。默认关闭时行为与现状完全一致。
         """
         cfg_has = getattr(self.config, "response_format", None) is not None
-        if "response_format" not in kwargs and not cfg_has:
+        if "response_format" in kwargs or cfg_has:
+            return
+
+        use_strict_schema = schema_model is not None and bool(
+            getattr(self.config, "output_config_json_schema_enabled", False)
+        )
+        if use_strict_schema:
+            assert schema_model is not None  # for mypy；use_strict_schema 已保证
+            from sciforge.llm.structured_output import to_strict_json_schema
+
+            schema = to_strict_json_schema(schema_model)
+            if self.config.provider in (LLMProvider.ANTHROPIC, LLMProvider.ANTHROPIC_COMPATIBLE):
+                if "output_config" not in kwargs:
+                    kwargs["output_config"] = {
+                        "format": {
+                            "type": "json_schema",
+                            "schema": schema,
+                            "name": schema_model.__name__,
+                        }
+                    }
+                return
+            if self.config.provider in (LLMProvider.OPENAI, LLMProvider.OPENAI_COMPATIBLE):
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema_model.__name__,
+                        "strict": True,
+                        "schema": schema,
+                    },
+                }
+                return
+
+        if "response_format" not in kwargs:
             kwargs["response_format"] = {"type": "json_object"}
 
     async def generate_json(
         self,
         prompt: str,
         system: str | None = None,
+        *,
+        schema_model: type[BaseModel] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """异步生成并解析 JSON"""
+        """异步生成并解析 JSON
+
+        ``schema_model``：可选 Pydantic model，配合
+        ``config.output_config_json_schema_enabled`` 下发严格 schema（§G.3）；
+        不传或开关关闭时行为与现状一致。
+        """
         system = system or JSON_SYSTEM
-        self._default_json_mode(kwargs)
+        self._default_json_mode(kwargs, schema_model)
         raw = await self.generate(prompt, system=system, **kwargs)
         return parse_llm_json(raw)
 
@@ -252,11 +302,13 @@ class LLMClient:
         self,
         prompt: str,
         system: str | None = None,
+        *,
+        schema_model: type[BaseModel] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """同步生成并解析 JSON"""
+        """同步生成并解析 JSON（``schema_model`` 语义同 :meth:`generate_json`）"""
         system = system or JSON_SYSTEM
-        self._default_json_mode(kwargs)
+        self._default_json_mode(kwargs, schema_model)
         raw = self.generate_sync(prompt, system=system, **kwargs)
         return parse_llm_json(raw)
 
