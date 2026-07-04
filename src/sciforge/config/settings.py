@@ -263,6 +263,11 @@ class AppConfig(BaseSettings):
     # 重叠区，跨段边界条目被前段完整看到，仲裁器确定性去重（安全并行）。
     # 默认 0 = 关（段间零重叠 = 现状）；建议按体裁 60-120（> 典型条目长度）。
     segment_halo_lines: int = 0
+    # I.3（M3）：per-item 四态 + provisional id 出口 remap——出口按最终 start_line
+    # 排序后一次性分配 final item_id（OrderIndexAllocator.reserve 零改动）。
+    # 默认 False：走现状"提取顺序即分配"；开启时回补 WP-22 carry 试探合并
+    # （低置信度匹配标 uncertain 而非直接 accepted）。异常退回现状分配。
+    provisional_id_remap_enabled: bool = False
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）

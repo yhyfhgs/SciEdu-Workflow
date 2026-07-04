@@ -182,6 +182,8 @@ class Stage1Extract:
         self.carry_enabled: bool = bool(getattr(config, "extract_active_carry_enabled", False))
         self.carry_max_windows: int = max(1, int(getattr(config, "extract_carry_max_windows", 3)))
         self._carry: Any | None = None
+        # v11 I.3（M3，opt-in）：per-item 四态 + provisional id 出口 remap。
+        self.remap_enabled: bool = bool(getattr(config, "provisional_id_remap_enabled", False))
         # REC-20：当前 block 的确定性章节结构（detect_section_boundaries 产物），注入提取 prompt
         # 作为 structural_context 的权威先验，消灭"串行路径白跑 section_boundaries"的死逻辑。
         self._section_hint: str = ""
@@ -307,6 +309,9 @@ class Stage1Extract:
         """v11 III.2 carry 状态机（emit 路径每窗调用一次，确定性 0 LLM）。
 
         ① 定案匹配：本窗任一条目匹配 carry（编号→行号→锚点）→ 清除。
+           v11 I.3（M3，remap_enabled 时回补）：匹配置信度为 ``uncertain``
+           （无编号靠行号/锚点试探合并，而非编号精确匹配）→ 把该条目
+           ``status`` 标 ``uncertain``（仍入库，供后续人工/patch 复核）。
         ② 尾部重建：仍有未消费尾部 → 从中重建 carry；同一条目（原始起始行相同）
            跨窗计数继承 +1，超过 max+1（已 force 过仍未闭合）→ 放弃（退回 v10 重扫）。
         ③ 窗口全闭合且未匹配 → 放弃 carry（条目可能被合并/改编号提出）。
@@ -315,10 +320,18 @@ class Stage1Extract:
         if not self.carry_enabled:
             return
         try:
-            from sciforge.pipeline.boundary_patch import build_carry, carry_matches_item
+            from sciforge.pipeline.boundary_patch import build_carry, carry_match_confidence
 
             if self._carry is not None and items:
-                if any(carry_matches_item(self._carry, it) for it in items):
+                matched = False
+                for it in items:
+                    confidence = carry_match_confidence(self._carry, it)
+                    if confidence == "none":
+                        continue
+                    matched = True
+                    if self.remap_enabled and confidence == "uncertain":
+                        it.status = "uncertain"
+                if matched:
                     logger.info(
                         "stage1_carry_resolved",
                         number=self._carry.number,
@@ -810,7 +823,9 @@ class Stage1Extract:
 
             # 连续分配 item_ids。目录并发模式下必须从共享 allocator 动态预留，
             # 不能在文件启动时只拿一个起点，否则不同文件会分配重叠 ID。
-            item_ids = await self._allocate_item_ids(len(items))
+            # v11 I.3（M3，opt-in）：remap 开启时按最终 start_line 排序后统一分配
+            # （为 WP-33 局部补抽的插序做准备；本版无 patch 流程时通常是 no-op 排序）。
+            item_ids = await self._finalize_item_ids(items)
             first_id = item_ids[0]
 
             window_range = (self.line_offset + 1, self.line_offset + window_len)
@@ -1302,6 +1317,29 @@ class Stage1Extract:
             first_id = await self.order_index_allocator.reserve(count)
         self.next_item_id = max(self.next_item_id, first_id + count)
         return list(range(first_id, first_id + count))
+
+    async def _finalize_item_ids(self, items: list[Any]) -> list[int]:
+        """v11 I.3（M3）：出口分配 id，与 ``items`` 索引一一对应。
+
+        ``remap_enabled=False``（默认）：现状——提取顺序直接连续分配。
+        ``remap_enabled=True``：按最终 ``start_line`` 排序确定 id 分配顺序
+        （本版无 PatchInstruction 时通常与提取顺序一致，是为 WP-33 局部补抽
+        插序做的骨架），但返回值仍按**原始 items 顺序**对齐，调用方
+        ``zip(item_ids, items)`` 不变。``OrderIndexAllocator.reserve`` 只调
+        一次（消耗性），出口断言 order_index 严格递增。异常 → 降级为现状分配。
+        """
+        if not self.remap_enabled or len(items) <= 1:
+            return await self._allocate_item_ids(len(items))
+        try:
+            order = sorted(range(len(items)), key=lambda i: items[i].start_line)
+            ids = await self._allocate_item_ids(len(items))
+            final = [0] * len(items)
+            for rank, idx in enumerate(order):
+                final[idx] = ids[rank]
+            return final
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stage1_remap_failed", error=str(exc))
+            return await self._allocate_item_ids(len(items))
 
     # ── state 恢复 ──────────────────────────────────────
 

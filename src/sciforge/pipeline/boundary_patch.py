@@ -31,10 +31,12 @@ __all__ = [
     "MarkerEntry",
     "MarkerLedger",
     "PairingSuspect",
+    "CarryMatchConfidence",
     "arbitrate_halo_overlap",
     "audit_coverage",
     "build_carry",
     "build_marker_ledger",
+    "carry_match_confidence",
     "carry_matches_item",
     "classify_tail_state",
 ]
@@ -384,22 +386,37 @@ def arbitrate_halo_overlap(
     return kept_prev, kept_next, dropped
 
 
-def carry_matches_item(carry: IncompleteItemCarry, item: object) -> bool:
-    """判断提取条目是否续完/定案了 carry 条目（编号 → 行号 → 锚点三路降级）。
+CarryMatchConfidence = Literal["exact", "uncertain", "none"]
+
+
+def carry_match_confidence(carry: IncompleteItemCarry, item: object) -> CarryMatchConfidence:
+    """carry 匹配的置信度分级（编号 → 行号 → 锚点三路降级）。
 
     ``item`` 鸭子类型：需有 number / start_line / corrected_content 属性
     （即 SingleItemExtractLLM）。
+
+    - ``exact``：编号精确匹配——可靠，标 ``accepted``
+    - ``uncertain``：无编号可比，靠行号邻近或锚点模糊匹配——试探合并
+      （v11 I.3），标 ``uncertain`` 供后续人工/patch 复核，但**仍入库**
+      （宁可入库待复核，不丢弃）
+    - ``none``：三路皆不命中
     """
     carry_num = canonicalize_number(carry.number) if carry.number else ""
     item_num = canonicalize_number(getattr(item, "number", "") or "")
     if carry_num and item_num:
-        return carry_num == item_num
+        return "exact" if carry_num == item_num else "none"
     start_line = int(getattr(item, "start_line", 0) or 0)
     if abs(start_line - carry.original_start_line) <= 2:
-        return True
+        return "uncertain"
     anchor = carry.head_anchor_start.strip()
     if len(anchor) >= 4:
         content = str(getattr(item, "corrected_content", "") or "")
         # 锚点含标记头（如"习题 3.1 求…"），条目 content 通常去掉了标记头 → 双向包含
-        return anchor in content[:120] or content[:40].strip() in anchor
-    return False
+        if anchor in content[:120] or content[:40].strip() in anchor:
+            return "uncertain"
+    return "none"
+
+
+def carry_matches_item(carry: IncompleteItemCarry, item: object) -> bool:
+    """判断提取条目是否续完/定案了 carry 条目（``carry_match_confidence`` 的布尔视图）。"""
+    return carry_match_confidence(carry, item) != "none"

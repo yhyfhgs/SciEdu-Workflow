@@ -68,6 +68,15 @@ class IncompleteItemCarry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# v11 I.3（M3）：per-item 四态，取代"提取即分配 id"的现状——允许先判定状态、
+# 出口再统一按最终顺序分配 final id（provisional_id_remap_enabled 时生效）。
+# - accepted：确定性审计通过（默认值，兼容现状）
+# - uncertain：试探合并（carry 低置信度匹配）/低置信边界；仍入库，标记待复核
+# - needs_patch：审计发现遗漏/错配，等 M3 WP-33 局部补抽（本版未接入 patch 流程）
+# - rejected：重复/越界/仲裁淘汰（本版未接入淘汰流程，预留状态值）
+ItemStatus = Literal["accepted", "uncertain", "needs_patch", "rejected"]
+
+
 class ItemAnchorsLLM(BaseModel):
     """v11 II.4（M1，extract_char_span_enabled 时 LLM 输出）：条目边界锚点短串。
 
@@ -119,6 +128,10 @@ class SingleItemExtractLLM(BaseModel):
     # 内部字段（非 LLM 输出）：resolve_span 定位后回填，Stage3 落 start_char/end_char 列
     resolved_start_char: int | None = None
     resolved_end_char: int | None = None
+    # v11 I.3（M3，内部字段非 LLM 输出）：per-item 状态 + provisional id。
+    # provisional_id_remap_enabled=False（默认）时两者恒为默认值，不影响现状。
+    status: ItemStatus = "accepted"
+    provisional_id: str = ""
 
     model_config = ConfigDict(extra="ignore")
 
