@@ -703,6 +703,60 @@ def parse_relink(
     )
 
 
+@parse_app.command("cost-report")
+def cost_report(
+    log_file: Path = typer.Argument(
+        ..., help='pipeline JSON Lines 日志文件（需 [logging] log_format="json"）', exists=True
+    ),
+) -> None:
+    """v11 §I.3 成本仪表盘：聚合日志里的 llm_call_metrics 事件（按 stage 分组）。
+
+    数据源要求 log_format="json"（默认 "console" 人类可读格式不含可解析
+    JSON 行）。非 metric 事件与格式错误行静默跳过。
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    from sciforge.pipeline.cost_report import aggregate_cost, parse_metrics_from_jsonl
+
+    metrics = parse_metrics_from_jsonl(log_file)
+    if not metrics:
+        error(
+            f'{log_file} 中未解析出任何 llm_call_metrics 事件（确认运行时配置了 log_format="json"）'
+        )
+        raise typer.Exit(1)
+
+    summary = aggregate_cost(metrics)
+    # 固定宽度避免窄终端/非 TTY 环境下 stage 名等长字段被截断换行
+    wide_console = Console(width=160)
+
+    table = Table(title=f"成本仪表盘: {log_file.name}")
+    table.add_column("Stage", style="cyan")
+    table.add_column("调用数", justify="right")
+    table.add_column("Input Tokens", justify="right")
+    table.add_column("Output Tokens", justify="right")
+    table.add_column("Cache Read", justify="right")
+    table.add_column("Retry 次数", justify="right")
+    for stage_cost in summary.by_stage:
+        table.add_row(
+            stage_cost.stage,
+            str(stage_cost.calls),
+            str(stage_cost.input_tokens),
+            str(stage_cost.output_tokens),
+            str(stage_cost.cache_read_tokens),
+            str(stage_cost.retry_attempts),
+        )
+    wide_console.print(table)
+
+    hit_rate = summary.cache_hit_rate
+    hit_rate_str = f"{hit_rate:.1%}" if hit_rate is not None else "N/A"
+    wide_console.print(
+        f"\n[bold]总计[/]: {summary.total_calls} 次调用, "
+        f"input={summary.total_input_tokens}, output={summary.total_output_tokens}, "
+        f"cache 命中率={hit_rate_str}"
+    )
+
+
 @parse_app.command("db-stats")
 def db_stats(
     db: Path = typer.Argument(..., help="SQLite 数据库路径", exists=True),
