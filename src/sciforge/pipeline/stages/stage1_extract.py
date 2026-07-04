@@ -31,7 +31,7 @@ from sciforge.core.models import (
     MdBlockSource,
 )
 from sciforge.core.sentinel import SENTINEL, _Sentinel
-from sciforge.pipeline.llm_schemas import BatchItemExtractPayloadLLM
+from sciforge.pipeline.llm_schemas import BatchItemExtractPayloadLLM, SingleItemExtractLLM
 from sciforge.pipeline.resume_state import save_state_locked
 from sciforge.pipeline.retry import (
     RetryExhausted,
@@ -47,6 +47,7 @@ from sciforge.prompts.templates import (
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
     from sciforge.llm.client import LLMClient
+    from sciforge.pipeline.text_tools.regex_dsl import MarkerStyle
 
 logger = structlog.get_logger()
 
@@ -184,6 +185,10 @@ class Stage1Extract:
         self._carry: Any | None = None
         # v11 I.3（M3，opt-in）：per-item 四态 + provisional id 出口 remap。
         self.remap_enabled: bool = bool(getattr(config, "provisional_id_remap_enabled", False))
+        # v11 III.3（M3，opt-in）：PatchInstruction 局部补抽（依赖 ledger_enabled）。
+        self.patch_local_extraction_enabled: bool = bool(
+            getattr(config, "patch_local_extraction_enabled", False)
+        )
         # REC-20：当前 block 的确定性章节结构（detect_section_boundaries 产物），注入提取 prompt
         # 作为 structural_context 的权威先验，消灭"串行路径白跑 section_boundaries"的死逻辑。
         self._section_hint: str = ""
@@ -400,6 +405,136 @@ class Stage1Extract:
         except Exception as exc:  # noqa: BLE001
             logger.warning("stage1_carry_update_failed", error=str(exc))
             self._carry = None
+
+    async def _apply_local_patches(
+        self, window: list[str], window_start: int, consumed: int, payload: Any
+    ) -> list[Any]:
+        """v11 III.3（M3，opt-in）：局部补抽——替代整窗 retry 的增量修复。
+
+        依赖 ``ledger_enabled``（复用同一套 marker ledger 能力）；关闭或未开
+        ``patch_local_extraction_enabled`` 时直接返回 ``[]``，不产生任何行为
+        变化。确定性修复（boundary_fix/pairing_fix/type_fix）就地修改
+        ``payload.items``；``missed_marker`` 尝试 micro LLM 补抽（±context_lines
+        小段，不重跑整窗），补出则返回新条目（``status=accepted``）；补不出则
+        返回一条 ``status=uncertain`` 的占位条目（宁可入库待复核，不丢弃）。
+        审计发现全 clean（无需补抽）→ 0 额外 LLM 调用。异常静默降级为 []。
+        """
+        if not self.patch_local_extraction_enabled:
+            return []
+        if not self.ledger_enabled:
+            logger.warning(
+                "stage1_patch_requires_ledger",
+                detail="patch_local_extraction_enabled 依赖 marker_ledger_enabled，已跳过",
+            )
+            return []
+        try:
+            from sciforge.pipeline.boundary_patch import (
+                AuditItem,
+                audit_coverage,
+                build_marker_ledger,
+            )
+            from sciforge.pipeline.patch_instruction import (
+                apply_deterministic_fixes,
+                build_pairing_refs,
+                build_patch_instructions,
+                find_type_mismatches,
+                micro_extract_item,
+            )
+
+            items = payload.items
+            for i, item in enumerate(items):
+                if not item.provisional_id:
+                    item.provisional_id = f"w{window_start}_{i:03d}"
+
+            raw_lines = [self._strip_line_prefix(ln) for ln in window[:consumed]]
+            ledger = build_marker_ledger(raw_lines, line_base=window_start)
+            audit_items = [
+                AuditItem(
+                    item_ref=item.provisional_id,
+                    category=item.category,
+                    item_type=item.item_type,
+                    solution_status=item.solution_status,
+                    start_line=item.start_line,
+                    end_line=max(item.end_line, item.start_line),
+                )
+                for item in items
+            ]
+            report = audit_coverage(ledger, audit_items)
+
+            near_tail_margin = (
+                int(self.genre_profile.near_tail_margin) if self.genre_profile is not None else 10
+            )
+            marker_style_raw = str(
+                self.genre_profile.marker_style if self.genre_profile is not None else "mixed"
+            )
+            valid_styles = ("textbook", "question_number", "mixed")
+            marker_style = cast(
+                "MarkerStyle", marker_style_raw if marker_style_raw in valid_styles else "mixed"
+            )
+            pairing_refs = build_pairing_refs(
+                items,
+                window_last_line=window_start + consumed - 1,
+                near_tail_margin=near_tail_margin,
+                markers=ledger.markers,
+            )
+            type_mismatches = find_type_mismatches(items, ledger.markers)
+            # report.clean 只覆盖 missed/boundary/pairing_suspect 三类，不含
+            # type_mismatch——三者皆无才是真正"无需任何处理"（0 额外 LLM 调用）。
+            if report.clean and not pairing_refs and not type_mismatches:
+                return []
+            instructions = build_patch_instructions(
+                report, pairing_issue_refs=pairing_refs, type_mismatches=type_mismatches
+            )
+            _records, remaining = apply_deterministic_fixes(
+                instructions, items, marker_style=marker_style
+            )
+
+            context_lines = int(getattr(self.config, "patch_context_lines", 8))
+            patched: list[Any] = []
+            for instr in remaining:
+                instr = instr.model_copy(update={"context_lines": context_lines})
+                micro_item, token_cost = await micro_extract_item(
+                    self.llm, window, instr, line_base=window_start
+                )
+                if micro_item is not None:
+                    seq = len(items) + len(patched)
+                    micro_item.provisional_id = f"w{window_start}_patch{seq:03d}"
+                    patched.append(micro_item)
+                    if instr.around_marker is not None:
+                        instr.around_marker.status = "patched"
+                        instr.around_marker.covered_by = micro_item.provisional_id
+                    logger.info(
+                        "stage1_patch_micro_extracted",
+                        number=micro_item.number,
+                        line=instr.target_line_start,
+                        token_cost=token_cost,
+                    )
+                elif instr.around_marker is not None:
+                    instr.around_marker.status = "ambiguous"
+                    marker = instr.around_marker
+                    is_question = marker.kind in {"exercise", "example", "problem"}
+                    placeholder = SingleItemExtractLLM(
+                        category="question" if is_question else "knowledge",
+                        item_type=marker.kind,
+                        number=marker.number_hint,
+                        corrected_content=f"[待复核：确定性扫描发现疑似遗漏的{marker.kind}标记，"
+                        f"micro LLM 补抽未能确认] {marker.marker_text}",
+                        solution_status="no_solution_in_source",
+                        start_line=instr.target_line_start,
+                        end_line=max(instr.target_line_end, instr.target_line_start),
+                        status="uncertain",
+                        provisional_id=f"w{window_start}_amb{len(items) + len(patched):03d}",
+                    )
+                    patched.append(placeholder)
+                    logger.warning(
+                        "stage1_patch_placeholder_inserted",
+                        marker_line=marker.global_line,
+                        kind=marker.kind,
+                    )
+            return patched
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stage1_local_patch_failed", error=str(exc))
+            return []
 
     def _resolve_item_spans(self, window: list[str], window_start: int, payload: Any) -> None:
         """v11 II.4（M1）：对带锚点的 item 调 resolve_span 回填精确字符偏移。
@@ -821,10 +956,34 @@ class Stage1Extract:
             else:
                 consumed = window_len
 
-            # 连续分配 item_ids。目录并发模式下必须从共享 allocator 动态预留，
-            # 不能在文件启动时只拿一个起点，否则不同文件会分配重叠 ID。
-            # v11 I.3（M3，opt-in）：remap 开启时按最终 start_line 排序后统一分配
-            # （为 WP-33 局部补抽的插序做准备；本版无 patch 流程时通常是 no-op 排序）。
+            # tail_item / _prev_tail_summary 基于 LLM 本轮实际提取的最后一条
+            # （patch 补的条目不计入编号连续性提示，避免占位/补抽内容误导下一窗口）
+            tail_item = items[-1]
+            self._prev_tail_summary = (
+                f"批量提取 {len(items)} 条，最后一条："
+                f"类型 {tail_item.category}/{tail_item.item_type}, 编号 {tail_item.number}, "
+                f"行号 {tail_item.start_line}-{tail_item.end_line}, "
+                f"solution_status: {tail_item.solution_status}; "
+                f"stop_reason: {payload.stop_reason}"
+            )
+            for it in items:
+                self._update_examples(it)
+
+            # v11 III.2：carry 状态机——本窗定案匹配 / 新尾部重建 / 到顶放弃
+            # （对 patch 前的原始 items 判定，patch 补的条目不参与跨窗匹配）
+            self._update_carry_after_window(
+                items, payload.stop_reason, window, window_start_int, consumed, window_len
+            )
+
+            # v11 III.3（M3，opt-in）：局部补抽——对已消费段做审计，缺口尝试补齐
+            # （micro LLM 或确定性修复），补出的条目追加进 items 一起分配 id。
+            patched = await self._apply_local_patches(window, window_start_int, consumed, payload)
+            if patched:
+                items = payload.items = list(items) + patched
+
+            # 连续分配 item_ids（含 patch 结果）。目录并发模式下必须从共享 allocator
+            # 动态预留，不能在文件启动时只拿一个起点，否则不同文件会分配重叠 ID。
+            # v11 I.3（M3，opt-in）：remap 开启时按最终 start_line 排序后统一分配。
             item_ids = await self._finalize_item_ids(items)
             first_id = item_ids[0]
 
@@ -834,7 +993,7 @@ class Stage1Extract:
             # v11 II.4（M1）：锚点 → 精确字符偏移（0 LLM，确定性；失败静默留行级）
             self._resolve_item_spans(window, window_start_int, payload)
 
-            # v11 III.1（M1 观测层）：对已消费窗口段做 marker 覆盖率对账（0 LLM）
+            # v11 III.1（M1 观测层）：对已消费窗口段做 marker 覆盖率对账（含 patch 后结果）
             ledger_audit = self._audit_consumed_window(
                 window, window_start_int, consumed, payload, item_ids
             )
@@ -856,22 +1015,6 @@ class Stage1Extract:
             self._mirror_batch(batch, state, stage_dir="stage1")
             await out_queue.put(batch)
             state.stage1_extracted_count += len(items)
-
-            tail_item = items[-1]
-            self._prev_tail_summary = (
-                f"批量提取 {len(items)} 条，最后一条："
-                f"类型 {tail_item.category}/{tail_item.item_type}, 编号 {tail_item.number}, "
-                f"行号 {tail_item.start_line}-{tail_item.end_line}, "
-                f"solution_status: {tail_item.solution_status}; "
-                f"stop_reason: {payload.stop_reason}"
-            )
-            for it in items:
-                self._update_examples(it)
-
-            # v11 III.2：carry 状态机——本窗定案匹配 / 新尾部重建 / 到顶放弃
-            self._update_carry_after_window(
-                items, payload.stop_reason, window, window_start_int, consumed, window_len
-            )
 
             logger.info(
                 "stage1_extract_batch_emitted",

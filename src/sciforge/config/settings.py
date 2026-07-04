@@ -268,6 +268,12 @@ class AppConfig(BaseSettings):
     # 默认 False：走现状"提取顺序即分配"；开启时回补 WP-22 carry 试探合并
     # （低置信度匹配标 uncertain 而非直接 accepted）。异常退回现状分配。
     provisional_id_remap_enabled: bool = False
+    # III.3（M3）：PatchInstruction 局部补抽——依赖 marker_ledger_enabled 产出的
+    # 审计结果，对 missed_marker 做 micro LLM 补抽（±context_lines 小段，不重跑
+    # 整窗）；boundary_fix/pairing_fix/type_fix 确定性修复不额外耗 LLM。
+    # 默认 False；仅在 marker_ledger_enabled=True 时生效（依赖其 AuditReport）。
+    patch_local_extraction_enabled: bool = False
+    patch_context_lines: int = 8
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）
