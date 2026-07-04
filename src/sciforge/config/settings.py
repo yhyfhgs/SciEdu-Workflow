@@ -37,6 +37,9 @@ KNOWN_TASKS: list[str] = [
     "tag",
     "repair",
     "extract_and_classify",
+    # I.4（M4）：Evaluator 多轮任务；未在 TOML 配置则走 default_provider_ref
+    # （调用方可选 fallback 到 "review"，与 Docs/20 I.4 一致，非强制）
+    "extract_validate",
     "improve",
     "numerical_verify",
     "vlm_convert",
@@ -274,6 +277,12 @@ class AppConfig(BaseSettings):
     # 默认 False；仅在 marker_ledger_enabled=True 时生效（依赖其 AuditReport）。
     patch_local_extraction_enabled: bool = False
     patch_context_lines: int = 8
+    # I.4/I.6（M4）：风险触发 Evaluator 多轮——仅 harness.risk_score 超阈值的
+    # 高风险窗口触发（70-80% 干净窗口 0 额外调用）；provider 约束见 C8
+    # （仅 Anthropic/anthropic_compatible 支持，其余 provider 自动跳过退单轮）。
+    extract_validator_enabled: bool = False
+    extract_validator_max_turns: int = 3
+    extract_validator_risk_threshold: float = 0.3
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）
