@@ -122,13 +122,13 @@ def test_defaults_for_non_generated(tmp_path: Path) -> None:
 
 
 def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
-    """旧 v8 库打开 → 自动链式升级到当前版本(v12)，不删库、保留旧数据"""
+    """旧 v8 库打开 → 自动链式升级到当前版本(v13)，不删库、保留旧数据"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
 
     backend = SQLiteStorageBackend(db)
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 13
         # 旧数据保留，新列以默认值可读
         old = backend.load_question("q-old")
         assert old.content == "旧题内容"
@@ -155,13 +155,13 @@ def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
 
 
 def test_migration_idempotent_rerun(tmp_path: Path) -> None:
-    """已迁移到当前版本的库再次打开不报错、版本仍为 v12"""
+    """已迁移到当前版本的库再次打开不报错、版本仍为 v13"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
     SQLiteStorageBackend(db).close()  # 首次迁移
     backend = SQLiteStorageBackend(db)  # 二次打开
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 13
     finally:
         backend.close()
 
@@ -211,7 +211,31 @@ def test_v11_to_v12_concept_graph_migration(tmp_path: Path) -> None:
         }
         assert "idx_concept_discipline_branch" in indexes
         assert "idx_item_concept_concept" in indexes
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 13
+    finally:
+        backend.close()
+
+
+def test_v12_to_v13_evaluation_migration(tmp_path: Path) -> None:
+    """M6 迁移创建评价/复核表与质量门禁索引。"""
+    backend = SQLiteStorageBackend(tmp_path / "evaluation.db")
+    try:
+        tables = {
+            row[0]
+            for row in backend._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert {"item_evaluations", "review_queue"} <= tables
+        indexes = {
+            row[0]
+            for row in backend._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        assert "idx_eval_quality_gate" in indexes
+        assert "idx_review_queue_work" in indexes
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 13
     finally:
         backend.close()
 

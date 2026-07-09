@@ -119,6 +119,40 @@ async def test_missed_marker_micro_extract_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_earlier_span_patch_is_sorted_before_final_id_allocation() -> None:
+    """补出的 earlier-span 不能追加在 batch 尾部并配到更大的 source-order ID。"""
+    stage = _stage1(
+        patch_local_extraction_enabled=True,
+        marker_ledger_enabled=True,
+        # 即使没有显式同时开 remap，patch 出口仍必须满足强顺序契约。
+        provisional_id_remap_enabled=False,
+    )
+    earlier = _item(
+        "3.1",
+        101,
+        101,
+        category="question",
+        item_type="exercise",
+        corrected_content="求极限。",
+    )
+    stage.llm.generate_json = AsyncMock(
+        return_value=SingleItemExtractPayloadLLM(extracted=earlier).model_dump(mode="json")
+    )
+    later = _item("3.2", 103, 104)
+    payload = _Payload([later])
+    window = _annotated(
+        ["习题 3.1 求极限。", "", "定理 3.2 内容说明。", "证明：显然。"], 101
+    )
+
+    patched = await stage._apply_local_patches(window, 101, 4, payload)
+    payload.items = list(payload.items) + patched
+    item_ids = await stage._finalize_item_ids(payload.items)
+
+    assert [item.start_line for item in payload.items] == [101, 103]
+    assert item_ids == [0, 1]
+
+
+@pytest.mark.asyncio
 async def test_missed_marker_unresolved_creates_uncertain_placeholder() -> None:
     """micro LLM 补不出 → 占位条目 status=uncertain，宁可入库待复核。"""
     stage = _stage1(patch_local_extraction_enabled=True, marker_ledger_enabled=True)

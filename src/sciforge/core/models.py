@@ -75,8 +75,15 @@ class DocumentFormat(StrEnum):
     PDF = "pdf"
     DOCX = "docx"
     CSV = "csv"
+    TSV = "tsv"
+    XLSX = "xlsx"
+    HTML = "html"
     PPTX = "pptx"
     EPUB = "epub"
+    JSON = "json"
+    JSONL = "jsonl"
+    TEXT = "text"
+    IMAGE = "image"
 
 
 class RelationType(StrEnum):
@@ -117,6 +124,30 @@ class ConceptRole(StrEnum):
     USES = "uses"
     PREREQUISITE = "prerequisite"
     TESTS = "tests"
+
+
+class CognitiveLevel(StrEnum):
+    """Bloom 修订版认知层级。"""
+
+    REMEMBER = "remember"
+    UNDERSTAND = "understand"
+    APPLY = "apply"
+    ANALYZE = "analyze"
+    EVALUATE = "evaluate"
+    CREATE = "create"
+
+
+class EvaluationSource(StrEnum):
+    PIPELINE_AUTO = "pipeline_auto"
+    LLM_JUDGE = "llm_judge"
+    HUMAN = "human"
+
+
+class ReviewQueueStatus(StrEnum):
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    RESOLVED = "resolved"
+    DISMISSED = "dismissed"
 
 
 # ── 来源元数据 ────────────────────────────────────────
@@ -720,6 +751,50 @@ class ConceptLinkBatch(BaseModel):
     pending_concept_ids: list[str] = Field(default_factory=list)
 
 
+# ── Knowledge Evaluation（schema v13）──────────────────
+
+
+class ItemEvaluation(BaseModel):
+    """版本化、可叠加来源的知识条目质量与难度量规。"""
+
+    item_id: str
+    item_kind: Literal["knowledge", "question"]
+    rubric_version: str = "v1"
+    extraction_quality: float = Field(ge=0.0, le=1.0)
+    solution_completeness: float = Field(ge=0.0, le=1.0)
+    difficulty_overall: float = Field(ge=1.0, le=10.0)
+    difficulty_dims: DifficultyScore
+    cognitive_level: CognitiveLevel
+    prerequisite_depth: int = Field(ge=0, default=0)
+    proof_complexity: float = Field(ge=0.0, le=1.0)
+    lecture_suitability: float = Field(ge=0.0, le=1.0)
+    cross_book_generality: float = Field(ge=0.0, le=1.0)
+    source: EvaluationSource = EvaluationSource.PIPELINE_AUTO
+    confidence: float = Field(ge=0.0, le=1.0, default=0.65)
+    evaluated_at: datetime = Field(default_factory=datetime.now)
+
+
+class ReviewQueueItem(BaseModel):
+    """确定性质量门禁产生的人工复核任务。"""
+
+    id: int | None = None
+    item_id: str
+    item_kind: Literal["knowledge", "question"]
+    tenant_id: str = ""
+    rubric_version: str = "v1"
+    reason: str
+    priority: int = Field(ge=1, le=5, default=3)
+    status: ReviewQueueStatus = ReviewQueueStatus.OPEN
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class EvaluationBatch(BaseModel):
+    evaluations: list[ItemEvaluation] = Field(default_factory=list)
+    review_items: list[ReviewQueueItem] = Field(default_factory=list)
+
+
 # ── Pipeline Producer-Consumer 消息 ───────────────────────
 
 
@@ -850,6 +925,43 @@ class ExtractedBatch(BaseModel):
     # 结论（AuditReport.model_dump()）。纯观测附件——下游可读不改行为；
     # Stage1Review 后续可据此进一步减少重复校验（I.5）。
     ledger_audit: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _check_parallel_arrays_and_order(self) -> ExtractedBatch:
+        """守住 Stage1 的最终出口契约，而不是信任各条生产/恢复路径。
+
+        ``item_ids`` 与 ``items`` 是并行数组；任何错位都会把内容绑定到错误的
+        ``order_index``。下游 Stage1Review/Stage3 还依赖 ID 严格递增和条目按
+        原文顺序排列，因此三条不变量必须在 payload 边界一次性强制执行。
+
+        旧 checkpoint 由 orchestrator 逐条包装成单元素 batch 重放，天然满足
+        该契约；兼容修复应留在 replay 边界，而不应放松新 batch 的约束。
+        """
+        if len(self.item_ids) != len(self.items):
+            raise ValueError(
+                "item_ids 与 items 长度必须一致："
+                f"item_ids={len(self.item_ids)}, items={len(self.items)}"
+            )
+
+        for idx in range(1, len(self.item_ids)):
+            previous_id = self.item_ids[idx - 1]
+            current_id = self.item_ids[idx]
+            if current_id <= previous_id:
+                raise ValueError(
+                    "item_ids 必须严格递增："
+                    f"item_ids[{idx - 1}]={previous_id}, item_ids[{idx}]={current_id}"
+                )
+
+        for idx in range(1, len(self.items)):
+            previous_item = self.items[idx - 1]
+            current_item = self.items[idx]
+            if current_item.start_line < previous_item.start_line:
+                raise ValueError(
+                    "items 必须按 start_line 非降序排列："
+                    f"items[{idx - 1}].start_line={previous_item.start_line}, "
+                    f"items[{idx}].start_line={current_item.start_line}"
+                )
+        return self
 
 
 class ReviewedItem(BaseModel):

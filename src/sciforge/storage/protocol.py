@@ -8,7 +8,9 @@ if TYPE_CHECKING:
     from sciforge.core.models import (
         ConceptLinkBatch,
         ConceptRelation,
+        EvaluationBatch,
         Figure,
+        ItemEvaluation,
         KnowledgePoint,
         Question,
     )
@@ -68,6 +70,27 @@ class ConceptGraphStorageBackend(BatchStorageBackend, Protocol):
     def save_concept_relations(self, edges: list[ConceptRelation]) -> int: ...
 
     def concept_relation_evidence_rows(self, discipline: str) -> list[dict[str, object]]: ...
+
+
+@runtime_checkable
+class EvaluationStorageBackend(ConceptGraphStorageBackend, Protocol):
+    """支持 schema v13 版本化评价与人工复核队列的存储能力。"""
+
+    def evaluation_rows(
+        self,
+        source_files: str | list[str],
+        discipline: str | None = None,
+    ) -> list[dict[str, object]]: ...
+
+    def save_evaluation_batch(self, batch: EvaluationBatch) -> dict[str, int]: ...
+
+    def load_item_evaluation(
+        self,
+        item_id: str,
+        *,
+        rubric_version: str = "v1",
+        source: str = "pipeline_auto",
+    ) -> ItemEvaluation: ...
 
 
 @runtime_checkable

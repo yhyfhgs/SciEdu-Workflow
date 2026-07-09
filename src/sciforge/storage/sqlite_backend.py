@@ -29,19 +29,24 @@ from sciforge.core.exceptions import SciForgeError
 from sciforge.core.models import (
     ConceptLinkBatch,
     ConceptRelation,
+    DifficultyScore,
     Discipline,
+    EvaluationBatch,
+    EvaluationSource,
     Figure,
+    ItemEvaluation,
     KnowledgePoint,
     Question,
+    ReviewQueueItem,
+    ReviewQueueStatus,
 )
 
 logger = structlog.get_logger()
 
 
 # ── SQL 常量（executemany 批量写入复用）──────────────────
-# schema v12：v11 字符级溯源 + M5 Concept Graph 四表。
-# M6 评价表按计划走 v13，保持每个里程碑可独立迁移/回滚。
-_SCHEMA_VERSION = 12
+# schema v13：v11 字符级溯源 + M5 Concept Graph + M6 Knowledge Evaluation。
+_SCHEMA_VERSION = 13
 
 # schema 增量迁移：{from_version: [该版本→下一版的 ALTER 语句]}。
 # 每条 ALTER 容忍 "duplicate column"（幂等，应对中断重跑）。
@@ -135,6 +140,58 @@ _MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_item_concept_concept ON item_concepts(concept_id, role)",
         "CREATE INDEX IF NOT EXISTS idx_concept_rel_dst "
         "ON concept_relations(dst_concept, relation_type)",
+    ],
+    # v12→v13（v11 子系统 IV / M6：版本化评价量规 + human review queue）
+    12: [
+        """
+        CREATE TABLE IF NOT EXISTS item_evaluations (
+            item_id TEXT NOT NULL,
+            item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+            rubric_version TEXT NOT NULL,
+            extraction_quality REAL NOT NULL CHECK(extraction_quality BETWEEN 0.0 AND 1.0),
+            solution_completeness REAL NOT NULL
+                CHECK(solution_completeness BETWEEN 0.0 AND 1.0),
+            difficulty_overall REAL NOT NULL CHECK(difficulty_overall BETWEEN 1.0 AND 10.0),
+            difficulty_dims TEXT NOT NULL DEFAULT '{}',
+            cognitive_level TEXT NOT NULL
+                CHECK(cognitive_level IN
+                    ('remember','understand','apply','analyze','evaluate','create')),
+            prerequisite_depth INTEGER NOT NULL DEFAULT 0 CHECK(prerequisite_depth >= 0),
+            proof_complexity REAL NOT NULL DEFAULT 0.0
+                CHECK(proof_complexity BETWEEN 0.0 AND 1.0),
+            lecture_suitability REAL NOT NULL DEFAULT 0.0
+                CHECK(lecture_suitability BETWEEN 0.0 AND 1.0),
+            cross_book_generality REAL NOT NULL DEFAULT 0.0
+                CHECK(cross_book_generality BETWEEN 0.0 AND 1.0),
+            source TEXT NOT NULL CHECK(source IN ('pipeline_auto','llm_judge','human')),
+            confidence REAL NOT NULL DEFAULT 0.65 CHECK(confidence BETWEEN 0.0 AND 1.0),
+            evaluated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY(item_id, rubric_version, source)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS review_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id TEXT NOT NULL,
+            item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+            tenant_id TEXT NOT NULL DEFAULT '',
+            rubric_version TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+            status TEXT NOT NULL DEFAULT 'open'
+                CHECK(status IN ('open','in_progress','resolved','dismissed')),
+            details TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(item_id, reason, rubric_version)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_eval_item ON item_evaluations(item_id)",
+        "CREATE INDEX IF NOT EXISTS idx_eval_quality_gate "
+        "ON item_evaluations(rubric_version, source, extraction_quality, "
+        "solution_completeness, difficulty_overall)",
+        "CREATE INDEX IF NOT EXISTS idx_review_queue_work "
+        "ON review_queue(tenant_id, status, priority, created_at)",
     ],
 }
 
@@ -623,6 +680,17 @@ class SQLiteStorageBackend:
                 "SELECT relation_type, COUNT(*) FROM item_relations "
                 "GROUP BY relation_type ORDER BY 2 DESC"
             ),
+            "concepts_total": scalar("SELECT COUNT(*) FROM concepts"),
+            "concepts_pending": scalar("SELECT COUNT(*) FROM concepts WHERE status = 'pending'"),
+            "concept_relations_total": scalar("SELECT COUNT(*) FROM concept_relations"),
+            "evaluations_total": scalar("SELECT COUNT(*) FROM item_evaluations"),
+            "quality_gate_pass": scalar(
+                "SELECT COUNT(*) FROM item_evaluations WHERE source = 'pipeline_auto' "
+                "AND extraction_quality >= 0.7 AND solution_completeness >= 0.6"
+            ),
+            "review_queue_open": scalar(
+                "SELECT COUNT(*) FROM review_queue WHERE status IN ('open','in_progress')"
+            ),
             "source_files": dist(
                 "SELECT source_file, COUNT(*) FROM ("
                 "  SELECT source_file FROM knowledge_points"
@@ -1065,6 +1133,252 @@ class SQLiteStorageBackend:
         else:
             row = self._conn.execute("SELECT COUNT(*) FROM concepts").fetchone()
         return int(row[0]) if row else 0
+
+    # ── Knowledge Evaluation（v13 / M6）───────────────
+
+    def evaluation_rows(
+        self,
+        source_files: str | list[str],
+        discipline: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """读取确定性 rubric 所需投影；大字段仅取 content + proof/solution。"""
+        sources = [source_files] if isinstance(source_files, str) else list(source_files)
+        if not sources:
+            return []
+        placeholders = ",".join("?" for _ in sources)
+        out: list[dict[str, Any]] = []
+
+        for table, kind, type_col, reasoning_col in (
+            ("knowledge_points", "knowledge", "kp_type", "proof_content"),
+            ("questions", "question", "question_type", "solution_content"),
+        ):
+            params: list[Any] = list(sources)
+            condition = f"base.source_file IN ({placeholders})"
+            if discipline:
+                condition += " AND base.discipline = ?"
+                params.append(discipline)
+            question_fields = (
+                "base.options, base.correct_option, base.tenant_id"
+                if table == "questions"
+                else "'[]' AS options, NULL AS correct_option, '' AS tenant_id"
+            )
+            sql = (  # noqa: S608 — table/column names 来自硬编码元组
+                f"SELECT base.id, base.{type_col} AS type, base.content, "
+                f"base.{reasoning_col} AS reasoning, base.difficulty, base.taxonomy_path, "
+                f"base.tags, base.start_line, base.end_line, base.start_char, base.end_char, "
+                f"{question_fields}, "
+                "(SELECT COUNT(*) FROM figures f WHERE f.item_id = base.id) AS figure_count, "
+                "(SELECT COUNT(*) FROM item_concepts ic WHERE ic.item_id = base.id) "
+                "  AS concept_count, "
+                "COALESCE((SELECT MAX(c.depth) FROM item_concepts ic "
+                "  JOIN concepts c ON c.id = ic.concept_id WHERE ic.item_id = base.id), 0) "
+                "  AS concept_depth, "
+                "CASE WHEN EXISTS(SELECT 1 FROM item_concepts ic JOIN concepts c "
+                "  ON c.id = ic.concept_id WHERE ic.item_id = base.id AND c.status = 'pending') "
+                "THEN 'pending' WHEN EXISTS(SELECT 1 FROM item_concepts ic JOIN concepts c "
+                "  ON c.id = ic.concept_id WHERE ic.item_id = base.id AND c.status = 'active') "
+                "THEN 'active' ELSE '' END AS concept_status, "
+                "COALESCE((SELECT json_group_array(ic.concept_id) FROM item_concepts ic "
+                "  WHERE ic.item_id = base.id), '[]') AS concept_ids "
+                f"FROM {table} base WHERE {condition}"
+            )
+            for row in self._conn.execute(sql, params).fetchall():
+                item = dict(row)
+                for key in ("tags", "options", "concept_ids"):
+                    raw = item.get(key)
+                    try:
+                        parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = []
+                    item[key] = parsed if isinstance(parsed, list) else []
+                item["kind"] = kind
+                out.append(item)
+        out.sort(key=lambda item: str(item["id"]))
+        return out
+
+    def save_evaluation_batch(self, batch: EvaluationBatch) -> dict[str, int]:
+        """幂等保存评价与 review queue；同 rubric/source 可安全重算覆盖。"""
+        with self._write_lock, self.transaction():
+            if batch.evaluations:
+                self._conn.executemany(
+                    """
+                    INSERT INTO item_evaluations
+                        (item_id, item_kind, rubric_version, extraction_quality,
+                         solution_completeness, difficulty_overall, difficulty_dims,
+                         cognitive_level, prerequisite_depth, proof_complexity,
+                         lecture_suitability, cross_book_generality, source, confidence,
+                         evaluated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(item_id, rubric_version, source) DO UPDATE SET
+                        item_kind = excluded.item_kind,
+                        extraction_quality = excluded.extraction_quality,
+                        solution_completeness = excluded.solution_completeness,
+                        difficulty_overall = excluded.difficulty_overall,
+                        difficulty_dims = excluded.difficulty_dims,
+                        cognitive_level = excluded.cognitive_level,
+                        prerequisite_depth = excluded.prerequisite_depth,
+                        proof_complexity = excluded.proof_complexity,
+                        lecture_suitability = excluded.lecture_suitability,
+                        cross_book_generality = excluded.cross_book_generality,
+                        confidence = excluded.confidence,
+                        evaluated_at = excluded.evaluated_at
+                    """,
+                    [
+                        (
+                            evaluation.item_id,
+                            evaluation.item_kind,
+                            evaluation.rubric_version,
+                            evaluation.extraction_quality,
+                            evaluation.solution_completeness,
+                            evaluation.difficulty_overall,
+                            evaluation.difficulty_dims.model_dump_json(),
+                            evaluation.cognitive_level.value,
+                            evaluation.prerequisite_depth,
+                            evaluation.proof_complexity,
+                            evaluation.lecture_suitability,
+                            evaluation.cross_book_generality,
+                            evaluation.source.value,
+                            evaluation.confidence,
+                            evaluation.evaluated_at.isoformat(),
+                        )
+                        for evaluation in batch.evaluations
+                    ],
+                )
+            if batch.review_items:
+                self._conn.executemany(
+                    """
+                    INSERT INTO review_queue
+                        (item_id, item_kind, tenant_id, rubric_version, reason,
+                         priority, status, details, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(item_id, reason, rubric_version) DO UPDATE SET
+                        item_kind = excluded.item_kind,
+                        tenant_id = excluded.tenant_id,
+                        priority = excluded.priority,
+                        details = excluded.details,
+                        updated_at = excluded.updated_at,
+                        status = CASE
+                            WHEN review_queue.status IN ('resolved','dismissed')
+                            THEN review_queue.status ELSE excluded.status END
+                    """,
+                    [
+                        (
+                            item.item_id,
+                            item.item_kind,
+                            item.tenant_id,
+                            item.rubric_version,
+                            item.reason,
+                            item.priority,
+                            item.status.value,
+                            json.dumps(item.details, ensure_ascii=False, separators=(",", ":")),
+                            item.created_at.isoformat(),
+                            item.updated_at.isoformat(),
+                        )
+                        for item in batch.review_items
+                    ],
+                )
+        return {
+            "evaluations": len(batch.evaluations),
+            "review_items": len(batch.review_items),
+        }
+
+    def load_item_evaluation(
+        self,
+        item_id: str,
+        *,
+        rubric_version: str = "v1",
+        source: str = "pipeline_auto",
+    ) -> ItemEvaluation:
+        row = self._conn.execute(
+            "SELECT * FROM item_evaluations "
+            "WHERE item_id = ? AND rubric_version = ? AND source = ?",
+            (item_id, rubric_version, source),
+        ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"Evaluation for {item_id} not found")
+        return ItemEvaluation(
+            item_id=row["item_id"],
+            item_kind=row["item_kind"],
+            rubric_version=row["rubric_version"],
+            extraction_quality=row["extraction_quality"],
+            solution_completeness=row["solution_completeness"],
+            difficulty_overall=row["difficulty_overall"],
+            difficulty_dims=DifficultyScore.model_validate_json(row["difficulty_dims"]),
+            cognitive_level=row["cognitive_level"],
+            prerequisite_depth=row["prerequisite_depth"],
+            proof_complexity=row["proof_complexity"],
+            lecture_suitability=row["lecture_suitability"],
+            cross_book_generality=row["cross_book_generality"],
+            source=EvaluationSource(row["source"]),
+            confidence=row["confidence"],
+            evaluated_at=datetime.fromisoformat(row["evaluated_at"]),
+        )
+
+    def quality_eligible_item_ids(
+        self,
+        *,
+        item_kind: str = "question",
+        rubric_version: str = "v1",
+        extraction_min: float = 0.7,
+        solution_min: float = 0.6,
+        difficulty_range: tuple[float, float] | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """生成/讲义默认池的质量门禁查询。"""
+        conditions = [
+            "item_kind = ?",
+            "rubric_version = ?",
+            "source = 'pipeline_auto'",
+            "extraction_quality >= ?",
+            "solution_completeness >= ?",
+        ]
+        params: list[Any] = [item_kind, rubric_version, extraction_min, solution_min]
+        if difficulty_range:
+            conditions.append("difficulty_overall BETWEEN ? AND ?")
+            params.extend(difficulty_range)
+        params.append(max(1, min(limit, 5000)))
+        rows = self._conn.execute(
+            "SELECT item_id FROM item_evaluations WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY lecture_suitability DESC, confidence DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [str(row["item_id"]) for row in rows]
+
+    def load_review_queue(
+        self,
+        *,
+        tenant_id: str = "",
+        status: str = "open",
+        limit: int = 100,
+    ) -> list[ReviewQueueItem]:
+        rows = self._conn.execute(
+            "SELECT * FROM review_queue WHERE tenant_id = ? AND status = ? "
+            "ORDER BY priority DESC, created_at ASC LIMIT ?",
+            (tenant_id, status, max(1, min(limit, 1000))),
+        ).fetchall()
+        result: list[ReviewQueueItem] = []
+        for row in rows:
+            try:
+                details = json.loads(row["details"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                details = {}
+            result.append(
+                ReviewQueueItem(
+                    id=row["id"],
+                    item_id=row["item_id"],
+                    item_kind=row["item_kind"],
+                    tenant_id=row["tenant_id"],
+                    rubric_version=row["rubric_version"],
+                    reason=row["reason"],
+                    priority=row["priority"],
+                    status=ReviewQueueStatus(row["status"]),
+                    details=details,
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                    updated_at=datetime.fromisoformat(row["updated_at"]),
+                )
+            )
+        return result
 
     def search_fulltext(self, query: str, item_type: str = "all") -> list[str]:
         """FTS5 全文检索"""

@@ -43,7 +43,11 @@
 
 ### 1.2 通用数据
 
-任意 PDF / DOCX / MD / TeX / PPTX / EPUB / CSV 教材、讲义、试卷。多卷文件（`*_part_1_3.pdf` 命名约定）会被自动按页码合并为单个 logical_document。
+支持 PDF / DOCX / PPTX / MD / TeX / CSV / TSV / XLSX / HTML / EPUB / JSON /
+JSONL / TXT / RST / PNG / JPEG / WebP / GIF。CSV、表格、HTML、EPUB、JSON 与纯文本
+先由确定性 adapter 转换为带 source locator 的 Markdown block（0 LLM）；单图片和
+无可用文字层的扫描文档才走 VLM。多卷文件（`*_part_1_3.pdf` 命名约定）
+会自动合并为单个 logical_document。
 
 ---
 
@@ -67,8 +71,8 @@
 ```
 logical_document (单文件 or *_part_N_M 多分卷)
        │
-       ▼  Task0 Producer (vlm / pymupdf / markdown)
-            每 5 页一批 → page_NNN-NNN.md (1-based)
+       ▼  Task0 Producer (adapter / vlm / pymupdf / markdown)
+            每 5 页或每结构块一批 → page_NNN-NNN.md (1-based)
             失败 batch → state.failed_batches；不推入 queue
        │
        ▼  q_md (maxsize=pipeline_queue_size，FIFO)
@@ -158,9 +162,11 @@ class BatchResult:
 
 | 类 | 适用格式 | 特点 |
 |---|---|---|
-| `VlmRecognizer` | PDF / DOCX | 多模态视觉识别（最高精度），保留 LaTeX 公式与图片裁剪 |
+| `VlmRecognizer` | 扫描 PDF / DOCX / PPTX | 多模态视觉识别，保留 LaTeX 公式与图片裁剪 |
 | `PyMuPdfRecognizer` | PDF | 纯文本提取，无 LLM，速度最快 |
 | `MarkdownRecognizer` | MD / TeX | 整文件单 batch |
+| `AdapterRecognizer` | CSV/TSV/XLSX/HTML/EPUB/JSON/JSONL/TXT/RST | 确定性结构转换，0 LLM |
+| `ImageRecognizer` | PNG/JPEG/WebP/GIF | 单图一次受限 VLM 转写，checkpoint 命中时 0 调用 |
 
 ### 3.3 落盘约定
 
@@ -539,7 +545,10 @@ uv run sciforge parse run <path> [options]
 
 ## 14. 数据模型
 
-### 14.1 KnowledgePoint / Question（DB schema v10，详见 Docs/05 顶部 v10 变更）
+### 14.1 KnowledgePoint / Question（DB schema v13）
+
+条目完整性、分学科/题型规则、concept graph、评价门禁与存储性能契约详见
+[`Docs/21_知识库构建标准与数据契约.md`](21_知识库构建标准与数据契约.md)。
 
 ```python
 class KnowledgePoint(BaseModel):
@@ -644,6 +653,6 @@ sqlite3 data/sciforge.db "SELECT tags FROM knowledge_points LIMIT 5"
 | `src/sciforge/prompts/templates/pipeline/annotate_stage2_review.txt` | Stage2Review prompt |
 | `src/sciforge/prompts/templates/pipeline/vlm_convert.txt` | Task0 VLM prompt |
 | `src/sciforge/storage/sqlite_backend.py` | SQLite 存储 + SchemaVersionMismatch |
-| `src/sciforge/storage/schema.sql` | DB schema v7 |
+| `src/sciforge/storage/schema.sql` | DB schema v13（核心条目 + concept graph + evaluation） |
 | `src/sciforge/cli/parse.py` | CLI 入口 |
 | `config/sciforge.toml` | LLM + pipeline TOML 配置 |

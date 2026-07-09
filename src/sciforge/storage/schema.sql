@@ -1,4 +1,7 @@
--- SciForge SQLite Schema v12
+-- SciForge SQLite Schema v13
+-- v13 变更（Knowledge Evaluation / M6）：
+--   * item_evaluations：版本化 10 维难度 + 质量/教学价值量规
+--   * review_queue：低质量、答案不完整、pending concept 的人工治理队列
 -- v12 变更（Concept Graph / M5）：
 --   * concepts：受控 taxonomy 驱动的稳定概念身份
 --   * concept_aliases：分支作用域别名持久化，避免跨分支同名误归并
@@ -25,7 +28,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 12;
+PRAGMA user_version = 13;
 
 -- ── 知识点 ──
 
@@ -200,6 +203,54 @@ CREATE INDEX IF NOT EXISTS idx_concept_canonical
 CREATE INDEX IF NOT EXISTS idx_concept_alias_target ON concept_aliases(concept_id);
 CREATE INDEX IF NOT EXISTS idx_item_concept_concept ON item_concepts(concept_id, role);
 CREATE INDEX IF NOT EXISTS idx_concept_rel_dst ON concept_relations(dst_concept, relation_type);
+
+-- ── Knowledge Evaluation（v13 / M6）──
+
+CREATE TABLE IF NOT EXISTS item_evaluations (
+    item_id TEXT NOT NULL,
+    item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+    rubric_version TEXT NOT NULL,
+    extraction_quality REAL NOT NULL CHECK(extraction_quality BETWEEN 0.0 AND 1.0),
+    solution_completeness REAL NOT NULL CHECK(solution_completeness BETWEEN 0.0 AND 1.0),
+    difficulty_overall REAL NOT NULL CHECK(difficulty_overall BETWEEN 1.0 AND 10.0),
+    difficulty_dims TEXT NOT NULL DEFAULT '{}',
+    cognitive_level TEXT NOT NULL
+        CHECK(cognitive_level IN ('remember','understand','apply','analyze','evaluate','create')),
+    prerequisite_depth INTEGER NOT NULL DEFAULT 0 CHECK(prerequisite_depth >= 0),
+    proof_complexity REAL NOT NULL DEFAULT 0.0 CHECK(proof_complexity BETWEEN 0.0 AND 1.0),
+    lecture_suitability REAL NOT NULL DEFAULT 0.0
+        CHECK(lecture_suitability BETWEEN 0.0 AND 1.0),
+    cross_book_generality REAL NOT NULL DEFAULT 0.0
+        CHECK(cross_book_generality BETWEEN 0.0 AND 1.0),
+    source TEXT NOT NULL
+        CHECK(source IN ('pipeline_auto','llm_judge','human')),
+    confidence REAL NOT NULL DEFAULT 0.65 CHECK(confidence BETWEEN 0.0 AND 1.0),
+    evaluated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(item_id, rubric_version, source)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS review_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id TEXT NOT NULL,
+    item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+    tenant_id TEXT NOT NULL DEFAULT '',
+    rubric_version TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK(status IN ('open','in_progress','resolved','dismissed')),
+    details TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(item_id, reason, rubric_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_eval_item ON item_evaluations(item_id);
+CREATE INDEX IF NOT EXISTS idx_eval_quality_gate
+    ON item_evaluations(rubric_version, source, extraction_quality,
+                        solution_completeness, difficulty_overall);
+CREATE INDEX IF NOT EXISTS idx_review_queue_work
+    ON review_queue(tenant_id, status, priority, created_at);
 
 -- ── FTS5 全文检索 ──
 

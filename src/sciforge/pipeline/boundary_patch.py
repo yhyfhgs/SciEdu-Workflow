@@ -324,14 +324,27 @@ def _item_completeness(item: object) -> tuple[bool, int, int]:
 
 
 def _items_overlap(a: object, b: object) -> bool:
-    """两条目视为同一条：行区间相交，或规范化编号相同（非空时）。"""
+    """两条目视为同一条：行区间相交，或编号+正文证据同时一致。
+
+    教材常在不同章节重复使用 ``1`` / ``3.2`` 等局部编号；仅凭编号会把边界
+    两侧真实不同条目误删。非重叠区间必须再有相同/包含式正文证据才可归并。
+    """
     a_s, a_e = int(getattr(a, "start_line", 0)), int(getattr(a, "end_line", 0))
     b_s, b_e = int(getattr(b, "start_line", 0)), int(getattr(b, "end_line", 0))
     if max(a_s, b_s) <= min(a_e, b_e):
         return True
     a_num = canonicalize_number(str(getattr(a, "number", "") or ""))
     b_num = canonicalize_number(str(getattr(b, "number", "") or ""))
-    return bool(a_num) and a_num == b_num
+    if not a_num or a_num != b_num:
+        return False
+    a_content = " ".join(str(getattr(a, "corrected_content", "") or "").split())
+    b_content = " ".join(str(getattr(b, "corrected_content", "") or "").split())
+    if not a_content or not b_content:
+        return False
+    if a_content == b_content:
+        return True
+    shorter, longer = sorted((a_content, b_content), key=len)
+    return len(shorter) >= 40 and shorter in longer
 
 
 def arbitrate_halo_overlap(

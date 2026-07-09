@@ -69,12 +69,26 @@ def test_arbiter_cross_boundary_next_missed_entirely() -> None:
     assert dropped == 0
 
 
-def test_arbiter_matches_by_number_when_lines_disjoint() -> None:
-    """行区间不重叠但编号相同（两段各按自己视角定位）→ 仍判为同一条。"""
+def test_arbiter_does_not_merge_disjoint_items_by_number_alone() -> None:
+    """章节局部编号会重复；非重叠且正文不同的同编号条目都必须保留。"""
     prev = [_fake_item(95, 108, number="3.2", solution="解")]
     next_items = [_fake_item(110, 118, number="3.2")]
     kept_prev, kept_next, dropped = arbitrate_halo_overlap(prev, next_items, boundary_line=100)
     assert kept_prev == prev
+    assert kept_next == next_items
+    assert dropped == 0
+
+
+def test_arbiter_can_merge_disjoint_items_with_same_number_and_content() -> None:
+    prev_item = _fake_item(95, 108, number="3.2", solution="完整解答")
+    next_item = _fake_item(110, 118, number="3.2")
+    next_item.corrected_content = prev_item.corrected_content
+
+    kept_prev, kept_next, dropped = arbitrate_halo_overlap(
+        [prev_item], [next_item], boundary_line=100
+    )
+
+    assert kept_prev == [prev_item]
     assert kept_next == []
     assert dropped == 1
 

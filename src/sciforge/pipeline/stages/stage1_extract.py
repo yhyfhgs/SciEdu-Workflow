@@ -189,6 +189,18 @@ class Stage1Extract:
         self.patch_local_extraction_enabled: bool = bool(
             getattr(config, "patch_local_extraction_enabled", False)
         )
+        # v11 I（M4，opt-in）：窗口级 ExtractionHarness。Harness 只包住现有
+        # _extract_batch，不拥有第二套滑窗/carry 状态；Evaluator 仅消费其风险分。
+        self.harness_enabled: bool = bool(getattr(config, "extract_harness_enabled", False))
+        self.validator_enabled: bool = bool(
+            self.harness_enabled and getattr(config, "extract_validator_enabled", False)
+        )
+        self.validator_max_turns: int = max(
+            1, int(getattr(config, "extract_validator_max_turns", 3))
+        )
+        self.validator_risk_threshold: float = min(
+            1.0, max(0.0, float(getattr(config, "extract_validator_risk_threshold", 0.3)))
+        )
         # REC-20：当前 block 的确定性章节结构（detect_section_boundaries 产物），注入提取 prompt
         # 作为 structural_context 的权威先验，消灭"串行路径白跑 section_boundaries"的死逻辑。
         self._section_hint: str = ""
@@ -770,7 +782,7 @@ class Stage1Extract:
                 and self._carry.carry_window_count >= self.carry_max_windows
             )
             try:
-                payload = await self._extract_batch(
+                payload = await self._extract_window(
                     window, window_start_int, window_last_int, force_extract=carry_overdue
                 )
             except RetryExhausted as exc:
@@ -824,7 +836,7 @@ class Stage1Extract:
                 and window_len >= len(self.line_buffer)
             ):
                 try:
-                    forced = await self._extract_batch(
+                    forced = await self._extract_window(
                         window, window_start_int, window_last_int, force_extract=True
                     )
                 except RetryExhausted:
@@ -1032,6 +1044,189 @@ class Stage1Extract:
 
     # ── LLM 调用 ──────────────────────────────────────
 
+    async def _extract_window(
+        self,
+        window: list[str],
+        window_start_line: int,
+        window_last_line: int,
+        *,
+        force_extract: bool = False,
+    ) -> BatchItemExtractPayloadLLM:
+        """执行一个生产窗口；可选地用 ExtractionHarness 包住主提取。
+
+        Harness 不实现自己的滑窗或 carry 状态机：``WindowContext.carry_in`` 只是
+        当前 ``self._carry`` 的只读快照，真正的状态迁移仍由
+        :meth:`_update_carry_after_window` 唯一负责。主 ``_extract_batch`` 通过有
+        调用闸门的 closure 注入，保证每次 harness 运行至多执行一次；增强层在
+        主提取完成后失败时直接返回已取得的 payload，绝不二次提取整窗。
+        """
+        if not self.harness_enabled:
+            return await self._extract_batch(
+                window,
+                window_start_line,
+                window_last_line,
+                force_extract=force_extract,
+            )
+
+        from sciforge.pipeline.extract_evaluator import (
+            build_review_prompt,
+            run_evaluator,
+            should_trigger_evaluator,
+            supports_multiturn_evaluator,
+        )
+        from sciforge.pipeline.extraction_harness import WindowContext, run_harness
+
+        marker_style = str(
+            getattr(self.genre_profile, "marker_style", "mixed")
+            if self.genre_profile is not None
+            else "mixed"
+        )
+        try:
+            context = WindowContext(
+                window_lines=list(window),
+                line_base=window_start_line,
+                is_last_window=force_extract,
+                # 只读传入；HarnessResult.carry_out 不写回，避免第二套 carry 状态机。
+                carry_in=self._carry if self.carry_enabled else None,
+                genre=self._genre,
+                marker_style=marker_style,
+                discipline=self.discipline.value,
+                provisional_id_base=f"w{window_start_line}",
+            )
+        except Exception as exc:  # noqa: BLE001 — context 增强失败，尚未执行主提取
+            logger.warning("stage1_harness_context_failed", error=str(exc))
+            return await self._extract_batch(
+                window,
+                window_start_line,
+                window_last_line,
+                force_extract=force_extract,
+            )
+
+        payload: BatchItemExtractPayloadLLM | None = None
+        extract_started = False
+
+        async def extract_once(_context: WindowContext) -> BatchItemExtractPayloadLLM:
+            nonlocal extract_started, payload
+            if extract_started:
+                raise RuntimeError("ExtractionHarness 不得重复调用主 _extract_batch")
+            extract_started = True
+            payload = await self._extract_batch(
+                window,
+                window_start_line,
+                window_last_line,
+                force_extract=force_extract,
+            )
+            return payload
+
+        try:
+            result = await run_harness(
+                context,
+                extract_fn=extract_once,
+                carry_max_windows=self.carry_max_windows,
+            )
+        except Exception as exc:  # noqa: BLE001 — 主提取异常仍应按既有路径向上抛
+            if payload is not None:
+                logger.warning(
+                    "stage1_harness_degraded_use_first_extract",
+                    error=str(exc),
+                    line_range=f"{window_start_line}-{window_last_line}",
+                )
+                return payload
+            if extract_started:
+                raise
+            # Harness 在进入 extract_fn 前失败：此时尚未消耗主调用，安全执行一次现状路径。
+            logger.warning("stage1_harness_pre_extract_failed", error=str(exc))
+            return await self._extract_batch(
+                window,
+                window_start_line,
+                window_last_line,
+                force_extract=force_extract,
+            )
+
+        if payload is None:  # pragma: no cover - run_harness 契约破坏时的防御
+            raise RuntimeError("ExtractionHarness 未执行 extract_fn，也未返回异常")
+
+        # 当前 harness 是 pass-through；保留这道校验，使未来 accepted_items 发生筛选时
+        # 仍能安全落回 BatchItemExtractPayloadLLM，而不是产生 last_consumed_line 错位。
+        if (
+            result.accepted_items != payload.items
+            or result.last_consumed_line != payload.last_consumed_line
+            or result.stop_reason != payload.stop_reason
+        ):
+            try:
+                payload = BatchItemExtractPayloadLLM.model_validate(
+                    {
+                        "items": result.accepted_items,
+                        "stop_reason": result.stop_reason,
+                        "last_consumed_line": result.last_consumed_line,
+                        "issues": payload.issues,
+                    },
+                    context={} if force_extract else {"window_last_line": window_last_line},
+                )
+            except Exception as exc:  # noqa: BLE001 — 增强结果非法则保留首次合法 payload
+                logger.warning("stage1_harness_result_invalid_use_first_extract", error=str(exc))
+
+        logger.info(
+            "stage1_harness_done",
+            line_range=f"{window_start_line}-{window_last_line}",
+            audit_clean=result.audit_clean,
+            risk_score=result.risk_score,
+            degraded=result.degraded,
+            markers_total=result.markers_total,
+            markers_covered=result.markers_covered,
+        )
+
+        # Evaluator 是唯一可能新增的整窗 LLM 回路：只对超过阈值且 provider 明确
+        # 支持 Anthropic tool-result 协议的窗口触发。失败只记日志，绝不重提主窗口。
+        evaluator_needed = self.validator_enabled and should_trigger_evaluator(
+            result.risk_score, threshold=self.validator_risk_threshold
+        )
+        if evaluator_needed and supports_multiturn_evaluator(self.llm):
+            summary = _json_mod.dumps(
+                [
+                    {
+                        "ref": item.provisional_id or str(index),
+                        "category": item.category,
+                        "item_type": item.item_type,
+                        "number": item.number,
+                        "start_line": item.start_line,
+                        "end_line": item.end_line,
+                        "solution_status": item.solution_status,
+                        "content_preview": item.corrected_content[:160],
+                    }
+                    for index, item in enumerate(payload.items)
+                ],
+                ensure_ascii=False,
+            )
+            evaluator_prompt = build_review_prompt("".join(window), summary)
+            try:
+                verdict = await run_evaluator(
+                    evaluator_prompt,
+                    llm=self.llm,
+                    max_turns=self.validator_max_turns,
+                )
+                logger.info(
+                    "stage1_evaluator_done",
+                    line_range=f"{window_start_line}-{window_last_line}",
+                    turns=verdict.turns_used,
+                    tool_calls=verdict.tool_calls_made,
+                    summary=verdict.summary[:300],
+                )
+            except Exception as exc:  # noqa: BLE001 — evaluator 是可选增强层
+                logger.warning(
+                    "stage1_evaluator_failed_use_first_extract",
+                    line_range=f"{window_start_line}-{window_last_line}",
+                    error=str(exc),
+                )
+        elif evaluator_needed:
+            logger.info(
+                "stage1_evaluator_skipped_provider",
+                line_range=f"{window_start_line}-{window_last_line}",
+                provider=str(getattr(getattr(self.llm, "config", None), "provider", "unknown")),
+            )
+
+        return payload
+
     async def _extract_batch(
         self,
         window: list[str],
@@ -1166,6 +1361,13 @@ class Stage1Extract:
                 await self._sync_state(state, force=True)
                 return
 
+            # 串行路径在首 block 应用体裁/密度策略；并行路径必须使用同一策略，
+            # 否则试卷会错误开启 fast-skip，profile 相关窗口参数也成为死配置。
+            profile_sample = "".join(
+                self._strip_line_prefix(line) for line in all_lines[: min(2000, len(all_lines))]
+            )
+            self._apply_genre_policy(profile_sample)
+
             # window_lines 设大阈值 → segment_document 仅按 section 切，不硬切条目；
             # 段内由 _extract_segment_windows 自行滑窗 + carry。
             big = max(self.max_window * 100, 10_000)
@@ -1176,9 +1378,18 @@ class Stage1Extract:
                 # v11 III.4：>0 启用段重叠 + 边界仲裁（安全并行，跨段条目不漏）
                 halo_lines=int(getattr(self.config, "segment_halo_lines", 0)),
             )
-            grouped: list[tuple[DocSegment, list[Any]]] = await extractor.extract_grouped(
-                all_lines, boundary_indices, min_segment_lines=self.min_segment_lines
-            )
+            try:
+                grouped: list[tuple[DocSegment, list[Any]]] = await extractor.extract_grouped(
+                    all_lines, boundary_indices, min_segment_lines=self.min_segment_lines
+                )
+            except BaseException as exc:
+                # 任何段/窗口失败都必须保留 running 状态；绝不能把部分结果标 completed。
+                state.stage1_completed = False
+                state.errors.append(f"parallel_extract_incomplete: {exc}")
+                await self._sync_state(state, force=True)
+                raise
+            for _segment, segment_items in grouped:
+                self._order_items_for_finalization(segment_items)
 
             total = sum(len(items) for _, items in grouped)
             logger.info(
@@ -1316,17 +1527,34 @@ class Stage1Extract:
                 continue
 
             try:
-                payload = await self._extract_batch(window, window_start_int, window_last_int)
+                payload = await self._extract_window(window, window_start_int, window_last_int)
             except RetryExhausted:
                 logger.warning(
                     "stage1_parallel_segment_window_failed",
                     line_range=f"{window_start_int}-{window_last_int}",
                 )
-                slide = window_len if covers_all else min(self.base_window, window_len)
-                buf = buf[slide:]
-                window_size = self.base_window
-                consecutive_empty = 0
-                continue
+                # 并行模式没有可独立提交的“安全前缀 checkpoint”；跳过失败 span 后
+                # 继续并最终 completed 会形成永久漏项，因此向上抛出让文档保持可恢复。
+                raise
+
+            # REC-12 与串行路径一致：段尾仍有条目标记但首轮返回空时，必须做一次
+            # force_extract；第二次仍空则整段失败，不得静默消费到 EOF。
+            if not payload.items and covers_all and not window_empty:
+                forced = await self._extract_window(
+                    window,
+                    window_start_int,
+                    window_last_int,
+                    force_extract=True,
+                )
+                if not forced.items:
+                    raise RetryExhausted(
+                        2,
+                        RuntimeError(
+                            "parallel terminal window contains item markers but both normal "
+                            "and forced extraction returned no items"
+                        ),
+                    )
+                payload = forced
 
             if not payload.items:
                 consecutive_empty += 1
@@ -1375,9 +1603,24 @@ class Stage1Extract:
 
             # 提到条目 → 收集，滑到 last_consumed_line+1（保留不完整尾部给段内下一窗）
             consecutive_empty = 0
-            items.extend(payload.items)
             cut = self._find_idx_in(buf, payload.last_consumed_line)
             consumed = (cut + 1) if 0 <= cut < window_len else window_len
+
+            # 并行窗口也必须消费 M1/M3 的确定性增强；否则打开同一配置开关却因
+            # scheduler 不同而得到不同数据契约。audit 用临时 ref，仅做观测日志。
+            patched = await self._apply_local_patches(window, window_start_int, consumed, payload)
+            if patched:
+                payload.items = list(payload.items) + patched
+            self._order_items_for_finalization(payload.items)
+            self._resolve_item_spans(window, window_start_int, payload)
+            self._audit_consumed_window(
+                window,
+                window_start_int,
+                consumed,
+                payload,
+                list(range(len(payload.items))),
+            )
+            items.extend(payload.items)
             buf = buf[consumed:]
             window_size = self.base_window
 
@@ -1462,27 +1705,41 @@ class Stage1Extract:
         return list(range(first_id, first_id + count))
 
     async def _finalize_item_ids(self, items: list[Any]) -> list[int]:
-        """v11 I.3（M3）：出口分配 id，与 ``items`` 索引一一对应。
+        """v11 I.3（M3）：先重排**条目本体**，再一次性分配最终 ID。
 
-        ``remap_enabled=False``（默认）：现状——提取顺序直接连续分配。
-        ``remap_enabled=True``：按最终 ``start_line`` 排序确定 id 分配顺序
-        （本版无 PatchInstruction 时通常与提取顺序一致，是为 WP-33 局部补抽
-        插序做的骨架），但返回值仍按**原始 items 顺序**对齐，调用方
-        ``zip(item_ids, items)`` 不变。``OrderIndexAllocator.reserve`` 只调
-        一次（消耗性），出口断言 order_index 严格递增。异常 → 降级为现状分配。
+        旧实现只把较小 ID 填回未排序数组：``item_ids`` 因而不是严格递增，且
+        ``zip(item_ids, items)`` 仍按错误的提取/patch 追加顺序向下游发送。现在
+        remap 开启时按 ``(start_line, end_line, provisional/original order)``
+        原地稳定排序 ``items``，随后只调用一次 allocator，得到与排序后 items
+        同位、严格递增的 ID。
+
+        ``patch_local_extraction_enabled`` 也隐式要求这一步：micro patch 可能补出
+        当前首条之前的 span，即使用户忘记同时打开 remap，也不能把 earlier-span
+        追加到 batch 尾部破坏出口契约。未启用 remap/patch 时，LLM schema 已保证
+        原始 items 严格按行号顺序，继续保持现状分配。
         """
-        if not self.remap_enabled or len(items) <= 1:
-            return await self._allocate_item_ids(len(items))
-        try:
-            order = sorted(range(len(items)), key=lambda i: items[i].start_line)
-            ids = await self._allocate_item_ids(len(items))
-            final = [0] * len(items)
-            for rank, idx in enumerate(order):
-                final[idx] = ids[rank]
-            return final
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("stage1_remap_failed", error=str(exc))
-            return await self._allocate_item_ids(len(items))
+        self._order_items_for_finalization(items)
+
+        item_ids = await self._allocate_item_ids(len(items))
+        if any(item_ids[index] >= item_ids[index + 1] for index in range(len(item_ids) - 1)):
+            raise RuntimeError("Stage1 final item_ids 必须严格递增")
+        return item_ids
+
+    def _order_items_for_finalization(self, items: list[Any]) -> None:
+        """按最终 source span 原地稳定排序；不分配任何消耗性 ID。"""
+        if len(items) <= 1 or not (self.remap_enabled or self.patch_local_extraction_enabled):
+            return
+        # enumerate 的 index 就是 provisional/incoming order；Python 稳定排序使
+        # 完全同 span 的条目仍按该顺序确定性排列。
+        ordered = sorted(
+            enumerate(items),
+            key=lambda pair: (
+                int(pair[1].start_line),
+                int(pair[1].end_line),
+                pair[0],
+            ),
+        )
+        items[:] = [item for _, item in ordered]
 
     # ── state 恢复 ──────────────────────────────────────
 

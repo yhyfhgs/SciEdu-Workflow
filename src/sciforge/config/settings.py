@@ -117,6 +117,40 @@ class AppConfig(BaseSettings):
     vlm_text_layer_min_chars_per_page: int = 100
     # 文字层探测抽样页数（从首页起）。
     vlm_text_layer_sample_pages: int = 5
+    # 通用输入适配层：结构化/文本格式先确定性转为 Markdown blocks，再复用 Stage1–3。
+    # 值使用扩展名（不含点）；目录扫描只接纳此白名单，单文件入口同样校验。
+    enabled_input_formats: list[str] = [
+        "tex",
+        "md",
+        "markdown",
+        "pdf",
+        "docx",
+        "pptx",
+        "csv",
+        "tsv",
+        "xlsx",
+        "html",
+        "htm",
+        "epub",
+        "json",
+        "jsonl",
+        "ndjson",
+        "txt",
+        "rst",
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+    ]
+    adapter_rows_per_block: int = 250
+    adapter_max_input_bytes: int = 64 * 1024 * 1024
+    adapter_max_archive_bytes: int = 256 * 1024 * 1024
+    adapter_max_archive_entries: int = 10_000
+    adapter_max_compression_ratio: float = 500.0
+    adapter_max_columns: int = 200
+    adapter_max_json_depth: int = 10
+    vlm_image_max_tokens: int = 8192
 
     # ── Pipeline: Stage1Extract — 单条滑动窗口 ──────────
     extract_window_lines: int = 500  # 初始窗口行数（旧默认 200）
@@ -277,6 +311,9 @@ class AppConfig(BaseSettings):
     # 默认 False；仅在 marker_ledger_enabled=True 时生效（依赖其 AuditReport）。
     patch_local_extraction_enabled: bool = False
     patch_context_lines: int = 8
+    # I.1–I.3（M4）：窗口级 ExtractionHarness 总开关。开启后 Stage1 仍只执行
+    # 一次主 _extract_batch；locate/audit/carry 分析均为确定性增强，异常保留首次结果。
+    extract_harness_enabled: bool = False
     # I.4/I.6（M4）：风险触发 Evaluator 多轮——仅 harness.risk_score 超阈值的
     # 高风险窗口触发（70-80% 干净窗口 0 额外调用）；provider 约束见 C8
     # （仅 Anthropic/anthropic_compatible 支持，其余 provider 自动跳过退单轮）。
@@ -286,6 +323,12 @@ class AppConfig(BaseSettings):
     # IV.1–IV.4（M5）：入库后以 taxonomy_path 为稳定身份建立 concept 四表，
     # tags 仅作别名/展示；未知 tag 进入 pending 治理状态。默认关闭以保持 v11 行为。
     concept_graph_enabled: bool = False
+    # IV.5–IV.6（M6）：0-LLM 确定性 rubric + review queue。rubric_version 是
+    # 持久化契约的一部分；调整特征/权重时必须升版，不能覆盖旧评分快照。
+    item_evaluation_enabled: bool = False
+    rubric_version: str = "v1"
+    evaluation_extraction_threshold: float = 0.7
+    evaluation_solution_threshold: float = 0.6
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）

@@ -74,6 +74,16 @@ def build_review_prompt(window_text: str, extracted_summary: str) -> str:
     )
 
 
+def supports_multiturn_evaluator(llm: LLMClient) -> bool:
+    """返回当前 client 是否能安全执行 evaluator 的 tool-result 回路。
+
+    这里刻意做成无副作用能力探测，让 Stage1 在构造 prompt、调用 evaluator
+    之前就能跳过不支持的 provider；缺失/测试用 config 也按不支持处理。
+    """
+    provider = getattr(getattr(llm, "config", None), "provider", None)
+    return provider in MULTITURN_SUPPORTED_PROVIDERS
+
+
 async def run_evaluator(
     prompt: str,
     *,
@@ -86,10 +96,12 @@ async def run_evaluator(
     调用**——调用方应继续依赖 harness 已完成的确定性审计（③AUDIT），不因
     evaluator 跳过而放弃 coverage 检查。
     """
-    if llm.config.provider not in MULTITURN_SUPPORTED_PROVIDERS:
+    if not supports_multiturn_evaluator(llm):
+        provider = getattr(getattr(llm, "config", None), "provider", None)
+        provider_name = getattr(provider, "value", str(provider or "unknown"))
         return EvaluatorVerdict(
             ran=False,
-            skip_reason=f"provider={llm.config.provider.value} 不支持 multiturn（C8），已跳过",
+            skip_reason=f"provider={provider_name} 不支持 multiturn（C8），已跳过",
         )
 
     history = await llm.generate_multiturn(

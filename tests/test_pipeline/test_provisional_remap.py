@@ -107,16 +107,29 @@ async def test_finalize_enabled_sorts_by_start_line() -> None:
     stage = _stage1(provisional_id_remap_enabled=True)
     items = [_item("2", 20), _item("1", 10), _item("3", 30)]  # 提取顺序乱序
     ids = await stage._finalize_item_ids(items)
-    # 返回值与 items 索引对齐；按 start_line 排序后 item("1",10) 应得最小 id
-    by_number = {items[i].number: ids[i] for i in range(len(items))}
-    assert by_number["1"] < by_number["2"] < by_number["3"]
+    assert [item.number for item in items] == ["1", "2", "3"]
+    assert ids == [0, 1, 2]
 
 
 async def test_finalize_enabled_ids_strictly_increasing_overall() -> None:
     stage = _stage1(provisional_id_remap_enabled=True)
     items = [_item("3", 30), _item("1", 10), _item("2", 20)]
     ids = await stage._finalize_item_ids(items)
-    assert sorted(ids) == list(range(min(ids), min(ids) + len(ids)))
+    assert ids == list(range(min(ids), min(ids) + len(ids)))
+    assert all(ids[index] < ids[index + 1] for index in range(len(ids) - 1))
+
+
+async def test_finalize_ties_use_end_line_then_original_order() -> None:
+    stage = _stage1(provisional_id_remap_enabled=True)
+    first_same_span = _item("same-a", 10, 14)
+    second_same_span = _item("same-b", 10, 14)
+    shorter = _item("short", 10, 12)
+    items = [first_same_span, second_same_span, shorter]
+
+    ids = await stage._finalize_item_ids(items)
+
+    assert [item.number for item in items] == ["short", "same-a", "same-b"]
+    assert ids == [0, 1, 2]
 
 
 async def test_finalize_single_item_no_sort_needed() -> None:
