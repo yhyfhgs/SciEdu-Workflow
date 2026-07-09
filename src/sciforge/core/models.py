@@ -391,6 +391,30 @@ class NumericalVerification(BaseModel):
     execution: CodeExecutionResult | None = None
 
 
+class VerificationEvidenceStatus(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+    ERROR = "error"
+
+
+class VerificationEvidence(BaseModel):
+    """一项可审计验证证据；不将基础设施失败伪装为通过。"""
+
+    kind: str
+    status: VerificationEvidenceStatus
+    required: bool = False
+    backend: str = ""
+    isolation: str = "none"
+    summary: str = ""
+    stdout: str = ""
+    stderr: str = ""
+    diagnostics: list[str] = Field(default_factory=list)
+    duration_ms: int = Field(default=0, ge=0)
+    artifact: str = ""
+    details: dict[str, object] = Field(default_factory=dict)
+
+
 # ── 流水线阶段中间结果 ──────────────────────────────────
 
 
@@ -492,6 +516,7 @@ class VerificationResult(BaseModel):
     checks: dict[str, bool] = Field(default_factory=dict)
     suggestions: str = ""
     numerical_verification: NumericalVerification | None = None
+    evidence: list[VerificationEvidence] = Field(default_factory=list)
     # Phase 6c：verdict=PASS 时可顺带返回 10 维难度评分（若 verifier 产出）
     # 启用 QGenAgent(merge_difficulty_into_verify=True) 时跳过独立 annotator 调用
     difficulty_score: DifficultyScore | None = None

@@ -238,10 +238,32 @@ class AppConfig(BaseSettings):
     pipeline_parallel: bool = False
     evolution_enabled: bool = False
     evolution_max_improvement_rounds: int = 2
+    qgen_population_selection_enabled: bool = False
     solver_max_turns: int = 5
     solver_enable_tools: bool = True
+    qgen_deep_solve_enabled: bool = False
     sandbox_timeout: int = 10
-    enable_numerical_verification: bool = True
+    # LLM/用户产生的验证代码默认只允许容器；容器不可用时显式记为 unavailable。
+    enable_numerical_verification: bool = False
+    require_numerical_verification: bool = False
+    enable_lean_verification: bool = False
+    require_lean_verification: bool = False
+    sandbox_trust_policy: str = "container_required"
+    sandbox_container_runtime: str = "auto"
+    sandbox_python_image: str = "python:3.11-slim"
+    sandbox_lean_image: str = "leanprover/lean4:latest"
+    sandbox_memory_mb: int = 512
+    sandbox_cpus: float = 1.0
+    sandbox_pids_limit: int = 64
+    sandbox_tmpfs_mb: int = 64
+    sandbox_max_output_bytes: int = 64 * 1024
+    sandbox_trusted_local_lean_command: list[str] = []
+    # 长程 QGen runtime 与知识库分库，避免 operational state 污染内容 schema。
+    qgen_runtime_db_path: Path = Path("data/qgen_runtime.db")
+    qgen_run_max_steps: int = 400
+    qgen_run_max_llm_calls: int = 100
+    qgen_run_max_tokens: int = 500_000
+    qgen_run_max_wall_time_seconds: float = 3600.0
 
     # ── Pipeline 优化开关（Phase 2.5 / 4 / 5）──────────────
     empty_window_fast_skip: bool = True

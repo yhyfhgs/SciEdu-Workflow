@@ -14,5 +14,12 @@ Subject enum，SQLiteStorageBackend 替代内存 list)。
 """
 
 from sciforge.agents.qgen.agent import QGenAgent, QGenInput, QGenOutput
+from sciforge.agents.qgen.durable_harness import DurableQGenHarness, QGenGraphSnapshot
 
-__all__ = ["QGenAgent", "QGenInput", "QGenOutput"]
+__all__ = [
+    "DurableQGenHarness",
+    "QGenAgent",
+    "QGenGraphSnapshot",
+    "QGenInput",
+    "QGenOutput",
+]

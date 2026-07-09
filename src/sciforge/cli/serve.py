@@ -31,9 +31,7 @@ def serve(
     port: int = typer.Option(8000, "--port", "-p", help="监听端口"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="题库 SQLite 路径"),
     saas_db: Path = typer.Option(Path("data/saas.db"), "--saas-db", help="SaaS 元数据 DB 路径"),
-    open_mode: bool = typer.Option(
-        False, "--open", help="开放模式：无鉴权/计费（仅本地调试）"
-    ),
+    open_mode: bool = typer.Option(False, "--open", help="开放模式：无鉴权/计费（仅本地调试）"),
     llm_config: Path | None = typer.Option(None, "--llm-config", help="LLM 配置文件"),
     cors_origin: list[str] = typer.Option(
         [], "--cors-origin", help="额外允许的 CORS 来源（可多次）；默认 *"
@@ -63,17 +61,11 @@ def serve(
     retrieval_storage = SQLiteStorageBackend(db)
 
     def qgen_factory(discipline: Discipline) -> QGenAgent:
-        return QGenAgent(
+        return QGenAgent.from_config(
             llm=gen_llm,
             storage=retrieval_storage,
             discipline=discipline,
-            max_rounds=app_cfg.generation_max_rounds,
-            candidates_per_round=app_cfg.generation_candidates_per_round,
-            retriever_max_kps=app_cfg.qgen_retriever_max_kps,
-            retriever_max_refs=app_cfg.qgen_retriever_max_refs,
-            retriever_max_negatives=app_cfg.qgen_retriever_max_negatives,
-            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
-            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+            config=app_cfg,
         )
 
     def solve_factory(discipline: Discipline) -> SolveAgent:
@@ -87,8 +79,7 @@ def serve(
     jwt_secret = os.environ.get("SCIFORGE_JWT_SECRET", "dev-secret-change-me")
     if not open_mode and jwt_secret == "dev-secret-change-me":
         console.print(
-            "[yellow]⚠ 使用默认 JWT 密钥（仅限本地）。生产请设环境变量 "
-            "SCIFORGE_JWT_SECRET。[/]"
+            "[yellow]⚠ 使用默认 JWT 密钥（仅限本地）。生产请设环境变量 SCIFORGE_JWT_SECRET。[/]"
         )
 
     app = create_app(

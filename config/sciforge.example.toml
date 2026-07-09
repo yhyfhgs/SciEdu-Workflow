@@ -332,6 +332,30 @@ seed = 42
 # evaluation_extraction_threshold = 0.7     # 低于此值进入人工复核队列
 # evaluation_solution_threshold = 0.6       # 题答/证明完整性门槛
 
+# QGen 验证 Harness（默认不增加验证 LLM 调用；按模式/题型显式开启）
+# enable_numerical_verification = false
+# qgen_deep_solve_enabled = false           # 高难模式：多轮求解+工具，普通生成保持低延迟
+# qgen_population_selection_enabled = false # 评估当轮全部通过候选后多目标择优
+# require_numerical_verification = false
+# enable_lean_verification = false
+# require_lean_verification = false
+# sandbox_trust_policy = "container_required"  # LLM 代码禁止默认本机执行
+# sandbox_container_runtime = "auto"           # auto/docker/podman
+# sandbox_python_image = "python:3.11-slim"
+# sandbox_lean_image = "leanprover/lean4:latest"
+# sandbox_timeout = 10
+# sandbox_memory_mb = 512
+# sandbox_cpus = 1.0
+# sandbox_pids_limit = 64
+# sandbox_tmpfs_mb = 64
+# sandbox_max_output_bytes = 65536
+# sandbox_trusted_local_lean_command = []       # 例 ["lake", "env", "lean"]；仍需 trusted_local
+# qgen_runtime_db_path = "data/qgen_runtime.db"
+# qgen_run_max_steps = 400
+# qgen_run_max_llm_calls = 100
+# qgen_run_max_tokens = 500000
+# qgen_run_max_wall_time_seconds = 3600.0
+
 # 单文档内并行提取（#1，opt-in）：按 section 分段 + 段级并发提取 + 段序保序重排
 # intra_doc_parallel_extract = false
 # intra_doc_segment_concurrency = 4

@@ -41,6 +41,7 @@ class LLMClient:
         self._backend = self._create_backend(config)
         # Pipeline logging
         self._call_count: int = 0
+        self._total_tokens: int = 0
         self._log_interval: int = 10
         self._log_dir: str | None = None
         # 全局 semaphore（跨 model 的总并发上限）+ per-model semaphore（按 model id 限流）
@@ -56,6 +57,16 @@ class LLMClient:
         替代 ``chars//4`` 估算（中文严重偏差），并验证 prompt cache 命中。
         """
         return getattr(self._backend, "last_usage", {})
+
+    @property
+    def call_count(self) -> int:
+        """当前 client 实例已完成的模型调用数。"""
+        return int(getattr(self, "_call_count", 0))
+
+    @property
+    def total_tokens(self) -> int:
+        """当前 client 实例累计 token；provider 无 usage 时用字符数保守估算。"""
+        return int(getattr(self, "_total_tokens", 0))
 
     def set_request_semaphore(self, semaphore: asyncio.Semaphore | None) -> None:
         """绑定跨 model 全局并发闸门（对应 AppConfig.max_concurrent_llm_calls）"""
@@ -542,9 +553,7 @@ class LLMClient:
         if not self.supports_tools:
             reason = getattr(self._backend, "tool_calling_unavailable_reason", "")
             detail = f"：{reason}" if reason else ""
-            raise ToolCallError(
-                f"后端 {self.config.provider.value} 不支持 tool calling{detail}"
-            )
+            raise ToolCallError(f"后端 {self.config.provider.value} 不支持 tool calling{detail}")
 
         system = system or DEFAULT_SYSTEM
         start = time.monotonic()
@@ -568,6 +577,13 @@ class LLMClient:
             stop_reason=result.get("stop_reason"),
             latency_ms=elapsed,
         )
+        import json as _json
+
+        self._log_exchange(
+            _json.dumps(messages, ensure_ascii=False, default=str),
+            _json.dumps(result, ensure_ascii=False, default=str),
+            elapsed,
+        )
         return result
 
     def generate_with_tools_sync(
@@ -581,9 +597,7 @@ class LLMClient:
         if not self.supports_tools:
             reason = getattr(self._backend, "tool_calling_unavailable_reason", "")
             detail = f"：{reason}" if reason else ""
-            raise ToolCallError(
-                f"后端 {self.config.provider.value} 不支持 tool calling{detail}"
-            )
+            raise ToolCallError(f"后端 {self.config.provider.value} 不支持 tool calling{detail}")
 
         system = system or DEFAULT_SYSTEM
         start = time.monotonic()
@@ -604,6 +618,13 @@ class LLMClient:
             tool_calls=len(result.get("tool_calls", [])),
             stop_reason=result.get("stop_reason"),
             latency_ms=elapsed,
+        )
+        import json as _json
+
+        self._log_exchange(
+            _json.dumps(messages, ensure_ascii=False, default=str),
+            _json.dumps(result, ensure_ascii=False, default=str),
+            elapsed,
         )
         return result
 
@@ -718,10 +739,7 @@ class LLMClient:
         if not isinstance(result, ToolResult):
             return ToolResult(
                 call_id=call.call_id,
-                output=(
-                    "工具执行器返回类型无效：应为 ToolResult，"
-                    f"实际为 {type(result).__name__}"
-                ),
+                output=(f"工具执行器返回类型无效：应为 ToolResult，实际为 {type(result).__name__}"),
                 is_error=True,
             )
         if result.call_id != call.call_id:
@@ -755,10 +773,7 @@ class LLMClient:
         if not isinstance(result, ToolResult):
             return ToolResult(
                 call_id=call.call_id,
-                output=(
-                    "工具执行器返回类型无效：应为 ToolResult，"
-                    f"实际为 {type(result).__name__}"
-                ),
+                output=(f"工具执行器返回类型无效：应为 ToolResult，实际为 {type(result).__name__}"),
                 is_error=True,
             )
         if result.call_id != call.call_id:
@@ -933,10 +948,26 @@ class LLMClient:
         from datetime import datetime
         from pathlib import Path
 
-        self._call_count += 1
+        self._call_count = int(getattr(self, "_call_count", 0)) + 1
+        usage = self.last_usage
+        measured_total = int(usage.get("total_tokens", 0))
+        if measured_total <= 0:
+            measured_total = sum(
+                int(usage.get(key, 0))
+                for key in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                )
+            )
+        if measured_total <= 0:
+            measured_total = max(1, (len(prompt) + len(response) + 3) // 4)
+        self._total_tokens = int(getattr(self, "_total_tokens", 0)) + measured_total
 
         # 定期记录完整 prompt/response 到 DEBUG
-        if self._call_count % self._log_interval == 0:
+        log_interval = max(1, int(getattr(self, "_log_interval", 10)))
+        if self._call_count % log_interval == 0:
             logger.debug(
                 "llm_full_exchange",
                 call_count=self._call_count,
@@ -945,8 +976,9 @@ class LLMClient:
             )
 
         # 写 JSONL 文件
-        if self._log_dir:
-            log_path = Path(self._log_dir)
+        log_dir = getattr(self, "_log_dir", None)
+        if log_dir:
+            log_path = Path(log_dir)
             log_path.mkdir(parents=True, exist_ok=True)
 
             # REC-27：截断 prompt/response（保留完整长度字段），避免 VLM 大 prompt 把

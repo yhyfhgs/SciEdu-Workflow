@@ -160,17 +160,11 @@ def generate_free(
         from sciforge.config.settings import AppConfig
 
         app_cfg = AppConfig()
-        agent = QGenAgent(
+        agent = QGenAgent.from_config(
             llm=llm,
             storage=storage,
             discipline=discipline_enum,
-            max_rounds=app_cfg.generation_max_rounds,
-            candidates_per_round=app_cfg.generation_candidates_per_round,
-            retriever_max_kps=app_cfg.qgen_retriever_max_kps,
-            retriever_max_refs=app_cfg.qgen_retriever_max_refs,
-            retriever_max_negatives=app_cfg.qgen_retriever_max_negatives,
-            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
-            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+            config=app_cfg,
         )
 
         async def run_once() -> None:
@@ -393,14 +387,11 @@ def generate_variant(
             raise typer.Exit(1) from None
 
         app_cfg = AppConfig()
-        agent = QGenAgent(
+        agent = QGenAgent.from_config(
             llm=llm,
             storage=storage,
             discipline=discipline_enum,
-            max_rounds=app_cfg.generation_max_rounds,
-            candidates_per_round=app_cfg.generation_candidates_per_round,
-            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
-            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+            config=app_cfg,
         )
 
         async def run_once() -> None:
@@ -460,16 +451,14 @@ def generate_evolve(
 
     try:
         app_cfg = AppConfig()
-        agent = QGenAgent(
+        agent = QGenAgent.from_config(
             llm=llm,
             storage=storage,
             discipline=discipline_enum,
-            max_rounds=app_cfg.generation_max_rounds,
-            candidates_per_round=app_cfg.generation_candidates_per_round,
-            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
-            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+            config=app_cfg,
             enable_evolution=True,
             max_improvement_rounds=max_improve,
+            population_selection_enabled=True,
         )
 
         async def run_once() -> None:
@@ -516,6 +505,7 @@ def generate_solve_deep(
 ) -> None:
     """深度求解：多轮推理 + sandbox 工具调用（execute_python 交叉验证中间结果）"""
     from sciforge.agents.qgen.deep_solver import DeepSolveEngine
+    from sciforge.agents.qgen.verification_sandbox import build_verification_sandbox
     from sciforge.config.settings import AppConfig
 
     discipline_enum = _parse_discipline(discipline)
@@ -536,6 +526,8 @@ def generate_solve_deep(
             discipline_enum,
             sandbox_timeout=app_cfg.sandbox_timeout,
             max_turns=app_cfg.solver_max_turns,
+            sandbox=build_verification_sandbox(app_cfg),
+            sandbox_trust_policy=app_cfg.sandbox_trust_policy,
         )
 
         async def run_once() -> None:

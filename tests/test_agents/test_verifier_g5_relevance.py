@@ -17,8 +17,10 @@ class _PromptAwareLLM:
         self._review = review
         self._relevance = relevance
         self.relevance_calls = 0
+        self.prompts: list[str] = []
 
     async def generate_json(self, prompt: str, **kw: Any) -> Any:
+        self.prompts.append(prompt)
         if "尝试回答" in prompt or '"relevant"' in prompt:
             self.relevance_calls += 1
             return self._relevance
@@ -50,6 +52,17 @@ async def test_g5_relevant_passes() -> None:
     assert llm.relevance_calls == 1
     assert result.checks["solution_relevant"] is True
     assert result.passed is True
+
+
+@pytest.mark.asyncio
+async def test_independent_review_receives_question_and_full_solution() -> None:
+    llm = _PromptAwareLLM(_REVIEW_PASS, {"relevant": True})
+    solution = _sol("First derive the limit, then obtain $f'(x)=2x$.")
+    await VerificationPipeline(review_llm=llm).verify(_q(), solution)  # type: ignore[arg-type]
+
+    review_prompt = next(prompt for prompt in llm.prompts if "待审核解答" in prompt)
+    assert _q().content in review_prompt
+    assert solution.solution_latex in review_prompt
 
 
 @pytest.mark.asyncio

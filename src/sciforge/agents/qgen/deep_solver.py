@@ -14,6 +14,14 @@ from typing import Any
 
 import structlog
 
+from sciforge.agents.qgen.verification_sandbox import (
+    ContainerPythonRunner,
+    LeanVerifier,
+    SandboxLimits,
+    TrustedLocalPythonRunner,
+    TrustPolicy,
+    VerificationSandbox,
+)
 from sciforge.core.models import (
     ContextBundle,
     Discipline,
@@ -53,11 +61,22 @@ class DeepSolveEngine:
         *,
         sandbox_timeout: int = 10,
         max_turns: int = 5,
+        sandbox: VerificationSandbox | None = None,
+        sandbox_trust_policy: TrustPolicy | str = TrustPolicy.CONTAINER_REQUIRED,
     ) -> None:
         self.llm = llm
         self.discipline = discipline
         self.sandbox_timeout = sandbox_timeout
         self.max_turns = max_turns
+        if sandbox is None:
+            limits = SandboxLimits(timeout_seconds=float(sandbox_timeout))
+            sandbox = VerificationSandbox(
+                local_python=TrustedLocalPythonRunner(limits=limits),
+                container_python=ContainerPythonRunner(limits=limits),
+                lean_verifier=LeanVerifier(limits=limits),
+            )
+        self.sandbox = sandbox
+        self.sandbox_trust_policy = TrustPolicy(sandbox_trust_policy)
         self._system = get_generation_prompt_template("solving/solve_deep_system.txt", discipline)
         self._user_template = get_generation_prompt_template(
             "solving/solve_deep_user.txt", discipline
@@ -76,14 +95,17 @@ class DeepSolveEngine:
             logger.info("solve_deep_no_tools_fallback", question_id=question.id)
             return await self._solve_single(user, question)
 
-        from sciforge.core.sandbox import run_sandboxed
-
-        def _executor(call: ToolCall) -> ToolResult:
+        async def _executor(call: ToolCall) -> ToolResult:
             code = str(call.arguments.get("code", ""))
-            res = run_sandboxed(code, self.sandbox_timeout)
+            res = await self.sandbox.arun_python(
+                code,
+                trust_policy=self.sandbox_trust_policy,
+            )
             out = (res.stdout or "")[:2000]
             if res.stderr:
                 out += "\n[stderr]\n" + res.stderr[:1000]
+            if res.reason:
+                out += f"\n[{res.status.value}] {res.reason}"
             return ToolResult(
                 call_id=call.call_id,
                 output=out or "(无输出)",

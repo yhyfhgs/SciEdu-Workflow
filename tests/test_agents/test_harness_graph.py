@@ -291,6 +291,50 @@ async def test_checkpoint_step_count_in_loop():
     assert steps_seen == [1, 2, 3, 4]
 
 
+async def test_transition_hook_exposes_next_node_and_resume_cursor():
+    """持久化钩子保存 next_node；恢复时不重放已完成的节点。"""
+    visited: list[str] = []
+
+    async def a(state: dict) -> dict:
+        visited.append("a")
+        return {"value": 1}
+
+    async def b(state: dict) -> dict:
+        visited.append("b")
+        return {"value": state["value"] + 1}
+
+    graph = StateGraph()
+    graph.add_node("a", a)
+    graph.add_node("b", b)
+    graph.set_entry_point("a")
+    graph.add_edge("a", "b")
+    graph.add_edge("b", END)
+    compiled = graph.compile()
+
+    transitions: list[tuple[str, str, int]] = []
+    result = await compiled.ainvoke(
+        {"value": 1},
+        start_at="b",
+        completed_steps=1,
+        max_steps=2,
+        on_transition=lambda node, next_node, _state, step: transitions.append(
+            (node, next_node, step)
+        ),
+    )
+
+    assert visited == ["b"]
+    assert result["value"] == 2
+    assert transitions == [("b", END, 2)]
+
+
+async def test_resume_rejects_unknown_node_and_exhausted_total_budget():
+    compiled = _linear_graph()
+    with pytest.raises(ValueError, match="未知恢复节点"):
+        await compiled.ainvoke({}, start_at="ghost")
+    with pytest.raises(RuntimeError, match="max_steps"):
+        await compiled.ainvoke({}, start_at="a", completed_steps=2, max_steps=2)
+
+
 async def test_all_hooks_together():
     """三类钩子同时提供时互不干扰，各自被正确触发"""
     log: list[str] = []
