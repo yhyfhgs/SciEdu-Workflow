@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,7 @@ from sciforge.api.schemas import (
     RecommendResponse,
     SolveRequest,
     SolveResponse,
+    TaskResponse,
 )
 from sciforge.api.security import sign_token, verify_token
 from sciforge.core.models import (
@@ -52,7 +54,7 @@ from sciforge.core.models import (
     VariantStrategy,
 )
 from sciforge.export import render_docx, render_markdown
-from sciforge.storage.saas import SaasStore, TaskInfo, UsageSummary
+from sciforge.storage.saas import SaasStore, UsageSummary
 
 if TYPE_CHECKING:
     from sciforge.agents import QGenAgent, SolveAgent
@@ -63,6 +65,42 @@ logger = structlog.get_logger()
 QGenFactory = Callable[[Discipline], "QGenAgent"]
 SolveFactory = Callable[[Discipline], "SolveAgent"]
 StorageFactory = Callable[[], "SQLiteStorageBackend"]
+
+SCOPE_GENERATION_WRITE = "generation:write"
+SCOPE_SOLVE_WRITE = "solve:write"
+SCOPE_TASKS_READ = "tasks:read"
+SCOPE_USAGE_READ = "usage:read"
+SCOPE_PAPERS_WRITE = "papers:write"
+
+_LEGACY_SCOPE_ALIASES: dict[str, frozenset[str]] = {
+    # Existing keys were issued with only generate/solve.  Expand those values
+    # to the least-privilege capabilities needed by their existing workflows.
+    "generate": frozenset(
+        {SCOPE_GENERATION_WRITE, SCOPE_TASKS_READ, SCOPE_USAGE_READ, SCOPE_PAPERS_WRITE}
+    ),
+    "solve": frozenset({SCOPE_SOLVE_WRITE, SCOPE_USAGE_READ}),
+}
+
+
+@dataclass(frozen=True)
+class Principal:
+    """Authenticated caller; authorization and quota checks are separate layers."""
+
+    tenant_id: str
+    user_id: str = ""
+    scopes: frozenset[str] = frozenset()
+    auth_kind: str = "api_key"  # open / bearer / api_key
+
+
+def _expand_scopes(scopes: list[str]) -> frozenset[str]:
+    expanded: set[str] = set()
+    for scope in scopes:
+        normalized = scope.strip()
+        if not normalized:
+            continue
+        expanded.add(normalized)
+        expanded.update(_LEGACY_SCOPE_ALIASES.get(normalized, ()))
+    return frozenset(expanded)
 
 
 def _parse_discipline(value: str) -> Discipline:
@@ -90,7 +128,7 @@ async def _run_batch(
     """后台批量生成：逐题生成，实时更新任务进度/结果；异常标 failed。"""
     from sciforge.agents import QGenInput
 
-    saas_store.update_task(task_id, status="running")
+    saas_store.update_task(task_id, tenant, status="running")
     questions: list[dict[str, Any]] = []
     try:
         for i in range(count):
@@ -107,19 +145,30 @@ async def _run_batch(
                         "verified": gq.verification.passed,
                     }
                 )
-                if tenant:
-                    saas_store.record_usage(
-                        tenant, "/v1/generate/batch", tokens_est=_trace_tokens(result)
-                    )
-            saas_store.update_task(
-                task_id, done=i + 1, result_json=json.dumps(questions, ensure_ascii=False)
-            )
+                saas_store.update_task_and_record_usage(
+                    task_id,
+                    tenant,
+                    done=i + 1,
+                    result_json=json.dumps(questions, ensure_ascii=False),
+                    endpoint="/v1/generate/batch",
+                    tokens_est=_trace_tokens(result),
+                )
+            else:
+                saas_store.update_task(
+                    task_id,
+                    tenant,
+                    done=i + 1,
+                    result_json=json.dumps(questions, ensure_ascii=False),
+                )
         saas_store.update_task(
-            task_id, status="completed", result_json=json.dumps(questions, ensure_ascii=False)
+            task_id,
+            tenant,
+            status="completed",
+            result_json=json.dumps(questions, ensure_ascii=False),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("batch_run_failed", task_id=task_id, error=str(exc)[:200])
-        saas_store.update_task(task_id, status="failed", error=str(exc)[:300])
+        saas_store.update_task(task_id, tenant, status="failed", error=str(exc)[:300])
 
 
 def _assemble_paper_items(storage_factory: StorageFactory, req: PaperRequest) -> list[PaperItem]:
@@ -180,46 +229,87 @@ def create_app(
         allow_headers=["*"],
     )
 
-    async def require_tenant(
+    async def authenticate_principal(
         x_api_key: str = Header(default="", alias="X-API-Key"),
         authorization: str = Header(default=""),
-    ) -> str:
-        """鉴权：开放模式返回空租户；否则 Bearer token（C 端）或 X-API-Key（B2B）→ tenant_id。"""
+    ) -> Principal:
+        """Authenticate only; this layer deliberately does not enforce scope or quota."""
         if saas_store is None:
-            return ""
+            return Principal(tenant_id="", scopes=frozenset({"*"}), auth_kind="open")
         if authorization.startswith("Bearer "):
             payload = verify_token(authorization[7:], jwt_secret)
             if payload is None:
                 raise HTTPException(status_code=401, detail="无效或过期的 token")
             tenant_id = str(payload.get("tenant_id", ""))
+            if not tenant_id or saas_store.get_tenant(tenant_id) is None:
+                raise HTTPException(status_code=401, detail="token 缺少有效租户身份")
+            return Principal(
+                tenant_id=tenant_id,
+                user_id=str(payload.get("user_id", "")),
+                scopes=frozenset({"*"}),
+                auth_kind="bearer",
+            )
         else:
             info = saas_store.verify_api_key(x_api_key)
-            if info is None:
+            if info is None or saas_store.get_tenant(info.tenant_id) is None:
                 raise HTTPException(status_code=401, detail="无效或缺失 API Key / token")
-            tenant_id = info.tenant_id
-        if not saas_store.has_quota(tenant_id):
+            return Principal(
+                tenant_id=info.tenant_id,
+                scopes=_expand_scopes(info.scopes),
+                auth_kind="api_key",
+            )
+
+    def enforce_scope(principal: Principal, required_scope: str) -> Principal:
+        """Authorize an authenticated principal for one canonical capability."""
+        if "*" not in principal.scopes and required_scope not in principal.scopes:
+            raise HTTPException(status_code=403, detail=f"缺少所需 scope: {required_scope}")
+        return principal
+
+    def enforce_quota(principal: Principal) -> Principal:
+        """Apply quota only after authentication and authorization have succeeded."""
+        if saas_store is not None and not saas_store.has_quota(principal.tenant_id):
             raise HTTPException(status_code=429, detail="配额已用尽")
-        return tenant_id
+        return principal
 
-    async def require_identity(
-        x_api_key: str = Header(default="", alias="X-API-Key"),
-        authorization: str = Header(default=""),
-    ) -> tuple[str, str]:
-        """返回 (user_id, tenant_id)。轻量端点（行为/推荐）用：鉴权但不计配额。
+    async def require_generation_scope(
+        principal: Principal = Depends(authenticate_principal),
+    ) -> Principal:
+        return enforce_scope(principal, SCOPE_GENERATION_WRITE)
 
-        Bearer token（C 端）带 user_id；API Key（B2B）无终端用户 → user_id 为空。
-        """
-        if saas_store is None:
-            return "", ""
-        if authorization.startswith("Bearer "):
-            payload = verify_token(authorization[7:], jwt_secret)
-            if payload is None:
-                raise HTTPException(status_code=401, detail="无效或过期的 token")
-            return str(payload.get("user_id", "")), str(payload.get("tenant_id", ""))
-        info = saas_store.verify_api_key(x_api_key)
-        if info is None:
-            raise HTTPException(status_code=401, detail="无效或缺失 API Key / token")
-        return "", info.tenant_id
+    async def require_solve_scope(
+        principal: Principal = Depends(authenticate_principal),
+    ) -> Principal:
+        return enforce_scope(principal, SCOPE_SOLVE_WRITE)
+
+    async def require_tasks_scope(
+        principal: Principal = Depends(authenticate_principal),
+    ) -> Principal:
+        return enforce_scope(principal, SCOPE_TASKS_READ)
+
+    async def require_usage_scope(
+        principal: Principal = Depends(authenticate_principal),
+    ) -> Principal:
+        return enforce_scope(principal, SCOPE_USAGE_READ)
+
+    async def require_papers_scope(
+        principal: Principal = Depends(authenticate_principal),
+    ) -> Principal:
+        return enforce_scope(principal, SCOPE_PAPERS_WRITE)
+
+    async def require_generation_quota(
+        principal: Principal = Depends(require_generation_scope),
+    ) -> Principal:
+        return enforce_quota(principal)
+
+    async def require_solve_quota(
+        principal: Principal = Depends(require_solve_scope),
+    ) -> Principal:
+        return enforce_quota(principal)
+
+    async def require_papers_quota(
+        principal: Principal = Depends(require_papers_scope),
+    ) -> Principal:
+        return enforce_quota(principal)
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:
@@ -249,7 +339,7 @@ def create_app(
 
     @app.post("/v1/generate", response_model=GenerateResponse)
     async def generate(
-        req: GenerateRequest, tenant: str = Depends(require_tenant)
+        req: GenerateRequest, principal: Principal = Depends(require_generation_quota)
     ) -> GenerateResponse:
         from sciforge.agents import QGenInput
 
@@ -271,9 +361,12 @@ def create_app(
             return GenerateResponse(
                 success=False, rounds_used=result.rounds_used, reason=result.reason
             )
-        if saas_store is not None and tenant:
+        if saas_store is not None and principal.tenant_id:
             saas_store.record_usage(
-                tenant, "/v1/generate", billable_units=1, tokens_est=_trace_tokens(result)
+                principal.tenant_id,
+                "/v1/generate",
+                billable_units=1,
+                tokens_est=_trace_tokens(result),
             )
         gq = result.generated
         return GenerateResponse(
@@ -290,7 +383,9 @@ def create_app(
         )
 
     @app.post("/v1/solve", response_model=SolveResponse)
-    async def solve(req: SolveRequest, tenant: str = Depends(require_tenant)) -> SolveResponse:
+    async def solve(
+        req: SolveRequest, principal: Principal = Depends(require_solve_quota)
+    ) -> SolveResponse:
         from sciforge.agents import SolveInput
 
         if not req.question_id and not req.content:
@@ -305,8 +400,8 @@ def create_app(
         result = await agent.run(inp)
         if result.solution is None:
             return SolveResponse(success=False)
-        if saas_store is not None and tenant:
-            saas_store.record_usage(tenant, "/v1/solve", billable_units=1)
+        if saas_store is not None and principal.tenant_id:
+            saas_store.record_usage(principal.tenant_id, "/v1/solve", billable_units=1)
         return SolveResponse(
             success=True,
             solution=result.solution.solution_latex,
@@ -314,19 +409,19 @@ def create_app(
         )
 
     @app.get("/v1/usage", response_model=UsageSummary)
-    async def usage(tenant: str = Depends(require_tenant)) -> UsageSummary:
+    async def usage(principal: Principal = Depends(require_usage_scope)) -> UsageSummary:
         if saas_store is None:
             raise HTTPException(status_code=404, detail="鉴权/计费未启用")
-        return saas_store.get_usage(tenant)
+        return saas_store.get_usage(principal.tenant_id)
 
     @app.post("/v1/behavior")
     async def record_behavior(
-        req: BehaviorRequest, identity: tuple[str, str] = Depends(require_identity)
+        req: BehaviorRequest, principal: Principal = Depends(authenticate_principal)
     ) -> dict[str, str]:
         """记录一次练习行为（P4 推荐数据源）。需 C 端用户登录（Bearer token）。"""
         if saas_store is None:
             raise HTTPException(status_code=404, detail="用户系统未启用")
-        user_id, _tenant = identity
+        user_id = principal.user_id
         if not user_id:
             raise HTTPException(status_code=400, detail="练习行为需 C 端用户身份（Bearer token）")
         saas_store.record_behavior(
@@ -344,14 +439,14 @@ def create_app(
         discipline: str = Query(default="math"),
         subject: str = Query(default=""),
         limit: int = Query(default=10, ge=1, le=50),
-        identity: tuple[str, str] = Depends(require_identity),
+        principal: Principal = Depends(authenticate_principal),
     ) -> RecommendResponse:
         """按用户练习画像推荐题目（难度贴合最近发展区 + 命中薄弱标签）。"""
         if saas_store is None:
             raise HTTPException(status_code=404, detail="用户系统未启用")
         if storage_factory is None:
             raise HTTPException(status_code=503, detail="推荐需注入题库 storage")
-        user_id, _tenant = identity
+        user_id = principal.user_id
         if not user_id:
             raise HTTPException(status_code=400, detail="推荐需 C 端用户身份（Bearer token）")
 
@@ -397,14 +492,16 @@ def create_app(
     async def generate_batch(
         req: GenerateBatchRequest,
         background_tasks: BackgroundTasks,
-        tenant: str = Depends(require_tenant),
+        principal: Principal = Depends(require_generation_scope),
     ) -> dict[str, Any]:
         if saas_store is None:
             raise HTTPException(status_code=503, detail="异步批量需启用 saas_store（鉴权/计费）")
         discipline = _parse_discipline(req.discipline)
         if not req.topics:
             raise HTTPException(status_code=422, detail="topics 不能为空")
-        task_id = saas_store.create_task(tenant, req.count)
+        task_id = saas_store.create_task_if_quota_available(principal.tenant_id, req.count)
+        if task_id is None:
+            raise HTTPException(status_code=429, detail="请求数量超过本月剩余额度")
         gen_req = GenerationRequest(
             discipline=discipline,
             subject=req.subject,
@@ -414,34 +511,45 @@ def create_app(
             strategy=VariantStrategy.TOPIC_GENERATION,
         )
         background_tasks.add_task(
-            _run_batch, task_id, gen_req, req.count, discipline, qgen_factory, saas_store, tenant
+            _run_batch,
+            task_id,
+            gen_req,
+            req.count,
+            discipline,
+            qgen_factory,
+            saas_store,
+            principal.tenant_id,
         )
         return {"task_id": task_id, "status": "pending", "total": req.count}
 
-    @app.get("/v1/tasks/{task_id}", response_model=TaskInfo)
-    async def get_task(task_id: str, tenant: str = Depends(require_tenant)) -> TaskInfo:
+    @app.get("/v1/tasks/{task_id}", response_model=TaskResponse)
+    async def get_task(
+        task_id: str, principal: Principal = Depends(require_tasks_scope)
+    ) -> TaskResponse:
         if saas_store is None:
             raise HTTPException(status_code=404, detail="任务系统未启用")
-        info = saas_store.get_task(task_id)
+        info = saas_store.get_task(task_id, principal.tenant_id)
         if info is None:
-            raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-        return info
+            raise HTTPException(status_code=404, detail="任务不存在")
+        return TaskResponse.model_validate(info.model_dump())
 
     @app.post("/v1/papers", response_model=PaperResponse)
-    async def papers(req: PaperRequest, tenant: str = Depends(require_tenant)) -> PaperResponse:
+    async def papers(
+        req: PaperRequest, principal: Principal = Depends(require_papers_quota)
+    ) -> PaperResponse:
         if storage_factory is None:
             raise HTTPException(status_code=503, detail="组卷需注入题库 storage")
         if req.difficulty_min > req.difficulty_max:
             raise HTTPException(status_code=422, detail="difficulty_min 不能大于 difficulty_max")
         items = _assemble_paper_items(storage_factory, req)
-        if tenant and saas_store is not None and items:
-            saas_store.record_usage(tenant, "/v1/papers", billable_units=len(items))
+        if principal.tenant_id and saas_store is not None and items:
+            saas_store.record_usage(principal.tenant_id, "/v1/papers", billable_units=len(items))
         title = req.title or f"{_parse_discipline(req.discipline).value} 试卷"
         return PaperResponse(title=title, count=len(items), questions=items)
 
     @app.post("/v1/papers/export")
     async def papers_export(
-        req: PaperExportRequest, tenant: str = Depends(require_tenant)
+        req: PaperExportRequest, principal: Principal = Depends(require_papers_quota)
     ) -> Response:
         if storage_factory is None:
             raise HTTPException(status_code=503, detail="组卷导出需注入题库 storage")
@@ -450,8 +558,10 @@ def create_app(
         items = _assemble_paper_items(storage_factory, req)
         title = req.title or f"{_parse_discipline(req.discipline).value} 试卷"
         item_dicts = [it.model_dump() for it in items]
-        if tenant and saas_store is not None and items:
-            saas_store.record_usage(tenant, "/v1/papers/export", billable_units=len(items))
+        if principal.tenant_id and saas_store is not None and items:
+            saas_store.record_usage(
+                principal.tenant_id, "/v1/papers/export", billable_units=len(items)
+            )
         if req.format == "docx":
             try:
                 data = render_docx(title, item_dicts, include_solutions=req.include_solutions)

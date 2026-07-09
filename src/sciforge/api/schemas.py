@@ -35,6 +35,17 @@ class GenerateBatchRequest(GenerateRequest):
     count: int = Field(default=5, ge=1, le=50)
 
 
+class TaskResponse(BaseModel):
+    """Public batch-task view; tenant ownership is intentionally not serialized."""
+
+    id: str
+    status: str = "pending"
+    total: int = 0
+    done: int = 0
+    result: list[dict[str, object]] = Field(default_factory=list)
+    error: str = ""
+
+
 class PaperItem(BaseModel):
     id: str
     content: str

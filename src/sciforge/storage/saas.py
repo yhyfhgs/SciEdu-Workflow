@@ -14,6 +14,7 @@ import hmac
 import json
 import secrets
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     ts TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_usage_tenant ON usage_records(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_usage_tenant_ts ON usage_records(tenant_id, ts);
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -106,7 +108,10 @@ class UsageSummary(BaseModel):
     tenant_id: str
     used: int = 0
     quota: int = 0
-    remaining: int = 0
+    remaining: int | None = None
+    unlimited: bool = False
+    period_start: str = ""
+    period_end: str = ""
 
 
 class TaskInfo(BaseModel):
@@ -155,9 +160,13 @@ class SaasStore:
     def __init__(self, db_path: Path | str = "data/saas.db") -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.execute("PRAGMA synchronous = NORMAL")
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_SAAS_SCHEMA)
         self._conn.commit()
 
@@ -232,7 +241,8 @@ class SaasStore:
     def create_api_key(self, tenant_id: str, *, scopes: list[str] | None = None) -> str:
         """生成并返回原始 key（仅此一次可见）；DB 只存其 sha256 hash。"""
         raw = "sk-" + secrets.token_urlsafe(32)
-        scope_str = ",".join(scopes or ["generate", "solve"])
+        effective_scopes = ["generate", "solve"] if scopes is None else scopes
+        scope_str = ",".join(scope.strip() for scope in effective_scopes if scope.strip())
         self._conn.execute(
             "INSERT INTO api_keys (key_hash, tenant_id, scopes) VALUES (?, ?, ?)",
             (_hash_key(raw), tenant_id, scope_str),
@@ -250,7 +260,7 @@ class SaasStore:
         ).fetchone()
         if row is None:
             return None
-        scopes = [s for s in str(row["scopes"]).split(",") if s]
+        scopes = [scope.strip() for scope in str(row["scopes"]).split(",") if scope.strip()]
         return ApiKeyInfo(tenant_id=row["tenant_id"], scopes=scopes)
 
     def revoke_api_key(self, raw_key: str) -> bool:
@@ -265,53 +275,119 @@ class SaasStore:
     def record_usage(
         self, tenant_id: str, endpoint: str, *, billable_units: int = 1, tokens_est: int = 0
     ) -> None:
-        self._conn.execute(
-            "INSERT INTO usage_records (tenant_id, endpoint, billable_units, tokens_est) "
-            "VALUES (?, ?, ?, ?)",
-            (tenant_id, endpoint, billable_units, tokens_est),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO usage_records (tenant_id, endpoint, billable_units, tokens_est) "
+                "VALUES (?, ?, ?, ?)",
+                (tenant_id, endpoint, billable_units, tokens_est),
+            )
+            self._conn.commit()
 
     def get_usage(self, tenant_id: str) -> UsageSummary:
-        row = self._conn.execute(
-            "SELECT COALESCE(SUM(billable_units), 0) AS used "
-            "FROM usage_records WHERE tenant_id = ?",
-            (tenant_id,),
-        ).fetchone()
+        """Return usage for the current UTC calendar month."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(billable_units), 0) AS used, "
+                "strftime('%Y-%m-%dT%H:%M:%SZ', 'now', 'start of month') AS period_start, "
+                "strftime('%Y-%m-%dT%H:%M:%SZ', 'now', 'start of month', '+1 month') "
+                "AS period_end "
+                "FROM usage_records WHERE tenant_id = ? "
+                "AND ts >= datetime('now', 'start of month') "
+                "AND ts < datetime('now', 'start of month', '+1 month')",
+                (tenant_id,),
+            ).fetchone()
+            tenant = self.get_tenant(tenant_id)
         used = int(row["used"])
-        tenant = self.get_tenant(tenant_id)
-        quota = tenant.monthly_quota if tenant else 0
+        quota = tenant.monthly_quota if tenant is not None else 0
+        unlimited = quota <= 0
         return UsageSummary(
-            tenant_id=tenant_id, used=used, quota=quota, remaining=max(0, quota - used)
+            tenant_id=tenant_id,
+            used=used,
+            quota=quota,
+            remaining=None if unlimited else max(0, quota - used),
+            unlimited=unlimited,
+            period_start=str(row["period_start"]),
+            period_end=str(row["period_end"]),
         )
 
     def has_quota(self, tenant_id: str) -> bool:
         """是否还有配额（quota<=0 视为不限额）。"""
         summary = self.get_usage(tenant_id)
-        if summary.quota <= 0:
+        if summary.unlimited:
             return True
-        return summary.remaining > 0
+        return summary.remaining is not None and summary.remaining > 0
 
     # ── 异步任务 ──
 
     def create_task(self, tenant_id: str, total: int, *, kind: str = "generate_batch") -> str:
         task_id = str(uuid.uuid4())
-        self._conn.execute(
-            "INSERT INTO tasks (id, tenant_id, kind, total) VALUES (?, ?, ?, ?)",
-            (task_id, tenant_id, kind, total),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO tasks (id, tenant_id, kind, total) VALUES (?, ?, ?, ?)",
+                (task_id, tenant_id, kind, total),
+            )
+            self._conn.commit()
+        return task_id
+
+    def create_task_if_quota_available(
+        self, tenant_id: str, total: int, *, kind: str = "generate_batch"
+    ) -> str | None:
+        """Atomically reserve ``total`` requested units and create a task.
+
+        Pending/running tasks reserve their unfinished units.  Combined with
+        :meth:`update_task_and_record_usage`, ``used + reserved`` remains stable
+        while a batch advances, so concurrent batch submissions cannot overbook
+        a finite monthly quota.
+        """
+        task_id = str(uuid.uuid4())
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                tenant_row = self._conn.execute(
+                    "SELECT monthly_quota FROM tenants WHERE id = ?", (tenant_id,)
+                ).fetchone()
+                if tenant_row is None:
+                    self._conn.rollback()
+                    return None
+                quota = int(tenant_row["monthly_quota"])
+                used_row = self._conn.execute(
+                    "SELECT COALESCE(SUM(billable_units), 0) AS used "
+                    "FROM usage_records WHERE tenant_id = ? "
+                    "AND ts >= datetime('now', 'start of month') "
+                    "AND ts < datetime('now', 'start of month', '+1 month')",
+                    (tenant_id,),
+                ).fetchone()
+                reserved_row = self._conn.execute(
+                    "SELECT COALESCE(SUM(CASE WHEN total > done THEN total - done ELSE 0 END), 0) "
+                    "AS reserved FROM tasks WHERE tenant_id = ? "
+                    "AND status IN ('pending', 'running')",
+                    (tenant_id,),
+                ).fetchone()
+                used = int(used_row["used"])
+                reserved = int(reserved_row["reserved"])
+                if quota > 0 and used + reserved + total > quota:
+                    self._conn.rollback()
+                    return None
+                self._conn.execute(
+                    "INSERT INTO tasks (id, tenant_id, kind, total) VALUES (?, ?, ?, ?)",
+                    (task_id, tenant_id, kind, total),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         return task_id
 
     def update_task(
         self,
         task_id: str,
+        tenant_id: str,
         *,
         done: int | None = None,
         status: str | None = None,
         result_json: str | None = None,
         error: str | None = None,
-    ) -> None:
+    ) -> bool:
         sets: list[str] = []
         params: list[Any] = []
         if done is not None:
@@ -327,18 +403,57 @@ class SaasStore:
             sets.append("error = ?")
             params.append(error)
         if not sets:
-            return
+            return False
         sets.append("updated_at = datetime('now')")
-        params.append(task_id)
-        self._conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", params)
-        self._conn.commit()
+        params.extend((task_id, tenant_id))
+        with self._lock:
+            cur = self._conn.execute(
+                f"UPDATE tasks SET {', '.join(sets)} WHERE id = ? AND tenant_id = ?", params
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
 
-    def get_task(self, task_id: str) -> TaskInfo | None:
-        row = self._conn.execute(
-            "SELECT id, tenant_id, status, total, done, result_json, error "
-            "FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
+    def update_task_and_record_usage(
+        self,
+        task_id: str,
+        tenant_id: str,
+        *,
+        done: int,
+        result_json: str,
+        endpoint: str,
+        billable_units: int = 1,
+        tokens_est: int = 0,
+    ) -> bool:
+        """Advance a tenant-owned task and bill it in one SQLite transaction."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cur = self._conn.execute(
+                    "UPDATE tasks SET done = ?, result_json = ?, updated_at = datetime('now') "
+                    "WHERE id = ? AND tenant_id = ?",
+                    (done, result_json, task_id, tenant_id),
+                )
+                if cur.rowcount == 0:
+                    self._conn.rollback()
+                    return False
+                self._conn.execute(
+                    "INSERT INTO usage_records "
+                    "(tenant_id, endpoint, billable_units, tokens_est) VALUES (?, ?, ?, ?)",
+                    (tenant_id, endpoint, billable_units, tokens_est),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return True
+
+    def get_task(self, task_id: str, tenant_id: str) -> TaskInfo | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, tenant_id, status, total, done, result_json, error "
+                "FROM tasks WHERE id = ? AND tenant_id = ?",
+                (task_id, tenant_id),
+            ).fetchone()
         if row is None:
             return None
         try:
