@@ -65,7 +65,8 @@ async def test_solve_deep_multiturn_parses_final_json() -> None:
             role="assistant",
             content=(
                 '{"solution_latex":"积分值为 1/2，详细推导略。",'
-                '"confidence":"high","methods_used":["定积分"]}'
+                '"confidence":"high","methods_used":["定积分"],'
+                '"step_count":3,"self_check":"代入端点复核通过"}'
             ),
         ),
     ]
@@ -75,6 +76,8 @@ async def test_solve_deep_multiturn_parses_final_json() -> None:
     assert sol.confidence == "high"
     assert "1/2" in sol.solution_latex
     assert sol.methods_used == ["定积分"]
+    assert sol.step_count == 3
+    assert sol.self_check == "代入端点复核通过"
 
 
 @pytest.mark.asyncio

@@ -126,6 +126,8 @@ def _progress_payload(
         payload["solution"] = {
             "confidence": solution.confidence,
             "methods_used": list(solution.methods_used[:12]),
+            "step_count": solution.step_count,
+            "self_check": solution.self_check[:500],
             "length": len(solution.solution_latex or solution.solution_plain),
         }
 

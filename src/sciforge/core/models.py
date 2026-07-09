@@ -214,13 +214,20 @@ class KnowledgePoint(BaseModel):
 
 
 class Solution(BaseModel):
-    """题目解答 — 用于生成流程的内存对象（parse pipeline 已直接嵌入到 Question.solution_content）"""
+    """题目解答 — 可发布的推导、方法摘要与自检，不存储模型私密思维链。
+
+    ``solution_latex`` 是面向学习者的完整逐步解答；``self_check`` 与
+    ``step_count`` 是可审计的结构化摘要，便于 UI、难度分析和验证模块复用。
+    parse pipeline 的原文答案仍直接嵌入 ``Question.solution_content``。
+    """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     question_id: str = ""
     solution_latex: str = ""
     solution_plain: str = ""
     methods_used: list[str] = Field(default_factory=list)
+    step_count: int = Field(default=0, ge=0)
+    self_check: str = ""
     confidence: Literal["high", "medium", "low"] = "medium"
     is_verified: bool = False
 

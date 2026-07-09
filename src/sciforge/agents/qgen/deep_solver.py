@@ -180,5 +180,18 @@ def _to_solution(data: dict[str, Any], question: Question, raw: str) -> Solution
         question_id=question.id,
         solution_latex=solution_text,
         methods_used=list(data.get("methods_used") or []),
+        step_count=_non_negative_int(data.get("step_count")),
+        self_check=str(data.get("self_check") or ""),
         confidence=conf,  # type: ignore[arg-type]
     )
+
+
+def _non_negative_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if not isinstance(value, (int, float, str)):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
