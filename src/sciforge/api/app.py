@@ -17,7 +17,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -47,6 +48,10 @@ from sciforge.api.schemas import (
     TaskResponse,
 )
 from sciforge.api.security import sign_token, verify_token
+from sciforge.api.tenant_storage import (
+    TenantScopedStorageView,
+    TenantStorageConfigurationError,
+)
 from sciforge.core.models import (
     Discipline,
     GenerationRequest,
@@ -116,12 +121,72 @@ def _trace_tokens(result: Any) -> int:
     return int(getattr(trace, "total_tokens_est", 0)) if trace is not None else 0
 
 
+@contextmanager
+def _tenant_scoped_agent_storage(
+    agent: Any,
+    tenant_id: str,
+    storage_factory: StorageFactory | None,
+) -> Iterator[None]:
+    """Bind real QGen/Solve agents to a request-scoped tenant storage view.
+
+    Test/facade agents without storage are left untouched.  Production agents
+    receive a fresh storage connection when ``storage_factory`` is available;
+    this avoids mutating the long-lived unscoped retrieval backend used by the
+    CLI serve composition.
+    """
+    if not tenant_id:
+        yield
+        return
+
+    from sciforge.agents import QGenAgent, SolveAgent
+
+    if not isinstance(agent, (QGenAgent, SolveAgent)):
+        yield
+        return
+
+    agent_any: Any = agent
+    original_storage = agent_any.storage
+    base_storage = storage_factory() if storage_factory is not None else original_storage
+    if base_storage is None:
+        raise HTTPException(
+            status_code=503,
+            detail="鉴权模式下 Agent 必须配置可执行租户隔离的题库 storage",
+        )
+
+    try:
+        scoped = TenantScopedStorageView(base_storage, tenant_id)
+    except TenantStorageConfigurationError as exc:
+        if storage_factory is not None:
+            close = getattr(base_storage, "close", None)
+            if callable(close):
+                close()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    original_retriever_storage: Any | None = None
+    agent_any.storage = scoped
+    if isinstance(agent, QGenAgent):
+        original_retriever_storage = agent_any.retriever.storage
+        agent_any.retriever.storage = scoped
+    try:
+        yield
+    finally:
+        agent_any.storage = original_storage
+        if isinstance(agent, QGenAgent):
+            agent_any.retriever.storage = original_retriever_storage
+        scoped.close()
+        if storage_factory is not None:
+            close = getattr(base_storage, "close", None)
+            if callable(close):
+                close()
+
+
 async def _run_batch(
     task_id: str,
     gen_req: GenerationRequest,
     count: int,
     discipline: Discipline,
     qgen_factory: QGenFactory,
+    storage_factory: StorageFactory | None,
     saas_store: SaasStore,
     tenant: str,
 ) -> None:
@@ -133,7 +198,8 @@ async def _run_batch(
     try:
         for i in range(count):
             agent = qgen_factory(discipline)
-            result = await agent.run(QGenInput(request=gen_req))
+            with _tenant_scoped_agent_storage(agent, tenant, storage_factory):
+                result = await agent.run(QGenInput(request=gen_req))
             if result.generated is not None:
                 gq = result.generated
                 questions.append(
@@ -171,11 +237,23 @@ async def _run_batch(
         saas_store.update_task(task_id, tenant, status="failed", error=str(exc)[:300])
 
 
-def _assemble_paper_items(storage_factory: StorageFactory, req: PaperRequest) -> list[PaperItem]:
+def _assemble_paper_items(
+    storage_factory: StorageFactory,
+    req: PaperRequest,
+    *,
+    tenant_id: str = "",
+) -> list[PaperItem]:
     """按 req 过滤条件从题库抽题（用完释放 storage 连接）。"""
     discipline = _parse_discipline(req.discipline)
     storage = storage_factory()
+    scoped: TenantScopedStorageView | None = None
     try:
+        if tenant_id:
+            try:
+                scoped = TenantScopedStorageView(storage, tenant_id)
+            except TenantStorageConfigurationError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+        read_storage: Any = scoped or storage
         filters: dict[str, object] = {
             "discipline": discipline.value,
             "difficulty_range": (req.difficulty_min, req.difficulty_max),
@@ -184,8 +262,8 @@ def _assemble_paper_items(storage_factory: StorageFactory, req: PaperRequest) ->
             filters["subject"] = req.subject
         if req.question_type:
             filters["question_type"] = req.question_type
-        ids = storage.search_questions(filters)
-        bank = storage.load_questions_by_ids(list(ids)[: req.count])
+        ids = read_storage.search_questions(filters)
+        bank = read_storage.load_questions_by_ids(list(ids)[: req.count])
         return [
             PaperItem(
                 id=q.id,
@@ -197,6 +275,8 @@ def _assemble_paper_items(storage_factory: StorageFactory, req: PaperRequest) ->
             for q in bank
         ]
     finally:
+        if scoped is not None:
+            scoped.close()
         close = getattr(storage, "close", None)
         if callable(close):
             close()
@@ -356,7 +436,8 @@ def create_app(
             question_type=req.question_type,
             strategy=VariantStrategy.TOPIC_GENERATION,
         )
-        result = await agent.run(QGenInput(request=gen_req))
+        with _tenant_scoped_agent_storage(agent, principal.tenant_id, storage_factory):
+            result = await agent.run(QGenInput(request=gen_req))
         if result.generated is None:
             return GenerateResponse(
                 success=False, rounds_used=result.rounds_used, reason=result.reason
@@ -397,7 +478,13 @@ def create_app(
             if req.content
             else SolveInput(question_id=req.question_id)
         )
-        result = await agent.run(inp)
+        try:
+            with _tenant_scoped_agent_storage(agent, principal.tenant_id, storage_factory):
+                result = await agent.run(inp)
+        except FileNotFoundError as exc:
+            # Missing and foreign-owned IDs intentionally share one response to
+            # prevent existence probing across tenants.
+            raise HTTPException(status_code=404, detail="题目不存在") from exc
         if result.solution is None:
             return SolveResponse(success=False)
         if saas_store is not None and principal.tenant_id:
@@ -454,13 +541,20 @@ def create_app(
 
         disc = _parse_discipline(discipline)
         storage = storage_factory()
+        scoped: TenantScopedStorageView | None = None
         try:
+            try:
+                scoped = TenantScopedStorageView(storage, principal.tenant_id)
+            except TenantStorageConfigurationError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             filters: dict[str, object] = {"discipline": disc.value}
             if subject:
                 filters["subject"] = subject
-            ids = storage.search_questions(filters)
-            candidates = storage.load_questions_by_ids(list(ids))
+            ids = scoped.search_questions(filters)
+            candidates = scoped.load_questions_by_ids(list(ids))
         finally:
+            if scoped is not None:
+                scoped.close()
             close = getattr(storage, "close", None)
             if callable(close):
                 close()
@@ -517,6 +611,7 @@ def create_app(
             req.count,
             discipline,
             qgen_factory,
+            storage_factory,
             saas_store,
             principal.tenant_id,
         )
@@ -541,7 +636,11 @@ def create_app(
             raise HTTPException(status_code=503, detail="组卷需注入题库 storage")
         if req.difficulty_min > req.difficulty_max:
             raise HTTPException(status_code=422, detail="difficulty_min 不能大于 difficulty_max")
-        items = _assemble_paper_items(storage_factory, req)
+        items = _assemble_paper_items(
+            storage_factory,
+            req,
+            tenant_id=principal.tenant_id,
+        )
         if principal.tenant_id and saas_store is not None and items:
             saas_store.record_usage(principal.tenant_id, "/v1/papers", billable_units=len(items))
         title = req.title or f"{_parse_discipline(req.discipline).value} 试卷"
@@ -555,7 +654,11 @@ def create_app(
             raise HTTPException(status_code=503, detail="组卷导出需注入题库 storage")
         if req.difficulty_min > req.difficulty_max:
             raise HTTPException(status_code=422, detail="difficulty_min 不能大于 difficulty_max")
-        items = _assemble_paper_items(storage_factory, req)
+        items = _assemble_paper_items(
+            storage_factory,
+            req,
+            tenant_id=principal.tenant_id,
+        )
         title = req.title or f"{_parse_discipline(req.discipline).value} 试卷"
         item_dicts = [it.model_dump() for it in items]
         if principal.tenant_id and saas_store is not None and items:
