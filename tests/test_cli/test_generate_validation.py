@@ -9,6 +9,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from sciforge.agents.runtime import RunStatus, SQLiteRunStore
 from sciforge.cli.main import app
 
 runner = CliRunner()
@@ -67,3 +68,27 @@ def test_generate_batch_docstring_is_alias(tmp_path: Path) -> None:
     assert result.exit_code == 0
     # 应明确指出是 free --count 的别名
     assert "free" in result.output or "别名" in result.output
+
+
+def test_generate_durable_commands_are_exposed() -> None:
+    result = runner.invoke(app, ["generate", "--help"])
+
+    assert result.exit_code == 0
+    assert "durable" in result.output
+    assert "resume" in result.output
+    assert "cancel" in result.output
+
+
+def test_generate_cancel_immediately_finishes_pending_run(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.db"
+    store = SQLiteRunStore(runtime_db)
+    store.create_run("qgen", {"topics": ["analysis"]}, run_id="cli-cancel")
+
+    result = runner.invoke(
+        app,
+        ["generate", "cancel", "cli-cancel", "--runtime-db", str(runtime_db)],
+    )
+
+    assert result.exit_code == 0
+    assert "cancelled" in result.output
+    assert store.require_run("cli-cancel").status is RunStatus.CANCELLED
