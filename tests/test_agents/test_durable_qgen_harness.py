@@ -8,7 +8,13 @@ import pytest
 from sciforge.agents.graph import END, StateGraph
 from sciforge.agents.qgen.agent import QGenAgent, QGenInput, QGenOutput
 from sciforge.agents.qgen.durable_harness import DurableQGenHarness, QGenGraphSnapshot
-from sciforge.agents.runtime import BudgetExceededError, RunBudget, RunStatus, SQLiteRunStore
+from sciforge.agents.runtime import (
+    BudgetExceededError,
+    InvalidRunTransitionError,
+    RunBudget,
+    RunStatus,
+    SQLiteRunStore,
+)
 from sciforge.core.models import Discipline, GenerationRequest, VariantStrategy
 from sciforge.core.trace import GenerationTrace
 
@@ -158,3 +164,16 @@ async def test_budget_pause_resumes_from_next_node_without_replaying_retrieve(
     # retrieve 来自 checkpoint，恢复只重试未提交的 generate，然后 finish。
     assert agent.visited == ["retrieve", "generate", "generate", "finish"]
     assert store.require_run("qgen-budget").status is RunStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_request_drift(tmp_path: Path) -> None:
+    store = SQLiteRunStore(tmp_path / "runtime.db")
+    agent = _FakeQGen()
+    harness = DurableQGenHarness(agent, store)  # type: ignore[arg-type]
+    run_id, _ = await harness.run(_input(), run_id="immutable-input")
+    changed = _input()
+    changed.request.difficulty_target = 9
+
+    with pytest.raises(InvalidRunTransitionError, match="different generation request"):
+        await harness.run(changed, run_id=run_id, resume=True)

@@ -186,6 +186,11 @@ class DurableQGenHarness:
         resume: bool = False,
     ) -> tuple[str, QGenOutput]:
         existing = self.store.get_run(run_id) if run_id else None
+        requested_payload = input.request.model_dump(mode="json")
+        if existing is not None and existing.input_payload != requested_payload:
+            raise InvalidRunTransitionError(
+                f"run {existing.run_id} is bound to a different generation request"
+            )
         if existing is not None and existing.status is RunStatus.SUCCEEDED:
             if existing.output_payload is None:
                 raise InvalidRunTransitionError("completed qgen run has no output payload")
@@ -205,7 +210,7 @@ class DurableQGenHarness:
         if existing is None:
             created = self.store.create_run(
                 "qgen",
-                input.request.model_dump(mode="json"),
+                requested_payload,
                 budget=budget,
                 metadata=metadata,
                 run_id=run_id,

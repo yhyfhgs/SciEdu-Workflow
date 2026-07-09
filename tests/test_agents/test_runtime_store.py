@@ -234,6 +234,27 @@ def test_cancel_flag_stops_new_work_and_acknowledgement_is_terminal(
         store.begin_run(run.run_id)
 
 
+@pytest.mark.parametrize("initial_status", [RunStatus.PENDING, RunStatus.PAUSED])
+def test_cancel_without_active_worker_is_immediately_terminal(
+    tmp_path: Path,
+    initial_status: RunStatus,
+) -> None:
+    store = _store(tmp_path)
+    run = store.create_run("qgen", {})
+    if initial_status is RunStatus.PAUSED:
+        store.begin_run(run.run_id)
+        store.pause_run(run.run_id, reason="waiting for a worker")
+
+    cancelled = store.request_cancel(run.run_id, reason="user stopped")
+
+    assert cancelled.status is RunStatus.CANCELLED
+    assert cancelled.cancel_requested is True
+    assert [event.event_type for event in store.list_events(run.run_id)][-2:] == [
+        "run.cancel_requested",
+        "run.cancelled",
+    ]
+
+
 def test_checkpoint_is_idempotent_but_immutable(tmp_path: Path) -> None:
     store = _store(tmp_path)
     run = store.create_run("qgen", {})

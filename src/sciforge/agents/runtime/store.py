@@ -344,6 +344,17 @@ class SQLiteRunStore:
                 (now, run_id),
             )
             self._append_event_conn(conn, run_id, "run.cancel_requested", {"reason": reason})
+            # No worker owns a pending/paused run, so there is no future node
+            # boundary at which it could acknowledge the flag.  Finalize these
+            # states immediately; running work remains cooperatively cancelled
+            # at its next safe graph boundary.
+            if status in {RunStatus.PENDING, RunStatus.PAUSED} and row["current_step_id"] is None:
+                conn.execute(
+                    "UPDATE agent_runs SET status = ?, completed_at = ?, "
+                    "updated_at = ?, last_error = ? WHERE run_id = ?",
+                    (RunStatus.CANCELLED.value, now, now, reason, run_id),
+                )
+                self._append_event_conn(conn, run_id, "run.cancelled", {"reason": reason})
             return _run_from_row(self._require_run_row(conn, run_id))
 
     def acknowledge_cancel(self, run_id: str, *, reason: str = "") -> RunRecord:
