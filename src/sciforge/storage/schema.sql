@@ -1,4 +1,9 @@
--- SciForge SQLite Schema v10
+-- SciForge SQLite Schema v12
+-- v12 变更（Concept Graph / M5）：
+--   * concepts：受控 taxonomy 驱动的稳定概念身份
+--   * concept_aliases：分支作用域别名持久化，避免跨分支同名误归并
+--   * item_concepts：条目到概念的多对多角色关联
+--   * concept_relations：跨书聚合后的概念粒度关系图
 -- v10 变更（本版本）：
 --   * 结构化题型（REC-19）：questions 新增 options(JSON) / correct_option / blanks
 --   * 检索优化（REC-16）：knowledge_points / questions 新增 order_index 单列索引
@@ -20,7 +25,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 11;
+PRAGMA user_version = 12;
 
 -- ── 知识点 ──
 
@@ -131,6 +136,70 @@ CREATE TABLE IF NOT EXISTS figures (
 );
 
 CREATE INDEX IF NOT EXISTS idx_fig_item ON figures(item_id);
+
+-- ── Concept Graph（v12 / M5）──
+-- taxonomy_path 是权威概念身份来源；tags 仅作为别名与展示路径。
+-- 未命中受控 taxonomy 的 tag 仍可入 concepts，但 status=pending，默认不进入生成池。
+
+CREATE TABLE IF NOT EXISTS concepts (
+    id TEXT PRIMARY KEY,
+    discipline TEXT NOT NULL
+        CHECK(discipline IN ('math','physics','chemistry','biology','other')),
+    branch TEXT NOT NULL,
+    canonical_en TEXT NOT NULL,
+    canonical_zh TEXT NOT NULL DEFAULT '',
+    tag_path TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'concept',
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active','pending','deprecated')),
+    depth INTEGER NOT NULL DEFAULT 1 CHECK(depth >= 1),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- alias 必须在 discipline+branch 内唯一；例如不同分支的 "definition" 不会误合并。
+CREATE TABLE IF NOT EXISTS concept_aliases (
+    discipline TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    locale TEXT NOT NULL DEFAULT 'mixed'
+        CHECK(locale IN ('en','zh','mixed')),
+    source TEXT NOT NULL DEFAULT 'pipeline'
+        CHECK(source IN ('taxonomy','pipeline','spec','manual')),
+    confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0.0 AND 1.0),
+    PRIMARY KEY(discipline, branch, alias)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS item_concepts (
+    item_id TEXT NOT NULL,
+    item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+    concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'primary'
+        CHECK(role IN ('primary','defines','uses','prerequisite','tests')),
+    weight REAL NOT NULL DEFAULT 1.0 CHECK(weight BETWEEN 0.0 AND 1.0),
+    PRIMARY KEY(item_id, concept_id, role)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS concept_relations (
+    src_concept TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    dst_concept TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0.0 AND 1.0),
+    source TEXT NOT NULL DEFAULT 'structural'
+        CHECK(source IN ('structural','llm','manual')),
+    evidence_count INTEGER NOT NULL DEFAULT 1 CHECK(evidence_count >= 1),
+    note TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(src_concept, dst_concept, relation_type)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_concept_discipline_branch
+    ON concepts(discipline, branch, status);
+CREATE INDEX IF NOT EXISTS idx_concept_canonical
+    ON concepts(discipline, branch, canonical_en);
+CREATE INDEX IF NOT EXISTS idx_concept_alias_target ON concept_aliases(concept_id);
+CREATE INDEX IF NOT EXISTS idx_item_concept_concept ON item_concepts(concept_id, role);
+CREATE INDEX IF NOT EXISTS idx_concept_rel_dst ON concept_relations(dst_concept, relation_type);
 
 -- ── FTS5 全文检索 ──
 

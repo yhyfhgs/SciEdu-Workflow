@@ -97,6 +97,28 @@ class RelationType(StrEnum):
     PROOF_OF = "proof_of"
 
 
+class ConceptStatus(StrEnum):
+    """概念结点的治理状态。
+
+    ``pending`` 结点可以被检索和人工复核，但不会进入默认生成池；这使未知 tag
+    不会静默污染受控 taxonomy，同时仍保留提取信息。
+    """
+
+    ACTIVE = "active"
+    PENDING = "pending"
+    DEPRECATED = "deprecated"
+
+
+class ConceptRole(StrEnum):
+    """条目在某概念上的语义角色。"""
+
+    PRIMARY = "primary"
+    DEFINES = "defines"
+    USES = "uses"
+    PREREQUISITE = "prerequisite"
+    TESTS = "tests"
+
+
 # ── 来源元数据 ────────────────────────────────────────
 
 
@@ -630,6 +652,72 @@ class ItemRelation(BaseModel):
     confidence: float = 1.0
     source: Literal["llm", "structural", "manual"] = "llm"
     note: str = ""
+
+
+# ── Concept Graph（schema v12）──────────────────────────
+
+
+class ConceptNode(BaseModel):
+    """跨书、跨文件稳定的概念实体。
+
+    ``id`` 优先使用受控 taxonomy 的完整路径（如
+    ``math.analysis.continuity.uniform_continuity``）；未知 tag 使用同样的层级
+    slug，但状态为 ``pending``，等待治理后再进入生成池。
+    """
+
+    id: str
+    discipline: Discipline
+    branch: str
+    canonical_en: str
+    canonical_zh: str
+    tag_path: str = ""
+    kind: str = "concept"
+    status: ConceptStatus = ConceptStatus.ACTIVE
+    depth: int = Field(ge=1, default=1)
+
+
+class ConceptAlias(BaseModel):
+    """分支作用域内的持久化概念别名。"""
+
+    discipline: Discipline
+    branch: str
+    alias: str
+    concept_id: str
+    locale: Literal["en", "zh", "mixed"] = "mixed"
+    source: Literal["taxonomy", "pipeline", "spec", "manual"] = "pipeline"
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+
+
+class ItemConceptLink(BaseModel):
+    """KnowledgePoint/Question 与 ConceptNode 的多对多关联。"""
+
+    item_id: str
+    item_kind: Literal["knowledge", "question"]
+    concept_id: str
+    role: ConceptRole = ConceptRole.PRIMARY
+    weight: float = Field(ge=0.0, le=1.0, default=1.0)
+
+
+class ConceptRelation(BaseModel):
+    """概念粒度知识图谱边。"""
+
+    src_concept: str
+    dst_concept: str
+    relation_type: RelationType = RelationType.RELATED
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    source: Literal["structural", "llm", "manual"] = "structural"
+    evidence_count: int = Field(ge=1, default=1)
+    note: str = ""
+
+
+class ConceptLinkBatch(BaseModel):
+    """一次确定性 concept-link post-pass 的可持久化产物。"""
+
+    concepts: list[ConceptNode] = Field(default_factory=list)
+    aliases: list[ConceptAlias] = Field(default_factory=list)
+    item_links: list[ItemConceptLink] = Field(default_factory=list)
+    relations: list[ConceptRelation] = Field(default_factory=list)
+    pending_concept_ids: list[str] = Field(default_factory=list)
 
 
 # ── Pipeline Producer-Consumer 消息 ───────────────────────

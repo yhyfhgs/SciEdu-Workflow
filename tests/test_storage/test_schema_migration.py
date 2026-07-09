@@ -122,13 +122,13 @@ def test_defaults_for_non_generated(tmp_path: Path) -> None:
 
 
 def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
-    """旧 v8 库打开 → 自动 ALTER 链式升级到当前版本(v11)，不删库、保留旧数据"""
+    """旧 v8 库打开 → 自动链式升级到当前版本(v12)，不删库、保留旧数据"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
 
     backend = SQLiteStorageBackend(db)
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 12
         # 旧数据保留，新列以默认值可读
         old = backend.load_question("q-old")
         assert old.content == "旧题内容"
@@ -155,13 +155,13 @@ def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
 
 
 def test_migration_idempotent_rerun(tmp_path: Path) -> None:
-    """已迁移到当前版本的库再次打开不报错、版本仍为 v11"""
+    """已迁移到当前版本的库再次打开不报错、版本仍为 v12"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
     SQLiteStorageBackend(db).close()  # 首次迁移
     backend = SQLiteStorageBackend(db)  # 二次打开
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 12
     finally:
         backend.close()
 
@@ -186,6 +186,32 @@ def test_v10_to_v11_char_span_migration(tmp_path: Path) -> None:
         cols_q = {r[1] for r in backend._conn.execute("PRAGMA table_info(questions)")}
         assert {"start_char", "end_char", "page"} <= cols_kp
         assert {"start_char", "end_char", "page"} <= cols_q
+    finally:
+        backend.close()
+
+
+def test_v11_to_v12_concept_graph_migration(tmp_path: Path) -> None:
+    """M5 迁移创建四张 concept 表及关键索引，重复执行保持幂等。"""
+    db = tmp_path / "v11.db"
+    _make_old_db(db, version=8)
+    backend = SQLiteStorageBackend(db)
+    try:
+        tables = {
+            row[0]
+            for row in backend._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert {"concepts", "concept_aliases", "item_concepts", "concept_relations"} <= tables
+        indexes = {
+            row[0]
+            for row in backend._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        assert "idx_concept_discipline_branch" in indexes
+        assert "idx_item_concept_concept" in indexes
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 12
     finally:
         backend.close()
 

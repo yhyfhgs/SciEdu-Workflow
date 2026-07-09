@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from sciforge.core.models import Figure, KnowledgePoint, Question
+    from sciforge.core.models import (
+        ConceptLinkBatch,
+        ConceptRelation,
+        Figure,
+        KnowledgePoint,
+        Question,
+    )
 
 
 @runtime_checkable
@@ -46,6 +52,25 @@ class BatchStorageBackend(StorageBackend, Protocol):
 
 
 @runtime_checkable
+class ConceptGraphStorageBackend(BatchStorageBackend, Protocol):
+    """支持 schema v12 稳定概念图的存储能力。"""
+
+    def concept_link_rows(
+        self,
+        source_files: str | list[str],
+        discipline: str | None = None,
+    ) -> list[dict[str, object]]: ...
+
+    def load_concept_aliases(self, discipline: str) -> dict[tuple[str, str], str]: ...
+
+    def save_concept_graph(self, batch: ConceptLinkBatch) -> dict[str, int]: ...
+
+    def save_concept_relations(self, edges: list[ConceptRelation]) -> int: ...
+
+    def concept_relation_evidence_rows(self, discipline: str) -> list[dict[str, object]]: ...
+
+
+@runtime_checkable
 class MultiTenantStorageBackend(BatchStorageBackend, Protocol):
     """多租户题库存储协议（产品化 / 共享云端后端用）。
 
@@ -79,9 +104,7 @@ class MultiTenantStorageBackend(BatchStorageBackend, Protocol):
         """租户可见题目计数（计费 / 统计用）。"""
         ...
 
-    def save_embedding(
-        self, item_id: str, vector: list[float], *, kind: str = "question"
-    ) -> None:
+    def save_embedding(self, item_id: str, vector: list[float], *, kind: str = "question") -> None:
         """持久化某题目/知识点的向量（kind ∈ {question, knowledge_point}）。"""
         ...
 

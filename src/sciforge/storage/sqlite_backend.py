@@ -27,6 +27,8 @@ import structlog
 
 from sciforge.core.exceptions import SciForgeError
 from sciforge.core.models import (
+    ConceptLinkBatch,
+    ConceptRelation,
     Discipline,
     Figure,
     KnowledgePoint,
@@ -37,9 +39,9 @@ logger = structlog.get_logger()
 
 
 # ── SQL 常量（executemany 批量写入复用）──────────────────
-# schema v11（v11 §F M1 段）：kp/questions 各加字符级溯源列 start_char/end_char/page。
-# 注意：M5 concept 表 / M6 评价表按计划走 v12+（_MIGRATIONS 版本号一次性消耗，R4）。
-_SCHEMA_VERSION = 11
+# schema v12：v11 字符级溯源 + M5 Concept Graph 四表。
+# M6 评价表按计划走 v13，保持每个里程碑可独立迁移/回滚。
+_SCHEMA_VERSION = 12
 
 # schema 增量迁移：{from_version: [该版本→下一版的 ALTER 语句]}。
 # 每条 ALTER 容忍 "duplicate column"（幂等，应对中断重跑）。
@@ -67,6 +69,72 @@ _MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE questions ADD COLUMN start_char INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE questions ADD COLUMN end_char INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE questions ADD COLUMN page INTEGER",
+    ],
+    # v11→v12（v11 子系统 IV / M5：稳定 concept identity + 别名 + 条目映射 + 图边）
+    11: [
+        """
+        CREATE TABLE IF NOT EXISTS concepts (
+            id TEXT PRIMARY KEY,
+            discipline TEXT NOT NULL
+                CHECK(discipline IN ('math','physics','chemistry','biology','other')),
+            branch TEXT NOT NULL,
+            canonical_en TEXT NOT NULL,
+            canonical_zh TEXT NOT NULL DEFAULT '',
+            tag_path TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL DEFAULT 'concept',
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK(status IN ('active','pending','deprecated')),
+            depth INTEGER NOT NULL DEFAULT 1 CHECK(depth >= 1),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS concept_aliases (
+            discipline TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+            locale TEXT NOT NULL DEFAULT 'mixed'
+                CHECK(locale IN ('en','zh','mixed')),
+            source TEXT NOT NULL DEFAULT 'pipeline'
+                CHECK(source IN ('taxonomy','pipeline','spec','manual')),
+            confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0.0 AND 1.0),
+            PRIMARY KEY(discipline, branch, alias)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS item_concepts (
+            item_id TEXT NOT NULL,
+            item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+            concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+            role TEXT NOT NULL DEFAULT 'primary'
+                CHECK(role IN ('primary','defines','uses','prerequisite','tests')),
+            weight REAL NOT NULL DEFAULT 1.0 CHECK(weight BETWEEN 0.0 AND 1.0),
+            PRIMARY KEY(item_id, concept_id, role)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS concept_relations (
+            src_concept TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+            dst_concept TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+            relation_type TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0.0 AND 1.0),
+            source TEXT NOT NULL DEFAULT 'structural'
+                CHECK(source IN ('structural','llm','manual')),
+            evidence_count INTEGER NOT NULL DEFAULT 1 CHECK(evidence_count >= 1),
+            note TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(src_concept, dst_concept, relation_type)
+        ) WITHOUT ROWID
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_concept_discipline_branch "
+        "ON concepts(discipline, branch, status)",
+        "CREATE INDEX IF NOT EXISTS idx_concept_canonical "
+        "ON concepts(discipline, branch, canonical_en)",
+        "CREATE INDEX IF NOT EXISTS idx_concept_alias_target ON concept_aliases(concept_id)",
+        "CREATE INDEX IF NOT EXISTS idx_item_concept_concept ON item_concepts(concept_id, role)",
+        "CREATE INDEX IF NOT EXISTS idx_concept_rel_dst "
+        "ON concept_relations(dst_concept, relation_type)",
     ],
 }
 
@@ -720,6 +788,283 @@ class SQLiteStorageBackend:
 
     def relation_count(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM item_relations").fetchone()[0])
+
+    # ── Concept Graph（v12 / M5）──────────────────────
+
+    def concept_link_rows(
+        self,
+        source_files: str | list[str],
+        discipline: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """读取 concept linker 所需的最小条目投影。
+
+        ``source_files`` 支持 logical document 的多个分卷；避免只处理首卷导致图层缺项。
+        """
+        sources = [source_files] if isinstance(source_files, str) else list(source_files)
+        if not sources:
+            return []
+        placeholders = ",".join("?" for _ in sources)
+        out: list[dict[str, Any]] = []
+        for table, kind, type_col in (
+            ("knowledge_points", "knowledge", "kp_type"),
+            ("questions", "question", "question_type"),
+        ):
+            params: list[Any] = list(sources)
+            condition = f"source_file IN ({placeholders})"
+            if discipline:
+                condition += " AND discipline = ?"
+                params.append(discipline)
+            sql = (  # noqa: S608 — table/type_col 均来自上方硬编码字面量
+                f"SELECT id, discipline, {type_col} AS type, subject, taxonomy_path, "
+                f"tags, order_index FROM {table} WHERE {condition}"
+            )
+            for row in self._conn.execute(sql, params).fetchall():
+                raw_tags = row["tags"] or "[]"
+                try:
+                    parsed_tags = json.loads(raw_tags)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_tags = []
+                out.append(
+                    {
+                        "id": row["id"],
+                        "kind": kind,
+                        "type": row["type"],
+                        "discipline": row["discipline"],
+                        "subject": row["subject"] or "",
+                        "taxonomy_path": row["taxonomy_path"] or "",
+                        "tags": parsed_tags if isinstance(parsed_tags, list) else [],
+                        "order_index": row["order_index"] or 0,
+                    }
+                )
+        out.sort(key=lambda item: (int(item["order_index"]), str(item["id"])))
+        return out
+
+    def load_concept_aliases(self, discipline: str) -> dict[tuple[str, str], str]:
+        """加载某学科的 branch-scoped alias→concept 映射。"""
+        rows = self._conn.execute(
+            "SELECT branch, alias, concept_id FROM concept_aliases WHERE discipline = ?",
+            (discipline,),
+        ).fetchall()
+        return {(str(r["branch"]), str(r["alias"])): str(r["concept_id"]) for r in rows}
+
+    def save_concept_graph(self, batch: ConceptLinkBatch) -> dict[str, int]:
+        """在单事务中幂等写入 concept linker 产物。"""
+        with self._write_lock, self.transaction():
+            if batch.concepts:
+                self._conn.executemany(
+                    """
+                    INSERT INTO concepts
+                        (id, discipline, branch, canonical_en, canonical_zh, tag_path,
+                         kind, status, depth)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        canonical_zh = CASE
+                            WHEN excluded.canonical_zh != '' THEN excluded.canonical_zh
+                            ELSE concepts.canonical_zh END,
+                        tag_path = CASE
+                            WHEN excluded.tag_path != '' THEN excluded.tag_path
+                            ELSE concepts.tag_path END,
+                        kind = CASE
+                            WHEN concepts.kind = 'concept' THEN excluded.kind
+                            ELSE concepts.kind END,
+                        status = CASE
+                            WHEN excluded.status = 'active' THEN 'active'
+                            ELSE concepts.status END,
+                        depth = MIN(concepts.depth, excluded.depth),
+                        updated_at = datetime('now')
+                    """,
+                    [
+                        (
+                            node.id,
+                            node.discipline.value,
+                            node.branch,
+                            node.canonical_en,
+                            node.canonical_zh,
+                            node.tag_path,
+                            node.kind,
+                            node.status.value,
+                            node.depth,
+                        )
+                        for node in batch.concepts
+                    ],
+                )
+            if batch.aliases:
+                # 别名冲突坚持 first-writer-wins；自动流程不重指向已有 canonical identity。
+                self._conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO concept_aliases
+                        (discipline, branch, alias, concept_id, locale, source, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            alias.discipline.value,
+                            alias.branch,
+                            alias.alias,
+                            alias.concept_id,
+                            alias.locale,
+                            alias.source,
+                            alias.confidence,
+                        )
+                        for alias in batch.aliases
+                    ],
+                )
+            if batch.item_links:
+                self._conn.executemany(
+                    """
+                    INSERT INTO item_concepts (item_id, item_kind, concept_id, role, weight)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(item_id, concept_id, role) DO UPDATE SET
+                        item_kind = excluded.item_kind,
+                        weight = excluded.weight
+                    """,
+                    [
+                        (
+                            link.item_id,
+                            link.item_kind,
+                            link.concept_id,
+                            link.role.value,
+                            link.weight,
+                        )
+                        for link in batch.item_links
+                    ],
+                )
+            if batch.relations:
+                self._save_concept_relations_unlocked(batch.relations)
+        return {
+            "concepts": len(batch.concepts),
+            "aliases": len(batch.aliases),
+            "item_links": len(batch.item_links),
+            "relations": len(batch.relations),
+            "pending": len(batch.pending_concept_ids),
+        }
+
+    def _save_concept_relations_unlocked(self, edges: list[ConceptRelation]) -> None:
+        """调用方已持有写锁/事务时保存概念边。"""
+        if not edges:
+            return
+        self._conn.executemany(
+            """
+            INSERT INTO concept_relations
+                (src_concept, dst_concept, relation_type, confidence,
+                 source, evidence_count, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(src_concept, dst_concept, relation_type) DO UPDATE SET
+                confidence = excluded.confidence,
+                source = excluded.source,
+                evidence_count = MAX(concept_relations.evidence_count, excluded.evidence_count),
+                note = excluded.note
+            """,
+            [
+                (
+                    edge.src_concept,
+                    edge.dst_concept,
+                    edge.relation_type.value,
+                    edge.confidence,
+                    edge.source,
+                    edge.evidence_count,
+                    edge.note,
+                )
+                for edge in edges
+            ],
+        )
+
+    def save_concept_relations(self, edges: list[ConceptRelation]) -> int:
+        """幂等保存聚合后的 concept-level 关系边。"""
+        if not edges:
+            return 0
+        with self._write_lock, self.transaction():
+            self._save_concept_relations_unlocked(edges)
+        return len(edges)
+
+    def concept_relation_evidence_rows(self, discipline: str) -> list[dict[str, Any]]:
+        """把 item_relations 投影为 concept 对，供纯函数聚合。"""
+        rows = self._conn.execute(
+            """
+            SELECT src.concept_id AS src_concept,
+                   dst.concept_id AS dst_concept,
+                   rel.relation_type,
+                   rel.confidence
+            FROM item_relations AS rel
+            JOIN item_concepts AS src ON src.item_id = rel.src_id
+            JOIN item_concepts AS dst ON dst.item_id = rel.dst_id
+            JOIN concepts AS src_node ON src_node.id = src.concept_id
+            JOIN concepts AS dst_node ON dst_node.id = dst.concept_id
+            WHERE rel.discipline = ?
+              AND src_node.status = 'active'
+              AND dst_node.status = 'active'
+            """,
+            (discipline,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def items_for_concept(
+        self,
+        concept_id: str,
+        *,
+        role: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """查询一个概念关联的条目，供 QGen/API 复用。"""
+        sql = (
+            "SELECT item_id, item_kind, concept_id, role, weight "
+            "FROM item_concepts WHERE concept_id = ?"
+        )
+        params: list[Any] = [concept_id]
+        if role:
+            sql += " AND role = ?"
+            params.append(role)
+        sql += " ORDER BY weight DESC, item_id LIMIT ?"
+        params.append(max(1, min(limit, 1000)))
+        return [dict(row) for row in self._conn.execute(sql, params).fetchall()]
+
+    def concept_neighbors(
+        self,
+        concept_id: str,
+        *,
+        direction: str = "both",
+        relation_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """查询概念图邻居；direction 为 outgoing/incoming/both。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if direction in ("outgoing", "both"):
+            clause = (
+                "SELECT src_concept, dst_concept, relation_type, confidence, "
+                "source, evidence_count, note FROM concept_relations WHERE src_concept = ?"
+            )
+            local_params: list[Any] = [concept_id]
+            if relation_type:
+                clause += " AND relation_type = ?"
+                local_params.append(relation_type)
+            clauses.append(clause)
+            params.extend(local_params)
+        if direction in ("incoming", "both"):
+            clause = (
+                "SELECT src_concept, dst_concept, relation_type, confidence, "
+                "source, evidence_count, note FROM concept_relations WHERE dst_concept = ?"
+            )
+            local_params = [concept_id]
+            if relation_type:
+                clause += " AND relation_type = ?"
+                local_params.append(relation_type)
+            clauses.append(clause)
+            params.extend(local_params)
+        if not clauses:
+            raise ValueError("direction must be outgoing, incoming, or both")
+        sql = " UNION ".join(clauses) + " ORDER BY confidence DESC LIMIT ?"
+        params.append(max(1, min(limit, 1000)))
+        return [dict(row) for row in self._conn.execute(sql, params).fetchall()]
+
+    def concept_count(self, *, status: str | None = None) -> int:
+        if status:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM concepts WHERE status = ?", (status,)
+            ).fetchone()
+        else:
+            row = self._conn.execute("SELECT COUNT(*) FROM concepts").fetchone()
+        return int(row[0]) if row else 0
 
     def search_fulltext(self, query: str, item_type: str = "all") -> list[str]:
         """FTS5 全文检索"""

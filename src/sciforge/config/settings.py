@@ -283,6 +283,9 @@ class AppConfig(BaseSettings):
     extract_validator_enabled: bool = False
     extract_validator_max_turns: int = 3
     extract_validator_risk_threshold: float = 0.3
+    # IV.1–IV.4（M5）：入库后以 taxonomy_path 为稳定身份建立 concept 四表，
+    # tags 仅作别名/展示；未知 tag 进入 pending 治理状态。默认关闭以保持 v11 行为。
+    concept_graph_enabled: bool = False
 
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）

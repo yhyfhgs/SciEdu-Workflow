@@ -43,6 +43,10 @@ from sciforge.core.models import (
 )
 from sciforge.core.sentinel import SENTINEL
 from sciforge.pipeline.answer_linker import link_answers
+from sciforge.pipeline.concept_linker import (
+    aggregate_item_relations_to_concepts,
+    link_items_to_concepts,
+)
 from sciforge.pipeline.numbering_audit import audit_numbering, write_numbering_report
 from sciforge.pipeline.recognizers import (
     detect_section_boundaries,
@@ -530,6 +534,51 @@ class PipelineOrchestrator:
                     logger.warning("relation_inference_failed", error=str(exc))
 
             # 10.8 文档级 reconciliation 复核（#7）：重复条目 + 类型误判，写报告不改库
+            if isinstance(storage_for_pipeline, SQLiteStorageBackend) and getattr(
+                self.config, "concept_graph_enabled", False
+            ):
+                try:
+                    source_files = [str(path) for path in files]
+                    concept_rows, aliases = await asyncio.gather(
+                        asyncio.to_thread(
+                            storage_for_pipeline.concept_link_rows,
+                            source_files,
+                            self.discipline.value,
+                        ),
+                        asyncio.to_thread(
+                            storage_for_pipeline.load_concept_aliases,
+                            self.discipline.value,
+                        ),
+                    )
+                    concept_batch = link_items_to_concepts(
+                        concept_rows,
+                        discipline=self.discipline,
+                        existing_aliases=aliases,
+                    )
+                    graph_stats = await asyncio.to_thread(
+                        storage_for_pipeline.save_concept_graph, concept_batch
+                    )
+
+                    evidence_rows = await asyncio.to_thread(
+                        storage_for_pipeline.concept_relation_evidence_rows,
+                        self.discipline.value,
+                    )
+                    aggregated_edges = aggregate_item_relations_to_concepts(evidence_rows)
+                    if aggregated_edges:
+                        await asyncio.to_thread(
+                            storage_for_pipeline.save_concept_relations, aggregated_edges
+                        )
+                    logger.info(
+                        "pipeline_concept_graph_linked",
+                        file=primary_path.name,
+                        evidence_edges=len(aggregated_edges),
+                        **graph_stats,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Concept graph 是可重建 post-pass；失败不得把已成功提取的文档标失败。
+                    logger.warning("concept_graph_linking_failed", error=str(exc))
+
+            # 10.9 文档级 reconciliation 复核（#7）：重复条目 + 类型误判，写报告不改库
             if isinstance(storage_for_pipeline, SQLiteStorageBackend) and getattr(
                 self.config, "reconciliation_enabled", True
             ):
