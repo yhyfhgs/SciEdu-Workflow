@@ -112,6 +112,15 @@ async def test_durable_harness_persists_steps_usage_checkpoints_and_output(
         END,
     ]
     assert QGenGraphSnapshot.model_validate(checkpoints[-1].state["graph"]).output is not None
+    progress = [
+        event for event in store.list_events(run_id) if event.event_type == "qgen.progress"
+    ]
+    assert [event.payload["phase"] for event in progress] == [
+        "retrieve",
+        "generate",
+        "finish",
+    ]
+    assert progress[1].payload["candidate_count"] == 0
 
     # completed run is idempotently readable and does not execute graph again.
     _, repeated = await harness.run(_input(), run_id=run_id, resume=True)

@@ -87,6 +87,86 @@ def _client_usage(agent: QGenAgent) -> tuple[int, int]:
     )
 
 
+def _progress_payload(
+    node: str,
+    next_node: str,
+    state: Mapping[str, Any],
+    step_number: int,
+) -> dict[str, Any]:
+    """Project graph state into a bounded, UI-safe progress event.
+
+    Checkpoints intentionally contain the full recoverable graph state.  Event
+    consumers need a much smaller contract: enough to render retrieval,
+    solving, verification and evolution progress, without exposing prompts,
+    reference corpus contents or hidden model deliberation.
+    """
+    payload: dict[str, Any] = {
+        "phase": node,
+        "next_phase": next_node,
+        "step": step_number,
+        "route": str(state.get("route", "")),
+        "round": int(state.get("round_num", 0)),
+        "candidates_tried": int(state.get("candidates_tried", 0)),
+    }
+
+    context = state.get("context")
+    if node == "retrieve" and isinstance(context, ContextBundle):
+        payload["context"] = {
+            "knowledge_points": len(context.knowledge_points),
+            "reference_questions": len(context.reference_questions),
+            "negative_examples": len(context.negative_examples),
+        }
+
+    if node == "generate":
+        queue = state.get("queue")
+        payload["candidate_count"] = len(queue) if isinstance(queue, list) else 0
+
+    solution = state.get("solution")
+    if node == "solve" and isinstance(solution, Solution):
+        payload["solution"] = {
+            "confidence": solution.confidence,
+            "methods_used": list(solution.methods_used[:12]),
+            "length": len(solution.solution_latex or solution.solution_plain),
+        }
+
+    verification = state.get("verification")
+    if node == "verify" and isinstance(verification, VerificationResult):
+        payload["verification"] = {
+            "passed": verification.passed,
+            "checks": dict(verification.checks),
+            "suggestions": verification.suggestions[:1000],
+            "evidence": [
+                {
+                    "kind": item.kind,
+                    "status": item.status.value,
+                    "required": item.required,
+                    "backend": item.backend,
+                    "summary": item.summary[:500],
+                }
+                for item in verification.evidence[:24]
+            ],
+        }
+
+    if node in {"annotate", "select"}:
+        accepted = state.get("accepted")
+        payload["accepted_count"] = len(accepted) if isinstance(accepted, list) else 0
+        output = state.get("output")
+        if isinstance(output, QGenOutput) and output.generated is not None:
+            payload["result"] = {
+                "question_id": output.generated.question.id,
+                "difficulty": output.generated.difficulty_score.overall,
+                "verified": output.generated.verification.passed,
+            }
+
+    if node == "evolve":
+        lineage = state.get("lineage")
+        if isinstance(lineage, list) and lineage and isinstance(lineage[-1], dict):
+            # Lineage contains IDs and mutation labels, never prompt text.
+            payload["lineage"] = dict(lineage[-1])
+
+    return payload
+
+
 class DurableQGenHarness:
     """在 durable store 上执行或恢复一次 QGen graph。"""
 
@@ -243,6 +323,11 @@ class DurableQGenHarness:
                 run_id,
                 "graph.transition",
                 {"node": node, "next_node": next_node, "step": step_number},
+            )
+            self.store.append_event(
+                run_id,
+                "qgen.progress",
+                _progress_payload(node, next_node, graph_state, step_number),
             )
 
         try:
