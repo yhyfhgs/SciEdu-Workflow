@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import structlog
 
+from sciforge.core.models import ToolResult
 from sciforge.llm.backends.base import BaseBackend
 from sciforge.llm.config import LLMConfig
 
@@ -223,27 +224,98 @@ class OpenAIBackend(BaseBackend):
 
         message = response.choices[0].message
         content = message.content or ""
-        tool_calls = []
+        tool_calls: list[dict[str, Any]] = []
+        raw_tool_calls: list[dict[str, Any]] = []
 
         if message.tool_calls:
             for tc in message.tool_calls:
+                raw_arguments = tc.function.arguments
+                arguments_error = ""
                 try:
-                    args = json.loads(tc.function.arguments)
-                except (json.JSONDecodeError, AttributeError):
+                    args = json.loads(raw_arguments)
+                    if not isinstance(args, dict):
+                        arguments_error = (
+                            "OpenAI function.arguments 解码后必须是 JSON object，"
+                            f"实际为 {type(args).__name__}"
+                        )
+                        args = {}
+                except (json.JSONDecodeError, TypeError, AttributeError) as exc:
                     args = {}
-                tool_calls.append(
+                    arguments_error = f"OpenAI function.arguments 不是有效 JSON object: {exc}"
+                call: dict[str, Any] = {
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": args,
+                }
+                if arguments_error:
+                    call["arguments_error"] = arguments_error
+                tool_calls.append(call)
+                raw_tool_calls.append(
                     {
                         "id": tc.id,
-                        "name": tc.function.name,
-                        "arguments": args,
+                        "type": getattr(tc, "type", None) or "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": raw_arguments,
+                        },
                     }
                 )
 
         finish_reason = response.choices[0].finish_reason
         stop_reason = "tool_use" if finish_reason == "tool_calls" else "end_turn"
 
+        raw_assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": message.content,
+        }
+        if raw_tool_calls:
+            raw_assistant_message["tool_calls"] = raw_tool_calls
+
         return {
             "content": content,
             "tool_calls": tool_calls,
             "stop_reason": stop_reason,
+            "raw_assistant_message": raw_assistant_message,
         }
+
+    @staticmethod
+    def build_tool_result_messages(
+        response: dict[str, Any],
+        tool_results: list[ToolResult],
+    ) -> list[dict[str, Any]]:
+        """按 Chat Completions 协议回放 assistant.tool_calls + role=tool。"""
+        import json
+
+        assistant = response.get("raw_assistant_message")
+        if not isinstance(assistant, dict):
+            # 兼容自定义/mock backend 的旧统一结果。真实 OpenAI 响应包含 raw
+            # 消息，因此畸形 arguments 的原始字符串也能被无损回放。
+            raw_calls = []
+            for call in response.get("tool_calls", []):
+                raw_calls.append(
+                    {
+                        "id": call.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": call.get("name", ""),
+                            "arguments": json.dumps(
+                                call.get("arguments", {}), ensure_ascii=False
+                            ),
+                        },
+                    }
+                )
+            assistant = {
+                "role": "assistant",
+                "content": response.get("content") or None,
+                "tool_calls": raw_calls,
+            }
+
+        result_messages = [
+            {
+                "role": "tool",
+                "tool_call_id": result.call_id,
+                "content": result.output,
+            }
+            for result in tool_results
+        ]
+        return [assistant, *result_messages]

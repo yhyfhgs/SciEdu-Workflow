@@ -7,8 +7,10 @@ from typing import Any, cast
 
 import structlog
 
+from sciforge.core.models import ToolResult
 from sciforge.llm.backends.base import BaseBackend
 from sciforge.llm.config import LLMConfig, LLMProvider
+from sciforge.llm.tool_definitions import to_anthropic_format
 
 logger = structlog.get_logger()
 
@@ -328,7 +330,7 @@ class AnthropicBackend(BaseBackend):
                 model=self.config.model,
                 system=system,
                 messages=cast(Any, messages),
-                tools=cast(Any, tools),
+                tools=cast(Any, to_anthropic_format(tools)),
                 **sdk_params,
             )
             return self._parse_tool_response(response)
@@ -348,7 +350,7 @@ class AnthropicBackend(BaseBackend):
                 model=self.config.model,
                 system=system,
                 messages=cast(Any, messages),
-                tools=cast(Any, tools),
+                tools=cast(Any, to_anthropic_format(tools)),
                 **sdk_params,
             )
             return self._parse_tool_response(response)
@@ -359,24 +361,67 @@ class AnthropicBackend(BaseBackend):
     def _parse_tool_response(response: Any) -> dict[str, Any]:
         """将 Anthropic 响应解析为统一格式"""
         content = ""
-        tool_calls = []
+        tool_calls: list[dict[str, Any]] = []
         for block in response.content:
             if block.type == "text":
                 content += block.text
             elif block.type == "tool_use":
-                tool_calls.append(
-                    {
-                        "id": block.id,
-                        "name": block.name,
-                        "arguments": block.input,
-                    }
-                )
+                raw_input = block.input
+                call: dict[str, Any] = {
+                    "id": block.id,
+                    "name": block.name,
+                    "arguments": raw_input if isinstance(raw_input, dict) else {},
+                }
+                if not isinstance(raw_input, dict):
+                    call["arguments_error"] = (
+                        "Anthropic tool_use.input 必须是 JSON object，"
+                        f"实际为 {type(raw_input).__name__}"
+                    )
+                tool_calls.append(call)
+        raw_assistant_message = {"role": "assistant", "content": response.content}
         return {
             "content": content,
             "tool_calls": tool_calls,
             "stop_reason": response.stop_reason,
             "raw_content": response.content,
+            "raw_assistant_message": raw_assistant_message,
         }
+
+    @staticmethod
+    def build_tool_result_messages(
+        response: dict[str, Any],
+        tool_results: list[ToolResult],
+    ) -> list[dict[str, Any]]:
+        """按 Anthropic Messages 协议回放 assistant + user/tool_result。"""
+        assistant = response.get("raw_assistant_message")
+        if not isinstance(assistant, dict):
+            # 兼容自定义/mock backend 的旧统一结果；真实 Anthropic 响应始终走
+            # raw_assistant_message，从而完整保留 text/tool_use block 顺序。
+            content: list[dict[str, Any]] = []
+            text = response.get("content")
+            if isinstance(text, str) and text:
+                content.append({"type": "text", "text": text})
+            for call in response.get("tool_calls", []):
+                content.append(
+                    {
+                        "type": "tool_use",
+                        "id": call.get("id", ""),
+                        "name": call.get("name", ""),
+                        "input": call.get("arguments", {}),
+                    }
+                )
+            assistant = {"role": "assistant", "content": content}
+
+        result_blocks = [
+            {
+                "type": "tool_result",
+                "tool_use_id": result.call_id,
+                "content": result.output,
+                "is_error": result.is_error,
+            }
+            for result in tool_results
+        ]
+        return [assistant, {"role": "user", "content": result_blocks}]
 
     # ── Message Batches API（REC-23：异步批处理，约半价）────────────────
     # 适合**非交互式批处理**（如 parse run-book / 目录批量重标）：把彼此独立的调用
