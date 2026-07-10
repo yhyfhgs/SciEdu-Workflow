@@ -1,7 +1,7 @@
 """CLI generate 命令组 — 题目/讲义/解答生成
 
 已实现：
-- `generate free` — 自由模式生成题目（QGenAgent 5 阶段闭环）
+- `generate free` — 自由模式生成题目（QGen 状态图 Harness 低延迟路径）
 - `generate solve` — 为已有题目生成详细解答（SolveAgent）
 - `generate batch` — 批量 free 模式
 - `generate lecture` — 生成 markdown 讲义（DocAssemblyAgent lite）
@@ -154,12 +154,8 @@ def _save_generated_question(
 ) -> Question:
     """Persist the reusable question and its public step-by-step solution together."""
 
-    solution_text = (
-        generated.solution.solution_latex or generated.solution.solution_plain
-    ).strip()
-    question = generated.question.model_copy(
-        update={"solution_content": solution_text or None}
-    )
+    solution_text = (generated.solution.solution_latex or generated.solution.solution_plain).strip()
+    question = generated.question.model_copy(update={"solution_content": solution_text or None})
     storage.save_batch([], [question])
     generated.question = question
     return question
@@ -173,9 +169,7 @@ def generate_free(
     subject: str = typer.Option("", "-s", "--subject", help="科目 (如 real_analysis:实分析)"),
     topic: str = typer.Option(..., "-t", "--topic", help="专题标签（逗号分隔）"),
     difficulty: int = typer.Option(5, "-d", "--difficulty", min=1, max=10),
-    question_type: str = typer.Option(
-        "", "--type", help="认知题型；留空使用该学科默认值"
-    ),
+    question_type: str = typer.Option("", "--type", help="认知题型；留空使用该学科默认值"),
     question_form: str = typer.Option(
         "", "--form", help="题面形式 (choice/fill_blank/subjective/...)"
     ),
@@ -191,7 +185,7 @@ def generate_free(
         help="LLM TOML 配置文件路径（未指定时默认读 config/sciforge.toml）",
     ),
 ) -> None:
-    """自由模式生成新题目（QGenAgent 5 阶段闭环）"""
+    """自由模式生成新题目（QGen 状态图 Harness 低延迟路径）。"""
     from sciforge.agents import QGenAgent, QGenInput
 
     discipline_enum = _parse_discipline(discipline)
@@ -414,9 +408,7 @@ def generate_variant(
     source_id: str = typer.Argument(..., help="源题 ID"),
     strategy: str = typer.Option("A1", "--strategy", help="变式策略 A1-A6/B1-B2（或全名）"),
     difficulty: int | None = typer.Option(None, "-d", "--difficulty", min=1, max=10),
-    question_form: str = typer.Option(
-        "", "--form", help="覆盖源题题面形式；留空保持源题形式"
-    ),
+    question_form: str = typer.Option("", "--form", help="覆盖源题题面形式；留空保持源题形式"),
     discipline: str = typer.Option("math", "--discipline", "-D"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db"),
     save: bool = typer.Option(True, "--save/--no-save"),
@@ -714,18 +706,13 @@ def resume_durable(
         error(f"任务 {run_id} 不是 QGen graph run（kind={record.run_kind}）")
         raise typer.Exit(1)
     request = GenerationRequest.model_validate(record.input_payload)
-    if any(
-        value is not None
-        for value in (max_steps, max_llm_calls, max_tokens, max_wall_seconds)
-    ):
+    if any(value is not None for value in (max_steps, max_llm_calls, max_tokens, max_wall_seconds)):
         store.update_budget(
             run_id,
             RunBudget(
                 max_steps=max_steps if max_steps is not None else record.budget.max_steps,
                 max_llm_calls=(
-                    max_llm_calls
-                    if max_llm_calls is not None
-                    else record.budget.max_llm_calls
+                    max_llm_calls if max_llm_calls is not None else record.budget.max_llm_calls
                 ),
                 max_tokens=max_tokens if max_tokens is not None else record.budget.max_tokens,
                 max_wall_time_seconds=(

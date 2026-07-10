@@ -1,148 +1,235 @@
 # QGen Harness 架构与验证协议
 
-> 目标：为“出题”而不是通用聊天定制的可恢复 Agent Harness
-> 范围：新题、变式、加深、难度调整、求解、评估、修复、数值/代码/Lean 验证
-> 状态：与 `agents/qgen/`、`agents/runtime/` 和 API conversation/run 协议同步演进
+> 当前实现：`src/sciforge/agents/qgen/` + `agents/runtime/` + conversation/run API。
+> 对外模式：`new/evolve/variant/adjust_difficulty/deepen/solve/evaluate`。
+> 目标：让题目、解答、评价与工具证据可恢复、可审计、可拒绝，而不是一次 prompt 的长文本。
 
-## 1. 为什么需要题目专用 Harness
+## 1. 产品与安全边界
 
-通用的“prompt → answer”对出题不够：题面可以语法通顺却无解，解答可以方向相关却在
-边界情形失效，难度可以评分正确却与用户知识库无关。因此 Harness 必须将创造、
-独立求解、环境验证、审稿和选择分成不同角色，并用可重放事件串联。
+通用 “prompt → answer” 不能保证题目可解、答案相关、边界条件正确或形式化翻译忠实。QGen
+因此把检索、创造、独立求解、确定性预筛、独立审稿、工具验证、难度标注与失败修正分成
+不同职责。
 
-系统不对外暴露模型的私有原始 chain-of-thought。用户看到的“详细思考过程”是可审计的
-结构化解题步骤、方法选择摘要、验证证据与失败修正记录；它们可以被独立检查，
-而不是一段无法验证的隐式推理日志。
+系统对外提供完整题面、可教学的结构化解题步骤、方法摘要、验证证据和修正记录；不把模型
+私有 raw chain-of-thought 存为模型字段、日志、checkpoint 或 API 响应。“详细过程”必须是
+能够被学习者和验证器独立检查的产品内容。
 
-## 2. 外部案例与采纳决策
+## 2. 参考机制与采纳范围
 
-| 一手案例 | 可复用机制 | SciForge 决策 |
+| 一手来源 | 机制 | 当前采纳 |
 |---|---|---|
-| [Anthropic: Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) | 小步任务、跨 session 交接产物、每次自验证 | 每个 graph node 独立 step/checkpoint；恢复时先读 cursor 和最近证据 |
-| [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) | 每个 step 保存 state snapshot，支持 fault recovery/HITL/time travel | 保留极简 `StateGraph`，实现 immutable checkpoint + next-node cursor + append-only event |
-| [Magentic-One](https://arxiv.org/abs/2411.04468) | Orchestrator 跟踪进展、重新规划、调度专用 Agent | QGen 是 orchestrator；generator/solver/verifier/evolver 只拥有单一职责 |
-| [Tree of Thoughts](https://arxiv.org/abs/2305.10601) / [LATS](https://arxiv.org/abs/2310.04406) | 多路径探索、value feedback、回溯 | 只在高难/高风险模式开启有界 beam/tree，普通题保持线性低延迟 |
-| [AlphaEvolve](https://deepmind.google/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) / [FunSearch](https://www.nature.com/articles/s41586-023-06924-6) | 多样化候选池、可执行 evaluator、保留高分与新颖候选 | self-evolve 保留 lineage/objective vector，不是对同题无限改写 |
-| [LeanDojo](https://github.com/lean-dojo/LeanDojo) / [DeepSeek-Prover-V2](https://github.com/deepseek-ai/DeepSeek-Prover-V2) | Lean 交互、retrieval、subgoal decomposition | Lean 是可选强证据；编译成功只证明形式化 theorem，不自动证明自然语言题面翻译正确 |
-| [gVisor](https://gvisor.dev/docs/) / [Firecracker](https://github.com/firecracker-microvm/firecracker) | 对 LLM/用户代码建立宿主隔离边界 | 本地 subprocess 仅允许 trusted code；不受信代码需要无网络只读容器，生产多租户推荐 gVisor/Firecracker |
-| [Hypothesis](https://hypothesis.readthedocs.io/en/latest/) | property-based 输入生成、失败缩减与重放 | 数值/程序题不只测一个样例，保存 seed/counterexample |
+| [Anthropic long-running agent harness](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) | 小步任务、跨 session 交接、每次自验证 | graph node 作为 step；checkpoint 保存 cursor 与证据 |
+| [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) | step snapshot、fault recovery、HITL/time travel | 自研轻量 StateGraph + immutable checkpoint；尚无通用 time-travel UI |
+| [Magentic-One](https://arxiv.org/abs/2411.04468) | orchestrator + 专职 agents + 重新规划 | QGen 编排单责 generator/solver/verifier/evolver |
+| [Tree of Thoughts](https://arxiv.org/abs/2305.10601) 与 [LATS](https://arxiv.org/abs/2310.04406) | 多候选探索、value feedback、回退 | 高风险/进化模式启用有界候选池；普通模式保持低延迟路径 |
+| [FunSearch](https://www.nature.com/articles/s41586-023-06924-6) 与 [AlphaEvolve](https://deepmind.google/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/) | 可执行评价、lineage、候选选择 | 保存 parent/generation/directive；用确定性多目标加权选择，不宣称 Pareto search |
+| [LeanDojo](https://github.com/lean-dojo/LeanDojo) 与 [DeepSeek-Prover-V2](https://github.com/deepseek-ai/DeepSeek-Prover-V2) | Lean retrieval/proving/subgoal | Lean 作为数学证明题的可选或 required 证据；编译成功不自动证明翻译忠实 |
+| [gVisor](https://gvisor.dev/docs/) 与 [Firecracker](https://github.com/firecracker-microvm/firecracker) | hostile code 的宿主隔离 | 当前默认受限 OCI 容器；hardened multi-tenant executor 仍是部署增强项 |
 
-## 3. 功能模式
+这些来源提供设计原则，不代表 SciForge 已实现它们的全部功能。尤其当前没有通用 beam search、
+Pareto archive、property-based hidden-case generator、gVisor/Firecracker 调度或 Lean 交互式 tactic
+search；这些只列在后续路线中。
 
-| mode | 输入 | 输出 | 必经验证 |
-|---|---|---|---|
-| `generate` | 学科、主题、难度、题型、知识范围 | 新题+解答+评分 | solver + independent review |
-| `variant` | 源题 + A1–A6/B1–B2 变式策略 | 保留目标能力的实质变式 | 去重/泄漏 + solver + review |
-| `deepen` | 题目/解答 + 深度预算 | 多方法或更高层推广 | deep solve + tool evidence |
-| `calibrate` | 题目 + 目标难度 | 条件/表示/推理深度的定向改写 | 重新求解 + 10 维难度差 |
-| `solve` | 题目 | 可教学的分步解答 | relevance + review；可选数值/Lean |
-| `evaluate` | 题目 + 可选解答 | 正确性、难度、认知层级、新颖度、可教学性 | reviewer + deterministic rubric |
-| `repair` | 失败候选 + 证据 | 最小修复后的下一代 | 原失败检查必须翻转 |
+## 3. 对外模式与内部策略
 
-## 4. 状态图
+| API mode | 输入 | 运行语义 |
+|---|---|---|
+| `new` | 领域、主题/指令、难度、type/form | B1 主题生成，走完整 QGen 核心路径 |
+| `evolve` | 同 new | 开启失败诊断、有限 evolve 和候选池选择 |
+| `variant` | 可见源题 + A1/A2/A3/A6 | 保留目标能力的实质变式并重新求解/验证 |
+| `adjust_difficulty` | 源题 + 显式难度 | 目标升高→A4，降低→A5，相同→A1 |
+| `deepen` | 源题 | B2 跨主题改写并启用 DeepSolveEngine |
+| `solve` | 源题 id 或完整题面 | SolveAgent；API 策略固定 fast，不声称 independent verification |
+| `evaluate` | 源题 + 可选评估指令 | 准备解答后运行独立 reviewer 与选定验证矩阵 |
+
+`repair` 是失败诊断后的内部 evolve 路径，不是公开 ChatMode。公开请求在进入 LLM 前必须由
+`DisciplineSpec` 校验 question type/form，并校验源题可见性与模式必填字段。
+
+## 4. 当前 QGen 状态图
 
 ```text
-plan
-  → retrieve_quality_gated_context
-  → propose_population
-  → deterministic_prefilter
-  → independent_solve ── high-risk → deep_solve/tools
-  → verification_matrix
-       ├─ structure / duplicate / leakage
-       ├─ symbolic + numeric + property tests
-       ├─ code sandbox
-       ├─ optional Lean compile
-       └─ independent full-solution review
-  → score_objectives
-       ├─ pass → select → annotate → finalize
-       ├─ repairable → diagnose → evolve → solve
-       └─ invalid → discard → next / regenerate
+retrieve → generate → next → prefilter → solve → verify → annotate
+                       │         │          │        │          │
+                       │         └ fail ────┴─fail → diagnose → evolve → solve
+                       │                                  │
+                       ├ no candidate / next round ←──────┘
+                       └ population complete → select → END
+
+annotate ──普通模式──────────────────────────────────────→ END
+annotate ──population mode→ 收集已通过候选 → next/select
 ```
 
-每个节点必须是可重试的幂等单元。对外部有副作用的操作（入库、用量、导出）只能在
-checkpoint 确认后执行一次，并以 run/step id 作幂等键。
+节点职责：
 
-## 5. Long-horizon 执行协议
+1. `retrieve`：质量门禁后的知识点、参考题、难度锚点与负样本；显式 `knowledge_ids` 仍需过门；
+2. `generate`：按学科和 B1/B2/A1–A6 策略产生有界候选批；
+3. `next`：选择下一候选或决定再生成/进入 selection/结束；
+4. `prefilter`：长度、数学分隔符/括号配平、题面形式和负样本相似度的 0-LLM 拒绝；
+5. `solve`：配置决定使用 SolveEngine 或 DeepSolveEngine；节点名保持稳定；
+6. `verify`：solver 置信度、完整题答相关性、独立 reviewer 与 policy 工具证据；
+7. `annotate`：10 维难度与目标差；可复用 reviewer 合并结果以减少一次 LLM；
+8. `diagnose/evolve`：把 solver/reviewer 失败转成具体 mutation directive，再从 solve 验证；
+9. `select`：只在已通过候选中按加权目标稳定排序。
 
-`agents/runtime` 使用独立 SQLite，不污染教育内容 schema。一次 run 包含：
+图有 max-step 保险丝；round、candidate、improvement 数以及 LLM/token/wall-time 都受上限约束。
 
-- `run_id/kind/status/input/output/metadata`；
-- steps、LLM calls、tokens、wall time 四类硬预算；
+## 5. Context 与对话输入
+
+QGen context 不是整库 dump：
+
+- 按 discipline、canonical subject、difficulty window、type/form 和质量门禁检索；
+- 上限控制 knowledge/reference/negative 数量；
+- 显式 pins 使用稳定 id，不用用户显示文本替代 id；pins 不要求 subject 完全相同，但仍要求
+  discipline 与质量资格；
+- Chatbox 在写当前命令前快照最近历史，最多 8 条、每条 1200 字符、总计 6000 字符；
+- 快照作为 durable `GenerationRequest` 的不可变输入，恢复不会读到后来新增的消息；
+- 历史被标为不可信上下文，只提供约束/指代，不允许覆盖 system、验证或沙箱规则。
+
+## 6. Long-horizon 与恢复
+
+`SQLiteRunStore` 使用独立 `qgen_runtime.db`，一次 run 保存：
+
+- kind/status/input/output/metadata；
+- step、LLM calls、tokens、wall time 四类预算与累计用量；
 - 单 run 最多一个 running step 的原子 claim；
-- immutable checkpoint：`step_number + next_node + serialized state + cursor`；
-- append-only event：为 SSE 和事后调试提供单调 sequence；
-- cooperative cancellation：节点边界检查 cancel flag，不在事务/子进程中间破坏状态。
+- 每个 QGen 完成节点后的 immutable checkpoint：state、trace、`next_node` cursor；
+- append-only、按 run 单调 sequence 的 event；
+- cooperative cancel flag。
 
-恢复规则：读取 latest checkpoint 的 `next_node`，将上次中断的 running step 标记为 interrupted，
-从节点边界继续。已完成节点的输出必须来自 checkpoint，不再调用 LLM。
+恢复规则：中断的 running step 标为 interrupted，从最新 checkpoint 的 `next_node` 继续；已完成
+节点直接使用 checkpoint，不再次调用 LLM。成功 run 的再次读取直接返回 output。API 启动时
+自动调度 pending/running run；budget paused 必须由用户增加预算后 resume。QGen 提供图节点粒度
+checkpoint；solve/evaluate 同样持久化并可重建恢复，但不是同一套多节点 QGen graph 粒度。
 
-## 6. Self-evolve 协议
+产品交付与 Agent 成功分开：成功 run 还需幂等地 materialize 生成题、写 assistant final message、
+artifact 和 usage。启动 reconciliation 会补做缺失交付；`question.persisted`、稳定 message id 与
+账单事件避免重复发布/计费。
 
-self-evolve 必须是有界搜索，而不是“让模型再想一次”：
+CLI 只有 `generate durable` 默认启用这套 graph checkpoint，并配套 `generate resume/cancel`；
+`free/variant/evolve/solve-deep` 是直接交互命令，不应误写成全部自动持久化。
 
-1. 每个 candidate 保存 `candidate_id/parent_id/generation/mutation/evidence` lineage。
-2. objective vector 至少包含 correctness、solution completeness、difficulty distance、
-   novelty、pedagogical value、verification strength、cost。
-3. 选择先应用硬约束（正确、可解、无泄漏），再做 Pareto/加权排序。
-4. 保留小比例 novelty champion，避免只围绕一个模板收敛；同时用 content hash、
-   concept overlap 和结构签名去重。
-5. 失败证据必须转换为具体 mutation directive；修复后先重跑原失败检查，
-   再跑完整矩阵。
-6. 每代的 candidate 数、总 LLM calls、sandbox CPU 和 wall time 都受 RunBudget 限制。
+## 7. Self-evolve 与候选选择
 
-## 7. 验证矩阵
+当前 evolve 是有界、证据驱动的局部搜索：
 
-| 题型 | 必须 | 可选强证据 | 失败策略 |
-|---|---|---|---|
-| 数值/代数 | 重算、边界样例、容差与单位 | SymPy/NumPy + property tests | 明确 counterexample 必须拒题 |
-| 证明 | 条件/结论、关键蕴含、反例搜索 | Lean 4 | Lean 失败区分翻译、依赖和证明失败 |
-| 几何 | 退化配置、数值坐标特例 | CAS/坐标 property tests | 图形直觉不能代替条件 |
-| 物理 | 量纲、单位、极限情况、守恒 | 数值仿真 | 量纲错误硬拒绝 |
-| 化学 | 计量/电荷/原子守恒、反应条件 | cheminformatics tool | 任一守恒失败硬拒绝 |
-| 程序 | sample + hidden + boundary + property | compiler/runtime sandbox | 超时/超内存/反例硬拒绝 |
-| 实验设计 | 变量、对照、可观测指标、安全 | domain reviewer | 缺对照/不可观测进人工复核 |
+1. `CandidateRecord` 保存 `parent_id/generation/improvement_strategy/
+   improvement_directive/failure_reasons`；
+2. solver 失败与 reviewer suggestions 被转换为 solver-或verification-oriented prompt；
+3. 新候选先重走 solve 与完整 verify，不能只相信“已修复”说明；
+4. content/negative similarity 与结构 prefilter 抑制重复和泄漏；
+5. improvement 次数、候选数和总 run budget 共同终止搜索。
 
-验证结果必须是四态：`passed / failed / unavailable / error`。不得把“沙箱未安装”、
-“代码生成失败”或“编译器崩溃”偷换成数学通过。当 policy 将某验证设为 required 时，
-`unavailable/error` 也不能发布。
+`population.select_candidate` 当前不是 Pareto 算法。它对已通过候选计算：
 
-## 8. 沙箱信任边界
+```text
+overall = correctness × (
+  0.35 × difficulty_fit
+  + 0.25 × novelty
+  + 0.20 × pedagogical_value
+  + 0.20 × verification_strength
+)
+```
 
-| 级别 | 允许输入 | 实现 | 可发布环境 |
-|---|---|---|---|
-| trusted-local | 仓库内人工审核的验证代码 | subprocess + temp cwd + CPU/wall/memory limit | 单机开发 |
-| untrusted-container | LLM/用户生成代码 | Docker/Podman：`--network none --read-only --cap-drop ALL --security-opt no-new-privileges`，再加 pids/memory/cpu/tmpfs | 可控单租户 |
-| hardened-multitenant | 互不信任租户代码 | gVisor `runsc` 或 Firecracker microVM + host egress policy | 生产 SaaS |
+然后以 overall、verification strength、difficulty fit、candidate id 稳定 tie-break。未来若加入
+成本维度、novelty champion 或 Pareto archive，必须先扩充持久化 objective contract 与测试。
 
-任何 runner 都必须：不使用 shell，参数以 argv 列表传递；截断 stdout/stderr；限制进程数、CPU、
-内存、wall time 和临时盘；默认无网络、无宿主挂载、非 root。
+## 8. 验证策略
 
-## 9. API / UI 事件协议
+### 8.1 API policy 映射
 
-Chatbox 不应从最终一段文本猜测 Agent 状态。后端按 run 输出单调事件：
+| policy | solution relevance | 数值验证 | Lean |
+|---|---:|---|---|
+| `fast` | 否 | 关闭 | 关闭 |
+| `balanced` | 是 | 数值题启用、非 required | 关闭 |
+| `strict` | 是 | 数值题启用且 required | 数学证明题启用且 required |
+| `formal` | 是 | 关闭 | 仅数学证明类，启用且 required |
 
-- `message.delta/message.completed`；
-- `run.created/run.status/run.completed/run.failed`；
-- `step.started/step.completed/step.failed`；
-- `candidate.created/candidate.selected/candidate.rejected`；
-- `tool.started/tool.output/tool.completed`；
-- `verification.started/verification.result`；
-- `artifact.created`（question/solution/rubric/lean/code/report）；
-- `usage.updated`。
+`formal` 对非数学证明题在请求边界返回 422。require 配置如果没有同时 enable，会在配置或
+verifier 构造时 fail fast。
 
-SSE 客户端传 `Last-Event-ID`，服务端从 append-only sequence 补发；断线不会重跑 Agent。
-主聊天流展示用户意图、最终题目与解答；右侧面板订阅同一 run 的 candidate、验证、
-数值输出、Lean diagnostics 与难度量规，不再建第二套状态。
+### 8.2 四态证据
 
-## 10. 发布准则
+每项 `VerificationEvidence` 只能是：
 
-一道题只有在以下条件同时成立时才能标记 `verified=true`：
+- `passed`：验证器得到肯定证据；
+- `failed`：得到反例、编译拒绝或明确否定；
+- `unavailable`：容器、解释器、Lean 或依赖不存在；
+- `error`：执行、超时或结果解析失败。
 
-1. 题面通过结构、去重、条件完整性检查；
-2. 独立 solver 给出非 low-confidence 的完整解答；
-3. independent reviewer 同时看到题面与完整解答并通过；
-4. policy 要求的确定性/沙箱/Lean 验证均为 passed；
-5. 难度距目标在容差内，concept 只来自质量过门的知识库范围；
-6. 事件、证据、lineage、模型与成本已持久化。
+required evidence 只有 `passed` 才允许发布；unavailable/error 不能被降级为通过。Lean 编译成功
+只证明生成的形式化 theorem/source，independent reviewer 仍需检查自然语言题面、形式化声明和
+解答之间的一致性。
 
-“调用过验证器”不等于“已验证”；只有可读、可重放的证据结果才能支撑发布标记。
+### 8.3 题型检查矩阵
+
+| 题型 | 当前核心检查 | 可扩展强证据 |
+|---|---|---|
+| 数值/代数 | 完整解答、相关性、生成的数值验证程序 | SymPy/NumPy、边界/property cases |
+| 数学证明 | 假设/结论、完整 reviewer、可选 Lean compile | 反例搜索、交互 tactic |
+| 物理计算 | 解答/相关性、数值程序 | 量纲/守恒专用 verifier |
+| 几何 | 结构/reviewer | 坐标退化样例、图形约束 verifier |
+| 化学 | 结构/reviewer | 计量、电荷、原子守恒工具 |
+| 程序 | 题面形式与 reviewer | 编译、sample/hidden/property tests |
+| 实验设计 | 变量/对照/可观测 reviewer | 领域量规和人工复核 |
+
+表中“可扩展”不是当前已实现声明；目前通用 numerical runner 执行 verifier 生成的 Python，Lean
+runner 编译 formalizer 生成的 source。
+
+## 9. 沙箱信任边界
+
+| 策略 | 允许输入 | 当前实现与限制 |
+|---|---|---|
+| `restricted_container`（默认） | LLM/用户生成 Python 或 Lean | Docker/Podman，禁网、只读 rootfs、cap-drop ALL、no-new-privileges、非 root、CPU/内存/pids/tmpfs/wall/output 限制 |
+| `trusted_local` | 仅仓库内人工审核代码 | 无 shell 的 argv subprocess + 临时目录/资源限制；不是 hostile-code 边界 |
+| hardened multi-tenant | 互不信任租户代码 | **未内置**；部署应增加 gVisor/Firecracker 与宿主 egress policy |
+
+runner 不通过 shell 拼命令，不挂载宿主工作区，不把 secret 注入环境，并截断 stdout/stderr。
+容器或编译器不存在时返回 unavailable，而不是自动切换到不安全本地执行。
+
+## 10. 真实事件协议
+
+SSE 只传已经持久化的 append-only event，当前主要事件为：
+
+- runtime：`run.created/started/paused/succeeded/failed/cancel_requested/cancelled/
+  resume_prepared/resume_requested/recovery_scheduled`；
+- step/budget：`step.started/succeeded/failed/interrupted`、`usage.recorded`、
+  `budget.updated/exhausted`、`checkpoint.saved`；
+- QGen：`graph.transition`、`qgen.progress`；
+- 产品：`solution.ready`、`evaluation.solution_ready/evaluation.verified`、
+  `question.persisted`、`assistant.final/error/cancelled/paused`；
+- 异常审计：`billing.record_failed`、`product.delivery_failed/postprocess_failed/
+  reconciliation_failed`。
+
+当前没有 token 级 `message.delta`、独立 `candidate.*`、`tool.*` 或通用 `artifact.created` 事件，
+文档和前端不得监听虚构协议。客户端携带 `Last-Event-ID`；服务端按 sequence 补发，并每 15 秒
+发送 heartbeat。断线补读不会重跑 Agent。
+
+## 11. 发布准则
+
+生成题只有同时满足以下条件才 materialize 并显示 verified：
+
+1. request 的领域/type/form 与源题权限合法；
+2. context 通过知识库质量门禁；
+3. deterministic prefilter 通过；
+4. solver 输出非 low-confidence、非空的可教学解答；
+5. independent reviewer（适用模式）看到完整题面与完整解答并通过；
+6. policy 的所有 required evidence 均为 passed；
+7. 难度标注、验证证据、lineage、模型、用量和 run event 已持久化；
+8. 题目按 tenant 作用域去重并成功写入，assistant final 与 artifact 可幂等重建。
+
+“调用过 verifier”“产生过 Lean 文本”或“run succeeded”都不单独等于已发布。产品交付失败必须
+保留运行结果和 reconciliation 事件，不能靠前端临时文本掩盖。
+
+## 12. 验收
+
+```bash
+uv run pytest tests/test_agents tests/test_api
+uv run pytest tests/test_storage/test_evaluation.py
+uv run ruff check src tests
+uv run mypy
+uv run pytest
+```
+
+恢复测试必须证明已完成节点没有再次调用 LLM；沙箱测试必须覆盖 unavailable/error；策略测试
+必须覆盖 formal 非适用拒绝和 strict/formal required fail-closed；浏览器 smoke test 必须覆盖 SSE
+重连、暂停/恢复、四态证据和生成题继续变式。

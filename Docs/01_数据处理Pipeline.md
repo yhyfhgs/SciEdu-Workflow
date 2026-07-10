@@ -78,7 +78,8 @@ logical_document (单文件 or *_part_N_M 多分卷)
        ▼  q_md (maxsize=pipeline_queue_size，FIFO)
        │
        ▼  Stage1Extract (LLM 调用 1)
-            行缓冲 + 500 行窗口；0 条则扩 500 → 上限 3000；达 max 后连续 N 次空 → force consume
+            行缓冲 + 500 行窗口；0 条则扩 500 → 上限 3000；达 max 后连续 N 次空 →
+            终端无损兜底（非空/强 marker span 写 uncertain，占位后消费）
             每次输出 BatchItemExtractPayloadLLM：items[] + stop_reason + last_consumed_line
             为 items 连续分配 item_ids，滑窗到 last_consumed_line+1
             mirror → items/stage1/item_<id>.json
@@ -462,7 +463,7 @@ class FileExtractionState(BaseModel):
 | `extract_window_lines` | 500 | Stage1Extract 初始窗口 |
 | `extract_max_window_lines` | 3000 | 扩窗口上限 |
 | `extract_window_expand_step` | 500 | 每次扩窗口步长 |
-| `extract_empty_force_limit` | 2 | 达 max 后连续 N 次空 → force consume |
+| `extract_empty_force_limit` | 2 | 达 max 后连续 N 次空 → 构造 uncertain 无损兜底后消费 |
 | `stage1_extract_max_retries` | 3 | Stage1Extract LLM retry |
 | `stage1_review_enabled` | True | Stage1Review 是否启用 |
 | `stage1_review_max_retries` | 2 | Stage1Review LLM retry |
@@ -534,7 +535,7 @@ uv run sciforge parse run <path> [options]
 | `--extract-expand-step` | 500 | 每次扩窗口步长 |
 | `--max-retries` | 3 | LLM/VLM 重试次数 |
 | `--max-files, -j` | 4 | 目录模式并发 |
-| `--restart` | False | 忽略 checkpoint 从头开始（DB schema < v7 时必需） |
+| `--restart` | False | 忽略 checkpoint 从头开始（DB schema < v8 或 checkpoint 不兼容时必需） |
 | `--dry-run` | False | 不写 DB |
 | `--skip-llm` | False | 跳过 LLM 调用（仅识别，整条 pipeline drain） |
 | `--llm-config` | `config/sciforge.toml` | TOML 配置 |
@@ -545,7 +546,7 @@ uv run sciforge parse run <path> [options]
 
 ## 14. 数据模型
 
-### 14.1 KnowledgePoint / Question（DB schema v13）
+### 14.1 KnowledgePoint / Question（DB schema v14）
 
 条目完整性、分学科/题型规则、concept graph、评价门禁与存储性能契约详见
 [`Docs/21_知识库构建标准与数据契约.md`](21_知识库构建标准与数据契约.md)。
@@ -566,8 +567,11 @@ class KnowledgePoint(BaseModel):
     source_file: str                   # 源 logical_document 文件路径（用于追溯）
     start_line: int
     end_line: int
+    start_char: int
+    end_char: int
+    page: int | None
     order_index: int                   # = item_id（跨文件全局递增）
-    # 相对 v5 删除：source_chapter
+    ingestion_status: Literal["accepted", "uncertain", "needs_patch", "rejected"]
 
 class Question(BaseModel):
     # 类似 KP，但有 question_type / solution_content
@@ -607,9 +611,9 @@ ls data/checkpoint/<file_hash>/recognize/file_000_*/
 # 3. DB 统计
 uv run sciforge parse db-stats data/sciforge.db
 
-# 4. order_index 单调递增 + schema v10 确认
-sqlite3 data/sciforge.db "PRAGMA user_version"  # 应为 8
-sqlite3 data/sciforge.db ".schema knowledge_points"  # 含 number_canonical/seq_*/content_hash
+# 4. order_index 单调递增 + schema v14 确认
+sqlite3 data/sciforge.db "PRAGMA user_version"  # 应为 14
+sqlite3 data/sciforge.db ".schema knowledge_points"  # 含 locator/ingestion_status
 
 # 5. 入库后只读体检（提取量/类型双维度/题答绑定/编号/去重/知识图谱边）
 uv run sciforge parse validate data/sciforge.db
@@ -653,6 +657,6 @@ sqlite3 data/sciforge.db "SELECT tags FROM knowledge_points LIMIT 5"
 | `src/sciforge/prompts/templates/pipeline/annotate_stage2_review.txt` | Stage2Review prompt |
 | `src/sciforge/prompts/templates/pipeline/vlm_convert.txt` | Task0 VLM prompt |
 | `src/sciforge/storage/sqlite_backend.py` | SQLite 存储 + SchemaVersionMismatch |
-| `src/sciforge/storage/schema.sql` | DB schema v13（核心条目 + concept graph + evaluation） |
+| `src/sciforge/storage/schema.sql` | DB schema v14（核心条目 + concept/evaluation/review + ingestion governance） |
 | `src/sciforge/cli/parse.py` | CLI 入口 |
 | `config/sciforge.toml` | LLM + pipeline TOML 配置 |

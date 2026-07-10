@@ -4,7 +4,7 @@
 组装成统一后端，经 uvicorn 提供服务：
 
 - ``/``         → 重定向到内置控制台 ``/app/``（注册/登录/出题/组卷/推荐/用量）
-- ``/v1/*``     → REST API（B2B 用 X-API-Key，C 端用 Bearer JWT）
+- ``/v1/*``     → REST API（B2B 用 X-API-Key，C 端用自定义 HMAC 签名 bearer token）
 - ``/docs``     → OpenAPI 文档
 
 鉴权/计费默认开启（SaasStore）；``--open`` 切到无鉴权开放模式（仅本地调试）。
@@ -113,10 +113,13 @@ def serve(
     saas_store = None if open_mode else SaasStore(saas_db)
     conversation_store = ConversationStore(conversation_db)
     run_store = SQLiteRunStore(runtime_db)
-    jwt_secret = os.environ.get("SCIFORGE_JWT_SECRET", "dev-secret-change-me")
-    if not open_mode and jwt_secret == "dev-secret-change-me":
+    token_secret = os.environ.get(
+        "SCIFORGE_TOKEN_SECRET",
+        os.environ.get("SCIFORGE_JWT_SECRET", "dev-secret-change-me"),
+    )
+    if not open_mode and token_secret == "dev-secret-change-me":
         console.print(
-            "[yellow]⚠ 使用默认 JWT 密钥（仅限本地）。生产请设环境变量 SCIFORGE_JWT_SECRET。[/]"
+            "[yellow]⚠ 使用默认 token 签名密钥（仅限本地）。生产请设置 SCIFORGE_TOKEN_SECRET。[/]"
         )
 
     app = create_app(
@@ -126,7 +129,7 @@ def serve(
         storage_factory=storage_factory,
         conversation_store=conversation_store,
         run_store=run_store,
-        jwt_secret=jwt_secret,
+        jwt_secret=token_secret,
         cors_origins=cors_origin or None,
     )
 

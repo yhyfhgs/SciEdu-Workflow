@@ -45,6 +45,17 @@
 
 **Prompt caching / 思考预算（#9）**：各 stage 静态指令拆到可缓存 system 前缀（`templates.split_static_dynamic`）；推理模型（MiniMax-M3 等）按 stage 设 `thinking` budget 控制思考长度，经 anthropic 兼容网关时走 `extra_body` 透传。
 
+**通用格式与确定性减负（schema v14）**：
+- `pipeline/format_adapters.py` 对 CSV/TSV、JSON/JSONL、HTML、XLSX、EPUB、TXT/RST 做
+  有界解析并产出带 source locator 的 Markdown block；这些格式在 Task0 默认 0 次 LLM。
+- XLSX/EPUB 等 ZIP 容器先检查文件体积、entry 数、总解压体积、压缩比和路径穿越；
+  结构化输入受列数、JSON 深度、block 行数和输入字节数限制。
+- `pipeline/extraction_harness.py` / boundary patch / marker ledger 用确定性证据覆盖条目标记，
+  只有高风险缺口才进入 LLM review；不得为了省调用而静默丢弃 marker。
+- `pipeline/concept_linker.py` 构建受 taxonomy 约束的 concept/alias/item/concept-relation 四表；
+  `pipeline/evaluation.py` 以 `pipeline_auto` 量规写 `item_evaluations` 和 `review_queue`，不调用 LLM。
+- 知识库验收契约见 [`Docs/21_知识库构建标准与数据契约.md`](Docs/21_知识库构建标准与数据契约.md)。
+
 入口命令：`uv run sciforge parse run <path>`；入库后只读体检：`uv run sciforge parse validate <db>`。
 
 **Pipeline 主线 LLM 任务**（可分别配置 provider / model）：
@@ -68,7 +79,7 @@
 - **断点恢复**：`FileExtractionState` 持久化到 `state.json`，记录 `vlm_batches_done` / `current_block_idx` / `line_offset` / `line_buffer_carry` / `next_item_id` / `current_window_size` / `stageN_count` / `last_persisted_item_id` / `tag_tree_json`。重启可无缝恢复；旧 v1 schema 不兼容 → 检测到时 raise `StateSchemaMismatch`，要求 `--restart` 清库
 - **Retry with feedback**：`pipeline/retry.py` 的 `call_llm_json_with_schema_retry_with_feedback` 在每次重试时把上次 Pydantic 错误文本注入下次 prompt，LLM 有机会修正；所有 4 个 stage 的 LLM 调用都走这条路径
 - **Exercise 漏 solution 三道防线**：prompt 显式规则 + Pydantic `window_last_line` context validator + Stage1Review 专项复核
-- **异常隔离**：任一 stage 异常 → try/finally 向下游 put SENTINEL 避免死锁；单 item 失败降级（Stage1 丢弃 / Stage2 写空标注），不阻断整体
+- **异常隔离**：任一 stage 异常 → try/finally 向下游 put SENTINEL 避免死锁；Stage1 未解决的非空 span 写 `uncertain` 占位而不静默丢弃，Stage2 失败写保守空标注，不阻断整体
 - **背压**：`q_md` (maxsize=pipeline_queue_size) + 4 个 stage queue (maxsize=pipeline_stage_queue_size)
 - **严格保序**：item_id 全局递增 + FIFO queue；Stage2 可选 N-worker 并发时通过 `ReorderBuffer` 恢复顺序，Stage3 禁止 item_id 倒退并允许上游拒绝造成 gap
 - **Tag 一致性**：`pipeline/tag_tree.py` 在 Stage3 原子累积，Stage2 prompt 注入 tag_subtree 避免同义异名（`group:群` vs `groups:群论`）
@@ -91,32 +102,46 @@
 | # | Agent | 状态 | 文件 |
 |---|---|---|---|
 | 1 | KB Agent | 🔶 骨架 | `agents/stub_agents.py::KBAgent` |
-| 2 | **QGen Agent** | ✅ 完整 | `agents/qgen/agent.py` + 5 子组件 |
+| 2 | **QGen Agent** | ✅ Harness | `agents/qgen/agent.py` + `agents/qgen/` + `agents/runtime/` |
 | 3 | **Solve Agent** | ✅ 完整 | `agents/solve_agent.py` (复用 qgen/solver.py) |
 | 4 | **Tag Agent** | ✅ 完整 | `agents/tag_agent.py` (复用 qgen/annotator.py) |
 | 5 | **DocAssembly Agent** | ✅ Lite | `agents/doc_agent.py` (markdown 输出) |
-| 6 | Recommend Agent | 🔶 骨架 | `agents/stub_agents.py::RecommendAgent` |
-| 7 | FormatAnalyzer Agent | 🔶 骨架 | `agents/stub_agents.py::FormatAnalyzerAgent` |
-| 8 | ContentExtractor Agent | 🔶 骨架 | `agents/stub_agents.py::ContentExtractorAgent` |
-| 9 | OcrCorrector Agent | 🔶 骨架 | `agents/stub_agents.py::OcrCorrectorAgent` |
-| 10 | ContentTagger Agent | 🔶 骨架 | `agents/stub_agents.py::ContentTaggerAgent` |
+| 6 | Recommend Agent | 🔶 Agent 骨架 / ✅ 算法引擎 | `stub_agents.py::RecommendAgent` / `agents/recommend/engine.py` |
+| 7 | FormatAnalyzer Agent | ✅ Pipeline 内置 / 🔶 Agent 骨架 | `pipeline/recognizers.py` + `format_adapters.py` |
+| 8 | ContentExtractor Agent | ✅ Pipeline 内置 / 🔶 Agent 骨架 | `pipeline/stages/stage1_extract.py` |
+| 9 | OcrCorrector Agent | ✅ Pipeline 内置 / 🔶 Agent 骨架 | `pipeline/text_tools/ocr_repair.py` + Stage1 review |
+| 10 | ContentTagger Agent | ✅ Pipeline 内置 / 🔶 Agent 骨架 | Stage2 annotate/review + Stage3 canonicalizer |
 
-**QGen Agent 5 阶段闭环** (`src/sciforge/agents/qgen/`):
+**QGen Agent 专用 Harness** (`src/sciforge/agents/qgen/`):
 1. **ContextRetriever** (`retriever.py`) — 从 `SQLiteStorageBackend` 按 discipline +
    subject + difficulty_range 检索知识点和参考题，含难度锚点 + 变式负样本
 2. **QuestionGenerator** (`generator.py`) — 加载按学科参数化的 prompt
    (`generation/free_generation.txt` 或 `variant_generation.txt`)，温度递增调 LLM 生成 N 个候选
 3. **SolveEngine** (`solver.py`) — 对候选独立求解，带 confidence 标注
-4. **VerificationPipeline** (`verifier.py`) — 独立 review LLM 避免确认偏差，3 个检查
-   (solve_confidence / review_passed / non_trivial)；失败时把建议写回 context 用于下一轮
+4. **VerificationPipeline** (`verifier.py`) — 独立 reviewer 同时读取完整题面与完整解答；
+   结构/相关性检查外，可按 policy 运行数值代码和 Lean，证据严格区分
+   `passed / failed / unavailable / error`；required 检查不可用时禁止发布
 5. **DifficultyAnnotator** (`annotator.py`) — 10 维评分 + 加权聚合
 
+状态图还包含 deterministic prefilter、失败诊断、定向 evolve 回边和可选 population selection。
+`DurableQGenHarness` 将每个图节点映射到 `SQLiteRunStore` 的原子 step、不可变 checkpoint、
+单调 event 和 LLM call/token/wall-time/step 预算；恢复从 `next_node` 继续，不重放已完成节点。
+`verification_sandbox.py` 默认对 LLM/用户代码要求无网络、只读、drop capabilities 的
+Docker/Podman 容器；trusted-local 只用于仓库内人工审核代码。Lean 未安装、容器不可用或超时
+必须形成显式证据，不能伪装成验证通过。完整协议见
+[`Docs/22_QGen_Harness_架构与验证协议.md`](Docs/22_QGen_Harness_架构与验证协议.md)。
+
+对外只输出可审计的结构化解题步骤、方法摘要、验证证据与修正记录；不得把模型私有原始
+chain-of-thought 当成产品字段、日志或 API 响应。
+
 **CLI 入口**:
-- `sciforge generate free` — QGenAgent 完整 5 阶段闭环
+- `sciforge generate free` — QGenAgent 默认低延迟路径（含预筛、独立求解/审核与难度标注）
 - `sciforge generate solve <question_id>` — SolveAgent
 - `sciforge generate batch` — 批量循环 QGenAgent
 - `sciforge generate lecture` — DocAssemblyAgent lite（生成 markdown 讲义）
-- `sciforge generate variant/evolve/solve-deep` — Post-MVP 占位
+- `sciforge generate variant` — A1–A6/B1–B2 变式生成
+- `sciforge generate evolve` — 有界失败诊断、定向改进与候选池选择
+- `sciforge generate solve-deep` — 多轮求解 + policy-controlled sandbox 工具验证
 
 **关键 prompt** (按学科参数化):
 - `prompts/templates/generation/free_generation.txt` / `variant_generation.txt`

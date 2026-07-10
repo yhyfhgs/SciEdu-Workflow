@@ -1,9 +1,16 @@
 # SciForge 数据 Pipeline 全面升级方案 v11（四子系统版）
 
+> **实施状态说明（2026-07）**：本文是以 v10 为基线编写的升级设计与决策记录，文中的
+> “当前代码尚未实现”、M1–M7 默认值和 schema v11 计划不能作为现状。四子系统、多格式 adapter、
+> concept/evaluation、无损 ingestion governance 已进入主线，当前内容库为 schema v14，安全的
+> marker/harness/patch/concept/evaluation 默认开启。现行契约见 `Docs/01` 与 `Docs/21`。
+
 > **版本**: v4.1 · **日期**: 2026-06-17 · **核实日期**: 2026-06
 > **基于**: 当前 v10 pipeline 源码全量阅读 + 跨 Provider 官方 API 文档逐条核实（Anthropic / OpenAI / DeepSeek）+ Anthropic Harness Design 系列工程文章 + 第三方审计（ChatGPT 5.5）逐项代码复核
 > **目标**: **通用**（多格式 / 多体裁自适应）、**准确**（不漏条目、题答/定理证明成对、边界精确到字符）、**高效**（利用缓存 + 多轮对话 + 工具调用 + 结构化 JSON 输出，节省 LLM 调用次数与 token 开销，能快速处理上千页书籍）、**可用**（标准化知识图谱 + 体系化评价，支撑讲义生成、关联查找、难度匹配）
-> **架构路线**: **渐进式叠加，避免全量重写**。所有新能力默认关闭（opt-in），关闭时行为完全不变，断点恢复兼容。复用已就绪的 `generate_multiturn` / `tool_definitions` / `capabilities` / `backends` 能力，**不重复造轮子**。
+> **当时的架构路线**: **渐进式叠加，避免全量重写**。早期 rollout 先 opt-in；当前安全的确定性
+> 能力已改为默认开启，额外多轮 evaluator 与段级并行仍 opt-in。复用已就绪的
+> `generate_multiturn` / `tool_definitions` / `capabilities` / `backends` 能力。
 > **核心组织**: 全部能力归入 **四大子系统**：ExtractionHarness（提取 harness）、TextToolLibrary（文本工具库）、BoundaryAndPatchEngine（边界与补丁引擎）、ConceptGraphAndEvaluation（知识图谱与评价）。每个子系统独立可上线、独立可回滚。
 > **里程碑优先级**: 准确不漏（M1–M3）> harness 整合省 token（M4）> 知识图谱（M5）> 评价系统（M6）> 多格式完整化（M7）。其中多格式的早期画像层（profile）前移到 M1，完整适配器仍排在 M7。
 
@@ -1113,4 +1120,3 @@ enabled_input_formats = ["pdf","docx","pptx","md","markdown","tex"]
 | 兼容性 | — | **全 opt-in，默认行为与现有版本完全一致，分里程碑可回滚** | 零回归风险 |
 
 > **关于"遗漏率"**：v10 未直接统计；v11 不声称具体百分比，而是用 golden benchmark 的"真值 marker 数 vs 提取数"给出**可测召回率**，并用 marker ledger 使遗漏**可检测、可局部补全**——这是相对 v10 的方法论进步，而非数字承诺。
-

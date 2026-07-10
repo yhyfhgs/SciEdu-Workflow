@@ -1,27 +1,31 @@
-# 16 Agent 系统 MVP
+# 16 Agent 系统与 QGen Harness
 
-> SciForge 多 Agent 协作系统的当前实现状态和扩展指南
+> SciForge 多 Agent 协作系统、题目专用可恢复 Harness 的当前实现状态和扩展指南。
+> 形式化协议、研究依据与发布门禁见
+> [`22_QGen_Harness_架构与验证协议.md`](./22_QGen_Harness_架构与验证协议.md)。
 
 ## 1. 架构概览
 
 SciForge 的 Agent 系统分为：
 
-1. **基础设施**（`src/sciforge/agents/`）：BaseAgent 抽象、AgentState 共享状态、极简手写 StateGraph
-2. **十大 Agent**（按 [`Docs/09_Agent编排系统.md`](./09_Agent编排系统.md)）：
-   - MVP 完整实现：QGen / Solve / Tag / DocAssembly-lite
+1. **基础设施**（`src/sciforge/agents/`）：BaseAgent、共享状态、可从 node boundary 恢复的手写 StateGraph
+2. **持久运行时**（`src/sciforge/agents/runtime/`）：run/step/budget/checkpoint/event/cancel/resume，
+   使用独立 SQLite，不污染教育内容 schema
+3. **十大 Agent**（按 [`Docs/09_Agent编排系统.md`](./09_Agent编排系统.md)）：
+   - 已实现：QGen Harness / Solve / Tag / DocAssembly-lite
    - Post-MVP 骨架：KB / Recommend / FormatAnalyzer / ContentExtractor / OcrCorrector / ContentTagger
-3. **学科参数化**：每个 Agent 接受 `discipline: Discipline`，从 `DisciplineRegistry` 查 spec、加载按学科注入后的 prompt
+4. **学科参数化**：每个 Agent 接受 `discipline: Discipline`，从 `DisciplineRegistry` 查 spec、加载按学科注入后的 prompt
 
 ## 2. 当前实现状态
 
 | # | Agent 名 | 状态 | 文件 | 备注 |
 |---|---|---|---|---|
 | 1 | KB | 🔶 骨架 | `stub_agents.py::KBAgent` | 依赖 embedding，Post-MVP |
-| 2 | **QGen** | ✅ 完整 | `qgen/agent.py` | 5 阶段闭环，MVP 核心 |
+| 2 | **QGen** | ✅ Harness | `qgen/agent.py` + `qgen/*` + `runtime/*` | 状态图、进化、sandbox 验证、候选选择、可恢复运行 |
 | 3 | **Solve** | ✅ 完整 | `solve_agent.py` | 复用 `qgen/solver.py` |
 | 4 | **Tag** | ✅ 完整 | `tag_agent.py` | 复用 `qgen/annotator.py` |
 | 5 | **DocAssembly** | ✅ Lite | `doc_agent.py` | 生成 markdown 讲义，无 LaTeX 编译 |
-| 6 | Recommend | 🔶 骨架 | `stub_agents.py::RecommendAgent` | 需用户系统，Post-MVP |
+| 6 | Recommend | 🔶 Agent 骨架 / ✅ 算法引擎 | `stub_agents.py::RecommendAgent` / `recommend/engine.py` | API 已用无 LLM 推荐引擎；BaseAgent 封装仍未做 |
 | 7 | FormatAnalyzer | ✅ **内置** | 职责在 `pipeline/recognizers.py` | 非独立 Agent 类；`stub_agents.py::FormatAnalyzerAgent` 仅为 Post-MVP 骨架 |
 | 8 | ContentExtractor | ✅ **内置** | 职责在 `pipeline/vlm_converter.py` + `stages/stage1_extract.py` | 非独立 Agent 类 |
 | 9 | OcrCorrector | ✅ **内置** | 职责在 `stages/stage1_extract.py` + `stages/stage1_review.py`（两个 stage LLM） | 非独立 Agent 类 |
@@ -65,51 +69,73 @@ class MyAgent(BaseAgent[MyInput, MyOutput]):
 - `self._call_llm_json(prompt, max_attempts, ...)` — 统一重试 + JSON 解析
 - `self._log_start(**kwargs)` / `self._log_end(**kwargs)` / `self._log_error(err, **kwargs)` — structlog 事件，自动附加 `discipline` 和 `agent_name` 字段
 
-## 4. QGenAgent 5 阶段详解
+## 4. QGenAgent 题目专用 Harness
 
-QGen 是 MVP 的核心引擎，组合 5 个子组件：
+QGen 不再是固定五步直线，而是一个有界状态图。默认低延迟路径仍保持五个核心职责；
+高难、失败修复或显式配置时才启用 deep solve、evolve 和 population selection：
 
-```
-QGenAgent.run(request)
-    ↓
-[Stage 1] ContextRetriever.build_context(request, discipline)
-    → 从 SQLiteStorageBackend 检索：
-      - 按 discipline + subject + difficulty_range 过滤知识点
-      - 按 discipline + subject + 难度窗口筛选参考题 (±2)
-      - 难度锚点：一道偏简单 + 一道偏难
-      - 变式模式的负样本
-    ← ContextBundle (knowledge_points, reference_questions, negative_examples)
-    ↓
-[Stage 2] QuestionGenerator.generate_candidates(n=3)
-    → 按学科加载 free/variant_generation.txt（已做词语替换）
-    → 温度递增调 LLM N 次
-    → 兼容 content_latex / content 两种 JSON 输出 key
-    ← list[Question]（is_generated=True, discipline 已设置）
-    ↓
-[Stage 3] SolveEngine.solve(candidate, context)
-    → 加载 solving/solve.txt（按学科替换）
-    → 注入前 5 个 KP 作为 context
-    ← Solution (confidence: high/medium/low)
-    ↓ (低置信度跳过下一个候选)
-[Stage 4] VerificationPipeline.verify(candidate, solution)
-    → Check 1: solve_confidence ≠ low
-    → Check 2: 独立 review LLM 审核（避免确认偏差）
-    → Check 3: non_trivial（题干长度 > 30）
-    ← VerificationResult (passed, checks, suggestions)
-    ↓ (失败时把 suggestions 写回 context.feedback_from_previous_round，继续下一轮)
-[Stage 5] DifficultyAnnotator.annotate(candidate, solution)
-    → 10 维评分（concept_count, step_count, abstraction_level, ...）
-    → 按 DifficultyScore.WEIGHTS 加权 → overall
-    ← DifficultyScore
-    ↓
-QGenOutput(generated=GeneratedQuestion(...), rounds_used, candidates_tried)
+```text
+retrieve → generate → next → deterministic prefilter → solve/deep-solve → verify → annotate
+                                │                         │          │
+                                └──────── reject ─────────┴→ diagnose → evolve → solve
+
+annotate ── first-pass mode → END
+annotate ── population mode → 收集所有通过候选 → multi-objective select → END
 ```
 
-**参数**：
-- `MAX_ROUNDS = 3`（类常量，可在实例化后修改）
-- `CANDIDATES_PER_ROUND = 3`
+### 4.1 核心职责
 
-## 5. 极简 StateGraph
+1. `ContextRetriever`：按 discipline/subject/difficulty 从知识库取知识点、参考题、难度锚点和
+   变式负样本。认证 API 会先把 storage 换成 tenant-scoped view。
+2. `QuestionGenerator`：按 `GenerationRequest.strategy` 选择自由/变式模板，生成有界候选集。
+3. `prefilter_candidate`：用长度、数学分隔符/括号配平和负样本相似度做 0 LLM 淘汰。
+4. `SolveEngine` 或 `DeepSolveEngine`：独立求解；deep 模式允许多轮 tool calling，但
+   `execute_python` 必须经过 verification sandbox。
+5. `VerificationPipeline`：独立 reviewer 同时读取完整题面和完整解答；按 policy 追加
+   solution relevance、数值代码和 Lean 证据。
+6. `DifficultyAnnotator`：读取 reviewer 合并的 10 维难度，或在未合并时单独标注。
+7. `Evolver`：把 solver/reviewer 失败转成具体 mutation directive，保存 parent/generation/
+   strategy/directive lineage，再从 solve 节点重新验证。
+8. `population.select_candidate`：先以 `verification.passed` 作 correctness 硬门禁，再按
+   difficulty fit、novelty、pedagogical value、verification strength 做确定性稳定排序。
+
+### 4.2 验证不是一个布尔字段
+
+每项 `VerificationEvidence` 的状态是 `passed / failed / unavailable / error`：
+
+- 数值代码执行失败、沙箱未安装、Lean 编译器不可用和超时不可映射为“通过”；
+- `require_numerical_verification` / `require_lean_verification` 开启后，只有 `passed` 可发布；
+- Lean 编译通过只证明生成的形式化 theorem，仍需 reviewer 检查自然语言题面与形式化翻译一致；
+- independent reviewer 必须看到完整题目与完整 solution，不能只看答案摘要。
+
+`verification_sandbox.py` 提供两种本地实现边界：
+
+- `container_required`（默认）：Docker/Podman，禁网、只读、drop all capabilities、
+  `no-new-privileges`、非 root，并限制 CPU/内存/pids/tmpfs/wall time/output；
+- `trusted_local`：只允许仓库内人工审核的验证代码，不能执行 LLM/用户任意代码。
+
+生产多租户仍需在容器外增加 gVisor/Firecracker 与宿主 egress policy；当前代码没有把普通
+Docker 声称为 hardened multi-tenant sandbox。
+
+### 4.3 输出边界
+
+用户可获得完整题目、可教学的结构化解题步骤、方法摘要、量规、验证器输入输出摘要、
+Lean diagnostics 和失败修正记录。模型私有原始 chain-of-thought 不作为模型字段、日志、
+checkpoint 或 API 产品输出。
+
+### 4.4 配置入口
+
+`QGenAgent.from_config()` 是 CLI/API 的统一构造入口，绑定：
+
+- round/candidate/retrieval 上限；
+- lightweight prefilter 与 verifier-difficulty 合并；
+- evolve 轮数、population selection、deep solve/最大轮次；
+- 数值与 Lean 的 enable/require policy；
+- sandbox runtime、镜像、信任策略与资源上限。
+
+直接调用构造器仍可用于测试，但产品入口不得各自漏传验证或安全开关。
+
+## 5. StateGraph 与持久运行时
 
 `src/sciforge/agents/graph.py` 提供了一个**不依赖 LangGraph** 的状态图实现，API 仿 LangGraph 子集：
 
@@ -138,11 +164,38 @@ compiled = graph.compile()
 final = await compiled.ainvoke({}, max_steps=100)
 ```
 
-**功能边界**：
-- ✅ Async 节点、线性边、条件边、END 终止、max_steps 保险丝
-- ❌ 持久化、human-in-the-loop、fanout/fanin、重试 hooks
+**StateGraph 能力边界**：
 
-**升级路径**：当 MVP 阶段结束需要更复杂的编排时，把 `from sciforge.agents import StateGraph` 改为 `from langgraph.graph import StateGraph`，API 兼容绝大多数用法。
+- ✅ async 节点、线性/条件边、END、max_steps、`start_at`、`completed_steps`、
+  node enter/exit/transition hooks；
+- ❌ 原生 fanout/fanin、通用 human-in-the-loop UI、分布式调度。
+
+持久化由 `agents/runtime` 和 `DurableQGenHarness` 组合完成，而不是塞进通用图类：
+
+- `SQLiteRunStore` 使用独立 `qgen_runtime.db`，WAL + 事务保护；
+- run 状态机与每 run 最多一个 running step 的原子 claim；
+- step、LLM calls、tokens、wall time 四类预算；
+- 每个完成节点写 immutable checkpoint（graph snapshot + trace + `next_node` cursor）；
+- append-only 单调 event，供 SSE/审计复用；
+- cooperative cancel 与 `prepare_resume()`：中断 step 标为 interrupted，从最近 checkpoint 的
+  next node 恢复，已完成节点不再次调用 LLM；
+- 成功 run 重复读取直接返回持久 output，避免副作用重放。
+
+```python
+from sciforge.agents.qgen import DurableQGenHarness
+from sciforge.agents.runtime import RunBudget, SQLiteRunStore
+
+store = SQLiteRunStore("data/qgen_runtime.db")
+harness = DurableQGenHarness(agent, store)
+run_id, output = await harness.run(
+    qgen_input,
+    budget=RunBudget(max_steps=80, max_llm_calls=30, max_tokens=120_000),
+    metadata={"tenant_id": tenant_id},
+)
+```
+
+通用 HITL/time-travel/分布式 worker 仍是扩展项；不要仅为品牌/API 相似度把当前实现描述成
+LangGraph，也不要假设可以无改动替换。
 
 ## 6. CLI 入口
 
@@ -167,7 +220,29 @@ uv run sciforge generate lecture \
   --title "连续函数专题" \
   -o data/lectures/ \
   -D math
+
+# A1-A6/B1-B2 变式
+uv run sciforge generate variant <question_id> --strategy A1 -D math
+
+# 有界进化：失败证据驱动改题，最多 2 次定向改进并做候选池选择
+uv run sciforge generate evolve \
+  -t "math:数学,analysis:数学分析" -d 7 --type proof --max-improve 2
+
+# 深度求解：多轮 tool calling；代码执行服从 AppConfig sandbox policy
+uv run sciforge generate solve-deep <question_id> -D math --db data/sciforge.db
 ```
+
+上述 `free/variant/evolve/solve-deep` 是直接交互命令。需要 node-boundary pause/resume、硬预算
+和持久事件时，使用：
+
+```bash
+uv run sciforge generate durable -t "math:数学,analysis:数学分析" -d 7 --evolve
+uv run sciforge generate resume <run_id>
+uv run sciforge generate cancel <run_id>
+```
+
+三条命令默认共享 `data/qgen_runtime.db`，也可统一传 `--runtime-db`。不要把“durable CLI 已实现”
+误写成“所有 generate 子命令默认持久化”。
 
 ## 7. 编写新 Agent
 
@@ -204,12 +279,12 @@ CLI --discipline math
 
 | 维度 | Pipeline | Agent 系统 |
 |---|---|---|
-| 入口形态 | async Producer-Consumer 流水线 + 双 asyncio.Queue | `BaseAgent.run(input) -> output` 单次调用 |
-| 典型场景 | 批量文档处理，背压 + checkpoint + 增量恢复 | 一次题目生成、一次讲义组装 |
-| LLM 调用特点 | Stage1/Stage2 共四类 LLM 调用，批量/并发处理，schema 严格重试 | 每次少量调用，可混合温度/重试策略 |
-| 状态管理 | `FileExtractionState`（磁盘 `state.json`） | `AgentState`（内存 dict） |
+| 入口形态 | Task0 + 5 Stage + 4 个 asyncio.Queue | `BaseAgent.run()`；QGen 可由 DurableQGenHarness 驱动 |
+| 典型场景 | 批量文档处理，背压 + checkpoint + 增量恢复 | 题目生成/求解/讲义；long-horizon pause/resume |
+| LLM 调用特点 | 四类 stage 调用，按风险跳过/批量/并发，schema retry | 专职 generator/solver/reviewer/evolver；按 policy 调 sandbox |
+| 状态管理 | `FileExtractionState`（每文档 `state.json`） | graph state；可选独立 runtime SQLite checkpoint/event |
 | 基类 | 无统一基类（各 Task 独立） | `BaseAgent[TIn, TOut]`（discipline 注入） |
-| 编排器 | `PipelineOrchestrator` | `StateGraph`（手写）+ 直接串联 |
+| 编排器 | `PipelineOrchestrator` | `StateGraph` + `DurableQGenHarness` |
 
 **边界**：Task2（pipeline 标注） 在职责上和 Tag Agent 重叠，但 **Tag Agent 用于对已入库
 题目补标签，Task2 用于新入库的流式标注**。两者底层都调 `get_annotate_stage2_initial_template`
@@ -217,13 +292,34 @@ CLI --discipline math
 
 ---
 
-## 10. Post-MVP 路线
+## 10. 剩余路线与明确限制
 
 - **Agent 1 KB**: 集成 `sqlite-vec` 做 embedding 检索 + 前置依赖图
-- **Agent 6 Recommend**: 需要先有用户系统
-- **Agent 7-10**: 将当前 pipeline 内置的功能拆分成独立 Agent，用真 LangGraph 编排
+- **Agent 6 Recommend 封装**: `recommend/engine.py` 与 API 已实现无 LLM 算法；如需统一编排，
+  再封装 `BaseAgent`，不要重复实现推荐逻辑
+- **Agent 7-10**: 当前职责已在 pipeline 内置；只有出现独立运行/HITL 的真实需求时再拆 Agent
 - **DocAssembly 完整版**: 接入 Jinja2 模板 + XeLaTeX 编译，输出 PDF
-- **QGen 进化**: 变式生成 (`generate variant`) + 进化模式 (`generate evolve`)
-- **Solve 深度**: 接入 sandbox + tool calling (`generate solve-deep`)
+- **验证增强**: property-based hidden cases、题型专用 deterministic verifier、自然语言↔Lean
+  翻译一致性审核与 hardened multi-tenant executor
+- **运行时增强**: human-in-the-loop 审批、分布式 worker lease、checkpoint time-travel UI
+- **发布纪律**: sandbox unavailable/error、required 检查未通过、低质量知识库 context 均不得
+  被 UI 的“已验证”徽章掩盖
 
 见 [`Docs/09_Agent编排系统.md`](./09_Agent编排系统.md) 的完整蓝图。
+
+## 11. 变更验收
+
+```bash
+# QGen、runtime、sandbox、verifier 与 API 绑定
+uv run pytest tests/test_agents tests/test_api
+
+# 静态检查
+uv run ruff check src tests
+uv run mypy src/sciforge
+
+# 全库回归
+uv run pytest
+```
+
+涉及 sandbox 的测试必须断言 unavailable/error 路径；不能因为 CI 没有 Docker/Lean 就删除这些
+状态断言。涉及恢复的测试必须证明已完成节点没有再次调用 LLM，而不只检查最终输出相等。
