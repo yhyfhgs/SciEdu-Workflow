@@ -884,6 +884,10 @@ class SQLiteRunStore:
                 raise InvalidRunTransitionError(
                     f"cannot finish {run_id} as {target.value} from {status.value}"
                 )
+            if target is RunStatus.SUCCEEDED and bool(row["cancel_requested"]):
+                # Close the last-step race: cancellation requested after the
+                # final step but before the run commit must win over success.
+                raise RunCancellationRequestedError(run_id)
             if target is RunStatus.SUCCEEDED and status is not RunStatus.RUNNING:
                 raise InvalidRunTransitionError(f"cannot complete {run_id} from {status.value}")
             now = _utc_now()

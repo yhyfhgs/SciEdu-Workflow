@@ -234,6 +234,22 @@ def test_cancel_flag_stops_new_work_and_acknowledgement_is_terminal(
         store.begin_run(run.run_id)
 
 
+def test_cancel_requested_after_last_step_blocks_success_commit(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    run = store.create_run("qgen", {})
+    store.begin_run(run.run_id)
+    step = store.begin_step(run.run_id, "finalize")
+    store.complete_step(step.step_id)
+    store.request_cancel(run.run_id, reason="last-moment user cancellation")
+
+    with pytest.raises(RunCancellationRequestedError):
+        store.complete_run(run.run_id, {"should_not": "commit"})
+
+    cancelled = store.acknowledge_cancel(run.run_id, reason="cancel won final commit race")
+    assert cancelled.status is RunStatus.CANCELLED
+    assert cancelled.output_payload is None
+
+
 @pytest.mark.parametrize("initial_status", [RunStatus.PENDING, RunStatus.PAUSED])
 def test_cancel_without_active_worker_is_immediately_terminal(
     tmp_path: Path,
