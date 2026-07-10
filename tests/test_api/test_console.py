@@ -30,6 +30,8 @@ def test_console_index_served() -> None:
     assert 'data-mode="new"' in r.text
     assert 'data-mode="evaluate"' in r.text
     assert 'id="verificationStack"' in r.text
+    assert 'id="resumeRunButton"' in r.text
+    assert 'id="resumeDialog"' in r.text
 
 
 def test_console_javascript_uses_durable_conversation_contract() -> None:
@@ -45,6 +47,8 @@ def test_console_javascript_uses_durable_conversation_contract() -> None:
     assert "X-API-Key" in script.text
     assert "ReadableStream" not in script.text  # fetch body reader, no external polyfill
     assert ".getReader()" in script.text
+    assert "/resume" in script.text
+    assert "rail.inert" in script.text
     assert "innerHTML" not in script.text
 
 
@@ -57,6 +61,7 @@ def test_console_styles_include_responsive_three_panel_layout() -> None:
     assert "grid-template-columns" in styles.text
     assert "@media (max-width: 720px)" in styles.text
     assert ".verification-card.unavailable" in styles.text
+    assert ".rail-scrim[hidden]" in styles.text
 
 
 def test_console_can_be_disabled() -> None:

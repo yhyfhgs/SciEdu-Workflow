@@ -40,6 +40,9 @@ test_diag.py
 .ruff_cache/
 htmlcov/
 .coverage
+.playwright-cli/
+tmp/browser/
+output/playwright/
 
 # User config (keep .example.toml, ignore actual config)
 config/sciforge.toml

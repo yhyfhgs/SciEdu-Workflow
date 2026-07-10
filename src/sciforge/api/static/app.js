@@ -5,7 +5,7 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const SOURCE_REQUIRED = new Set(["variant", "adjust_difficulty", "deepen", "evaluate"]);
-  const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+  const TERMINAL = new Set(["succeeded", "failed", "cancelled", "paused"]);
   const MODE_LABELS = {
     new: "出新题",
     evolve: "自进化",
@@ -13,7 +13,7 @@
     deepen: "深入推演",
     adjust_difficulty: "调整难度",
     evaluate: "评估题目",
-    solve: "求解验证",
+    solve: "独立求解",
   };
   const PHASE_LABELS = {
     retrieve: "检索质量合格的知识上下文",
@@ -67,6 +67,7 @@
     timeline: $("#timelineList"),
     runState: $("#runState"),
     cancel: $("#cancelRunButton"),
+    resume: $("#resumeRunButton"),
     verification: $("#verificationStack"),
     verificationCount: $("#verificationCount"),
     metricCalls: $("#metricCalls"),
@@ -75,6 +76,7 @@
     knowledgeResults: $("#knowledgeResults"),
     accountDialog: $("#accountDialog"),
     utilityDialog: $("#utilityDialog"),
+    resumeDialog: $("#resumeDialog"),
     toastRegion: $("#toastRegion"),
   };
 
@@ -146,9 +148,12 @@
   async function bootstrap() {
     setConnection("", "正在连接");
     try {
-      await Promise.all([loadTemplates(), loadConversations()]);
+      const [, conversations] = await Promise.all([loadTemplates(), loadConversations()]);
       setConnection("connected", state.authMode === "open" ? "开放模式" : "已安全连接");
       if (dom.accountDialog.open) dom.accountDialog.close();
+      if (!state.conversationId && conversations.length) {
+        await selectConversation(conversations[0].id);
+      }
     } catch (error) {
       setConnection("error", error.status === 401 ? "需要登录" : "连接失败");
       if (error.status === 401) showAccount();
@@ -205,7 +210,7 @@
       empty.className = "rail-empty";
       empty.textContent = "尚无会话，开始一次新的出题研究。";
       dom.conversationList.append(empty);
-      return;
+      return items;
     }
     for (const conversation of items) {
       const button = document.createElement("button");
@@ -224,6 +229,7 @@
       button.addEventListener("click", () => selectConversation(conversation.id));
       dom.conversationList.append(button);
     }
+    return items;
   }
 
   async function createConversation() {
@@ -243,6 +249,8 @@
     stopStream();
     state.conversationId = id;
     state.runId = "";
+    state.lastEventId = 0;
+    resetInspector();
     const [conversation, messages] = await Promise.all([
       api(`/v1/conversations/${encodeURIComponent(id)}`),
       api(`/v1/conversations/${encodeURIComponent(id)}/messages?limit=1000`),
@@ -251,9 +259,15 @@
     dom.title.textContent = conversation.title || "未命名研究";
     dom.topTitle.textContent = conversation.title || "未命名研究";
     $("#renameConversation").disabled = true;
-    renderMessages(messages.items || []);
+    const messageItems = messages.items || [];
+    renderMessages(messageItems);
     await loadConversations();
     closeRails();
+    const latestRun = [...messageItems].reverse().find((message) => message.run_id)?.run_id;
+    if (latestRun) {
+      state.runId = latestRun;
+      await streamRun(latestRun).catch((error) => toast(error.message, "error"));
+    }
   }
 
   function renderMessages(messages) {
@@ -346,6 +360,17 @@
     dom.sourceWrap.hidden = !(needsSource || mode === "solve");
     dom.variantWrap.hidden = mode !== "variant";
     dom.source.required = needsSource;
+    const verificationField = $("#verificationField");
+    if (mode === "solve") {
+      verificationField.dataset.previous = verificationField.value;
+      verificationField.value = "fast";
+      verificationField.disabled = true;
+      verificationField.title = "独立求解只报告置信度；请使用评估题目模式运行 reviewer、数值或 Lean 验证。";
+    } else if (verificationField.disabled) {
+      verificationField.disabled = false;
+      verificationField.value = verificationField.dataset.previous || "balanced";
+      verificationField.removeAttribute("title");
+    }
     dom.textarea.placeholder = needsSource
       ? "补充你希望如何加工、验证或评估这道源题（可选）……"
       : mode === "solve"
@@ -521,6 +546,18 @@
     if (type === "evaluation.verified") {
       renderVerification(payload.evidence || [], payload.passed);
     }
+    if (type === "solution.ready") {
+      renderVerification(
+        [{
+          kind: "solve_confidence",
+          status: "unavailable",
+          summary: `求解器置信度：${payload.confidence || "unknown"}；该信号不替代独立 reviewer、数值或 Lean 验证。`,
+          backend: "SolveAgent",
+          required: false,
+        }],
+        undefined,
+      );
+    }
     if (type === "run.succeeded") setRunState("completed", "已完成");
     else if (type === "run.failed" || type === "assistant.error") setRunState("failed", "执行失败");
     else if (type === "run.cancelled" || type === "assistant.cancelled") setRunState("cancelled", "已取消");
@@ -548,9 +585,19 @@
     if (type === "qgen.progress") {
       title.textContent = PHASE_LABELS[payload.phase] || `阶段：${payload.phase || "处理中"}`;
       detail.textContent = `第 ${payload.round || 0} 轮 · ${payload.route || "继续"}`;
-    } else if (type === "step.started") {
-      title.textContent = PHASE_LABELS[payload.name] || `开始 ${payload.name || "步骤"}`;
-      detail.textContent = `尝试 ${payload.attempt || 1}`;
+    } else if (type.startsWith("step.")) {
+      const stepState = type.split(".")[1];
+      const stepLabels = {
+        started: `开始 ${payload.name || "步骤"}`,
+        succeeded: `${payload.name || "步骤"}已完成`,
+        failed: `${payload.name || "步骤"}失败`,
+        interrupted: `${payload.name || "步骤"}已中断`,
+        cancelled: `${payload.name || "步骤"}已取消`,
+      };
+      title.textContent = stepState === "started"
+        ? PHASE_LABELS[payload.name] || stepLabels.started
+        : stepLabels[stepState] || type;
+      detail.textContent = payload.error || `尝试 ${payload.attempt || 1}`;
     } else if (type === "evaluation.verified") {
       title.textContent = payload.passed ? "验证矩阵通过" : "验证矩阵发现问题";
       detail.textContent = `${Object.keys(payload.checks || {}).length} 项检查 · ${payload.evidence?.length || 0} 条证据`;
@@ -563,6 +610,8 @@
         "run.cancel_requested": "正在请求安全取消",
         "run.cancelled": "任务已在安全边界取消",
         "run.paused": "任务已暂停",
+        "run.resume_requested": "恢复请求已记录",
+        "run.recovery_scheduled": "恢复执行器已安排",
         "solution.ready": "详细解答已生成",
         "evaluation.solution_ready": "评估解答已准备",
         "assistant.final": "最终结果已写入对话",
@@ -621,7 +670,7 @@
     dom.metricDuration.textContent = `${Number(run.usage?.wall_time_seconds || 0).toFixed(1)}s`;
     if (TERMINAL.has(run.status)) {
       setRunState(run.status === "succeeded" ? "completed" : run.status, statusLabel(run.status));
-      dom.cancel.disabled = true;
+      dom.cancel.disabled = run.status !== "paused";
     }
     const verification = run.output?.generated?.verification || run.output?.verification;
     if (verification?.evidence) renderVerification(verification.evidence, verification.passed);
@@ -638,6 +687,7 @@
   function setRunState(status, label) {
     dom.runState.className = `run-state ${status}`;
     dom.runState.textContent = label;
+    dom.resume.hidden = status !== "paused";
   }
 
   async function refreshCurrentMessages() {
@@ -661,6 +711,46 @@
     } catch (error) {
       dom.cancel.disabled = false;
       toast(error.message, "error");
+    }
+  }
+
+  function showResumeDialog() {
+    if (!state.runId) return;
+    dom.resumeDialog.showModal();
+  }
+
+  async function resumeRun(event) {
+    event.preventDefault();
+    if (!state.runId) return;
+    const fields = {
+      max_steps: Number($("#resumeSteps").value),
+      max_llm_calls: Number($("#resumeCalls").value),
+      max_tokens: Number($("#resumeTokens").value),
+      max_wall_time_seconds: Number($("#resumeSeconds").value),
+    };
+    const budget_increment = Object.fromEntries(
+      Object.entries(fields).filter(([, value]) => Number.isFinite(value) && value > 0),
+    );
+    if (!Object.keys(budget_increment).length) {
+      toast("请至少填写一个正数预算增量", "error");
+      return;
+    }
+    const button = $("#resumeForm button[type='submit']");
+    button.disabled = true;
+    try {
+      const result = await api(`/v1/runs/${encodeURIComponent(state.runId)}/resume`, {
+        method: "POST",
+        body: { budget_increment },
+      });
+      dom.resumeDialog.close();
+      dom.cancel.disabled = false;
+      setRunState("running", result.resume_scheduled ? "恢复中" : "已安排恢复");
+      toast("预算已增加，任务从最近 checkpoint 继续。", "success");
+      await streamRun(state.runId);
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -803,10 +893,37 @@
     }
   }
 
+  function railIsOverlay(element) {
+    return window.matchMedia(
+      element.id === "leftRail" ? "(max-width: 720px)" : "(max-width: 980px)",
+    ).matches;
+  }
+
+  function syncRails() {
+    const left = $("#leftRail");
+    const right = $("#rightRail");
+    for (const rail of [left, right]) {
+      const inaccessible = railIsOverlay(rail) && !rail.classList.contains("open");
+      rail.inert = inaccessible;
+      if (inaccessible) rail.setAttribute("aria-hidden", "true");
+      else rail.removeAttribute("aria-hidden");
+    }
+    const overlayOpen = [left, right].some(
+      (rail) => railIsOverlay(rail) && rail.classList.contains("open"),
+    );
+    $("#railScrim").hidden = !overlayOpen;
+  }
+
   function toggleRail(element, trigger, open) {
+    if (open && railIsOverlay(element)) {
+      const other = element.id === "leftRail" ? $("#rightRail") : $("#leftRail");
+      other.classList.remove("open");
+      const otherTrigger = element.id === "leftRail" ? $("#inspectorToggle") : $("#navToggle");
+      otherTrigger?.setAttribute("aria-expanded", "false");
+    }
     element.classList.toggle("open", open);
     trigger?.setAttribute("aria-expanded", String(open));
-    $("#railScrim").hidden = !open;
+    syncRails();
   }
 
   function closeRails() {
@@ -851,6 +968,9 @@
     });
     $$("[data-inspector]").forEach((button) => button.addEventListener("click", () => selectInspector(button.dataset.inspector)));
     dom.cancel.addEventListener("click", cancelRun);
+    dom.resume.addEventListener("click", showResumeDialog);
+    $("#resumeForm").addEventListener("submit", resumeRun);
+    $("#resumeCancelButton").addEventListener("click", () => dom.resumeDialog.close());
     $("#loginButton").addEventListener("click", () => authenticate("login"));
     $("#registerButton").addEventListener("click", () => authenticate("register"));
     $("#saveApiKeyButton").addEventListener("click", saveApiKey);
@@ -872,7 +992,9 @@
     $("#inspectorToggle").addEventListener("click", () => toggleRail($("#rightRail"), $("#inspectorToggle"), !$("#rightRail").classList.contains("open")));
     $("#inspectorClose").addEventListener("click", closeRails);
     $("#railScrim").addEventListener("click", closeRails);
+    window.addEventListener("resize", syncRails);
     window.addEventListener("beforeunload", stopStream);
+    syncRails();
   }
 
   function verificationLabel(kind = "verification") {

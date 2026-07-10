@@ -1238,6 +1238,12 @@ kbd {
   margin-bottom: 18px;
 }
 
+.run-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
 .run-state {
   display: inline-flex;
   align-items: center;
@@ -1281,6 +1287,20 @@ kbd {
 .danger-link {
   color: var(--red);
   font-size: 9px;
+}
+
+.resume-link {
+  padding: 4px 7px;
+  color: var(--blue-deep);
+  background: var(--blue-pale);
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.resume-link:hover {
+  color: white;
+  background: var(--blue-deep);
 }
 
 .danger-link:not(:disabled):hover {
@@ -1681,6 +1701,43 @@ dialog h2 {
   width: min(580px, calc(100vw - 28px));
 }
 
+.resume-dialog {
+  width: min(520px, calc(100vw - 28px));
+}
+
+.resume-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.resume-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.resume-form input {
+  height: 39px;
+}
+
+.resume-actions {
+  grid-column: 1 / -1;
+  margin-top: 5px;
+}
+
+@media (max-width: 430px) {
+  .resume-form {
+    grid-template-columns: 1fr;
+  }
+
+  .resume-actions {
+    grid-column: 1;
+  }
+}
+
 .utility-result {
   max-height: 55vh;
   margin-top: 15px;
@@ -1739,6 +1796,10 @@ dialog h2 {
 
 .mobile-only,
 .rail-scrim {
+  display: none;
+}
+
+.rail-scrim[hidden] {
   display: none;
 }
 

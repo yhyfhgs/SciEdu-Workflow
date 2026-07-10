@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light" />
   <title>SciForge · 出题研究台</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="./styles.css" />
   <script defer src="./app.js"></script>
 </head>
@@ -94,7 +95,7 @@
         <button class="mode-chip" type="button" data-mode="deepen" aria-pressed="false"><span>04</span>深入推演</button>
         <button class="mode-chip" type="button" data-mode="adjust_difficulty" aria-pressed="false"><span>05</span>调整难度</button>
         <button class="mode-chip" type="button" data-mode="evaluate" aria-pressed="false"><span>06</span>评估题目</button>
-        <button class="mode-chip" type="button" data-mode="solve" aria-pressed="false"><span>07</span>求解验证</button>
+        <button class="mode-chip" type="button" data-mode="solve" aria-pressed="false"><span>07</span>独立求解</button>
       </div>
 
       <section class="messages" id="messageList" role="log" aria-live="polite" aria-relevant="additions" aria-label="对话消息">
@@ -204,7 +205,10 @@
       <section class="inspector-panel" id="runPanel" role="tabpanel" aria-labelledby="runTab">
         <div class="run-summary">
           <span class="run-state idle" id="runState">尚未运行</span>
-          <button class="danger-link" id="cancelRunButton" type="button" disabled>停止运行</button>
+          <div class="run-actions">
+            <button class="resume-link" id="resumeRunButton" type="button" hidden>增加预算并继续</button>
+            <button class="danger-link" id="cancelRunButton" type="button" disabled>停止运行</button>
+          </div>
         </div>
         <ol class="evidence-rail" id="timelineList">
           <li class="pending"><i></i><div><strong>等待任务</strong><p>发送一条消息后，这里会实时记录规划、生成与复核步骤。</p></div></li>
@@ -267,6 +271,23 @@
     <p class="eyebrow" id="utilityEyebrow">QUICK TOOL</p>
     <h2 id="utilityTitle">快捷工具</h2>
     <div id="utilityBody"></div>
+  </dialog>
+
+  <dialog class="resume-dialog" id="resumeDialog" aria-labelledby="resumeTitle">
+    <form method="dialog" class="dialog-close-form"><button class="icon-button" value="cancel" aria-label="关闭">×</button></form>
+    <p class="eyebrow">DURABLE RESUME</p>
+    <h2 id="resumeTitle">增加预算并继续</h2>
+    <p class="dialog-lede">只增加本次暂停任务的上限；已完成的 checkpoint 不会重放。</p>
+    <form class="resume-form" id="resumeForm">
+      <label>增加步骤数<input id="resumeSteps" type="number" min="1" max="10000" value="50" /></label>
+      <label>增加 LLM 调用<input id="resumeCalls" type="number" min="1" max="10000" value="10" /></label>
+      <label>增加 token<input id="resumeTokens" type="number" min="1" max="100000000" value="50000" /></label>
+      <label>增加运行秒数<input id="resumeSeconds" type="number" min="1" max="86400" value="600" /></label>
+      <div class="dialog-actions resume-actions">
+        <button class="outline-button" type="button" id="resumeCancelButton">暂不继续</button>
+        <button class="primary-button" type="submit">恢复任务</button>
+      </div>
+    </form>
   </dialog>
 
   <div class="toast-region" id="toastRegion" aria-live="assertive" aria-atomic="true"></div>
