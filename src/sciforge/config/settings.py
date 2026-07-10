@@ -231,6 +231,12 @@ class AppConfig(BaseSettings):
     qgen_retriever_max_kps: int = 8
     qgen_retriever_max_refs: int = 8
     qgen_retriever_max_negatives: int = 5
+    # 默认生成/推荐池使用 schema v13 量规门禁。旧库在该 kind/rubric 完全没有
+    # evaluation 时允许兼容读取；一旦评价开始，未评价条目也不进入默认池。
+    qgen_quality_gate_enabled: bool = True
+    qgen_quality_gate_allow_legacy_unscored: bool = True
+    qgen_quality_extraction_min: float = 0.7
+    qgen_quality_solution_min: float = 0.6
     qgen_lightweight_prefilter: bool = True
     # Phase 6c: verifier 在 verdict=PASS 时顺带返回 10 维难度评分，
     # 省一次独立的 annotator LLM 调用。默认开启（review.txt 已支持新格式）。

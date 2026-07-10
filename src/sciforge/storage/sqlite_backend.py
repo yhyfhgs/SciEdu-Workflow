@@ -40,6 +40,7 @@ from sciforge.core.models import (
     ReviewQueueItem,
     ReviewQueueStatus,
 )
+from sciforge.storage.query import compile_search_filters
 
 logger = structlog.get_logger()
 
@@ -1472,33 +1473,7 @@ class SQLiteStorageBackend:
 
         仅放行白名单字段，避免 SQL 注入（key 全部来自字面量）。
         """
-        conditions: list[str] = []
-        params: list[object] = []
-
-        for key, value in filters.items():
-            if key == "difficulty_range" and isinstance(value, (list, tuple)):
-                conditions.append("difficulty BETWEEN ? AND ?")
-                params.extend(value[:2])
-            elif key == "exclude_ids" and isinstance(value, (list, set)):
-                ids_list = list(value)
-                if ids_list:
-                    placeholders = ",".join("?" * len(ids_list))
-                    conditions.append(f"id NOT IN ({placeholders})")
-                    params.extend(ids_list)
-            elif key in (
-                "discipline",
-                "kp_type",
-                "question_type",
-                "subject",
-                "source_file",
-            ):
-                conditions.append(f"{key} = ?")
-                params.append(value)
-            elif key == "content_hash":
-                conditions.append("content_hash = ?")
-                params.append(value)
-
-        return conditions, params
+        return compile_search_filters(filters)
 
     def _search(self, table: str, filters: dict[str, object]) -> list[str]:
         """动态构建 WHERE 子句（table 必须是白名单内的表名）"""

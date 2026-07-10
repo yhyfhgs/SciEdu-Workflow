@@ -26,38 +26,11 @@ from urllib.parse import quote
 if TYPE_CHECKING:
     from sciforge.core.models import KnowledgePoint, Question
 
+from sciforge.storage.query import compile_search_filters
+
 
 class TenantStorageConfigurationError(RuntimeError):
     """Raised when an authenticated storage cannot enforce tenant filtering."""
-
-
-_EXACT_FILTER_COLUMNS = {
-    "discipline",
-    "question_type",
-    "subject",
-    "source_file",
-    "content_hash",
-}
-
-
-def _build_filter_clause(filters: dict[str, object]) -> tuple[list[str], list[object]]:
-    """Compile the same safe question filters as ``SQLiteStorageBackend``."""
-    conditions: list[str] = []
-    params: list[object] = []
-    for key, value in filters.items():
-        if key == "difficulty_range" and isinstance(value, (list, tuple)) and len(value) >= 2:
-            conditions.append("difficulty BETWEEN ? AND ?")
-            params.extend(value[:2])
-        elif key == "exclude_ids" and isinstance(value, (list, set, tuple)):
-            ids = list(value)
-            if ids:
-                placeholders = ",".join("?" for _ in ids)
-                conditions.append(f"id NOT IN ({placeholders})")
-                params.extend(ids)
-        elif key in _EXACT_FILTER_COLUMNS:
-            conditions.append(f"{key} = ?")
-            params.append(value)
-    return conditions, params
 
 
 class TenantScopedStorageView:
@@ -138,7 +111,7 @@ class TenantScopedStorageView:
             )
             return [str(item_id) for item_id in result]
 
-        conditions, params = _build_filter_clause(filters)
+        conditions, params = compile_search_filters(filters)
         visibility, visibility_params = self._visibility_sql()
         conditions.append(visibility)
         params.extend(visibility_params)

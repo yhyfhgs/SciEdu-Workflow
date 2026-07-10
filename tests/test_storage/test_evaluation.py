@@ -9,6 +9,7 @@ import pytest
 from sciforge.core.models import Discipline, Question
 from sciforge.pipeline.concept_linker import link_items_to_concepts
 from sciforge.pipeline.evaluation import evaluate_item_rows
+from sciforge.storage.query import QualityGateFilter
 from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 
@@ -81,3 +82,77 @@ def test_rubric_versions_coexist(backend: SQLiteStorageBackend) -> None:
     assert count == 2
     assert backend.load_item_evaluation("q-good", rubric_version="v1").rubric_version == "v1"
     assert backend.load_item_evaluation("q-good", rubric_version="v2").rubric_version == "v2"
+
+
+def test_quality_gate_is_applied_before_search_limit(backend: SQLiteStorageBackend) -> None:
+    noisy = [
+        Question(
+            id=f"bad-{index:03d}",
+            content=f"低质量未完成题目 {index}。",
+            source_file="bulk.md",
+            order_index=index,
+        )
+        for index in range(500)
+    ]
+    good = Question(
+        id="good-after-limit",
+        discipline=Discipline.MATH,
+        question_type="proof",
+        content="证明闭区间连续函数一致连续，并给出完整的有限覆盖论证。",
+        solution_content="由 Heine-Borel 定理取有限子覆盖，取最小半径即可。",
+        difficulty=7,
+        taxonomy_path="math.analysis.continuity.uniform_continuity",
+        tags=["math:数学", "analysis:分析", "uniform_continuity:一致连续"],
+        source_file="bulk.md",
+        start_line=2001,
+        end_line=2010,
+        order_index=501,
+    )
+    backend.save_batch([], [*noisy, good])
+    batch = evaluate_item_rows(backend.evaluation_rows("bulk.md", "math"))
+    backend.save_evaluation_batch(batch)
+
+    ids = backend.search_questions(
+        {"quality_gate": QualityGateFilter(item_kind="question")}
+    )
+
+    assert ids == ["good-after-limit"]
+
+
+def test_quality_gate_legacy_fallback_only_when_corpus_has_no_evaluations(
+    backend: SQLiteStorageBackend,
+) -> None:
+    backend.save_batch(
+        [],
+        [
+            Question(
+                id="legacy",
+                content="尚未迁移量规但仍应在纯旧库中可见。",
+                source_file="legacy.md",
+                order_index=1,
+            )
+        ],
+    )
+    policy = QualityGateFilter(item_kind="question")
+
+    assert backend.search_questions({"quality_gate": policy}) == ["legacy"]
+
+    backend.save_batch(
+        [],
+        [
+            Question(
+                id="evaluated-risky",
+                content="求一加一。",
+                source_file="evaluated.md",
+                order_index=2,
+            )
+        ],
+    )
+    backend.save_evaluation_batch(
+        evaluate_item_rows(
+            backend.evaluation_rows("evaluated.md", "math"), rubric_version="v1"
+        )
+    )
+    # 一旦该 kind/rubric/source 存在评价，兼容回退整体结束；逐条无证据不再
+    # 等同于质量通过，且已评价但不达标的题也被排除。
+    assert backend.search_questions({"quality_gate": policy}) == []

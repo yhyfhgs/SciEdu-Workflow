@@ -59,6 +59,7 @@ from sciforge.core.models import (
     VariantStrategy,
 )
 from sciforge.export import render_docx, render_markdown
+from sciforge.storage.query import QualityGateFilter
 from sciforge.storage.saas import SaasStore, UsageSummary
 
 if TYPE_CHECKING:
@@ -257,6 +258,7 @@ def _assemble_paper_items(
         filters: dict[str, object] = {
             "discipline": discipline.value,
             "difficulty_range": (req.difficulty_min, req.difficulty_max),
+            "quality_gate": QualityGateFilter(item_kind="question"),
         }
         if req.subject:
             filters["subject"] = req.subject
@@ -547,7 +549,10 @@ def create_app(
                 scoped = TenantScopedStorageView(storage, principal.tenant_id)
             except TenantStorageConfigurationError as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
-            filters: dict[str, object] = {"discipline": disc.value}
+            filters: dict[str, object] = {
+                "discipline": disc.value,
+                "quality_gate": QualityGateFilter(item_kind="question"),
+            }
             if subject:
                 filters["subject"] = subject
             ids = scoped.search_questions(filters)
