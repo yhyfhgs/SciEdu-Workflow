@@ -130,7 +130,10 @@ class DeepSolveEngine:
                 content = msg.content
                 break
         logger.info("solve_deep_done", question_id=question.id, turns=len(history))
-        return _to_solution(_extract_json(content), question, content)
+        # Only the explicit structured final answer is publishable.  Do not
+        # fall back to an arbitrary assistant transcript, which may contain
+        # tool-planning narration rather than a learner-facing solution.
+        return _to_solution(_extract_json(content), question)
 
     async def _solve_single(self, user_prompt: str, question: Question) -> Solution | None:
         """降级路径：system+user 合并的单轮深度求解（无工具）。"""
@@ -140,7 +143,7 @@ class DeepSolveEngine:
         except Exception as exc:
             logger.warning("solve_deep_single_failed", error=str(exc)[:200])
             return None
-        return _to_solution(data, question, "")
+        return _to_solution(data, question)
 
 
 def _kp_context(context: ContextBundle | None) -> str:
@@ -169,8 +172,8 @@ def _extract_json(text: str) -> dict[str, Any]:
     return {}
 
 
-def _to_solution(data: dict[str, Any], question: Question, raw: str) -> Solution | None:
-    solution_text = str(data.get("solution_latex") or data.get("solution") or raw or "").strip()
+def _to_solution(data: dict[str, Any], question: Question) -> Solution | None:
+    solution_text = str(data.get("solution_latex") or data.get("solution") or "").strip()
     if not solution_text:
         return None
     conf = str(data.get("confidence", "medium")).lower()

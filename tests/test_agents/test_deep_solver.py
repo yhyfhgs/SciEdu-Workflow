@@ -103,6 +103,19 @@ async def test_solve_deep_empty_returns_none() -> None:
 
 
 @pytest.mark.asyncio
+async def test_solve_deep_does_not_publish_unstructured_tool_narration() -> None:
+    history = [
+        ConversationMessage(
+            role="assistant",
+            content="我先尝试若干内部计算步骤，但没有按约定给出结构化最终答案。",
+        ),
+    ]
+    engine = DeepSolveEngine(_ToolLLM(history), Discipline.MATH)  # type: ignore[arg-type]
+
+    assert await engine.solve_deep(_q()) is None
+
+
+@pytest.mark.asyncio
 async def test_solve_deep_no_tools_fallback() -> None:
     llm = _NoToolLLM({"solution_latex": "降级单轮深度解答。", "confidence": "medium"})
     engine = DeepSolveEngine(llm, Discipline.MATH)  # type: ignore[arg-type]
