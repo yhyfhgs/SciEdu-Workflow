@@ -1,322 +1,274 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SciForge 控制台</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-<style>
-  :root { --bg:#0f1320; --panel:#1a2030; --line:#2a3450; --fg:#e6e9f0; --muted:#8b94ad;
-          --accent:#4f8cff; --accent2:#7c5cff; --ok:#2fbf71; --err:#ff5c6c; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC",sans-serif;
-         background: var(--bg); color: var(--fg); }
-  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex;
-           align-items:center; gap:12px; background:linear-gradient(90deg,#161b2c,#11152200); }
-  header h1 { font-size:18px; margin:0; font-weight:700; letter-spacing:.5px; }
-  header .tag { font-size:12px; color:var(--muted); border:1px solid var(--line);
-                padding:2px 8px; border-radius:99px; }
-  header .spacer { flex:1; }
-  #who { font-size:13px; color:var(--muted); }
-  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:9px 14px;
-           font-size:14px; cursor:pointer; transition:.15s; }
-  button:hover { filter:brightness(1.1); }
-  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  main { max-width:1000px; margin:0 auto; padding:24px; }
-  .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px;
-           padding:20px; margin-bottom:20px; }
-  .panel h2 { margin:0 0 14px; font-size:15px; color:var(--accent); }
-  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
-  input, select, textarea { width:100%; background:#0d1220; color:var(--fg);
-           border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:14px; }
-  .row { display:flex; gap:12px; flex-wrap:wrap; }
-  .row > div { flex:1; min-width:140px; }
-  .tabs { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
-  .tabs button { background:transparent; border:1px solid var(--line); color:var(--muted); }
-  .tabs button.active { background:var(--accent2); color:#fff; border-color:var(--accent2); }
-  .hidden { display:none; }
-  .card { border:1px solid var(--line); border-radius:10px; padding:14px; margin-top:12px;
-          background:#0d1220; }
-  .card .meta { font-size:12px; color:var(--muted); margin-bottom:8px; display:flex; gap:10px;
-                flex-wrap:wrap; }
-  .badge { background:#13203a; color:var(--accent); border-radius:6px; padding:1px 7px; }
-  .badge.ok { background:#10301f; color:var(--ok); }
-  .solution { color:#c7cfe0; border-top:1px dashed var(--line); margin-top:10px; padding-top:10px; }
-  .toast { position:fixed; bottom:20px; right:20px; padding:12px 16px; border-radius:10px;
-           font-size:14px; color:#fff; opacity:0; transform:translateY(10px); transition:.25s; }
-  .toast.show { opacity:1; transform:translateY(0); }
-  .toast.ok { background:var(--ok); } .toast.err { background:var(--err); }
-  .muted { color:var(--muted); font-size:13px; }
-  pre.usage { background:#0d1220; border:1px solid var(--line); border-radius:8px; padding:12px;
-              font-size:13px; overflow:auto; }
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>SciForge · 出题研究台</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script defer src="./app.js"></script>
 </head>
 <body>
-<header>
-  <h1>⚙️ SciForge</h1><span class="tag">统一后端 · SaaS 控制台</span>
-  <div class="spacer"></div>
-  <span id="who"></span>
-  <button class="ghost" id="logoutBtn" onclick="logout()" style="display:none">退出</button>
-</header>
-<main>
-  <!-- 登录/注册 -->
-  <section class="panel" id="authPanel">
-    <h2>登录 / 注册</h2>
-    <div class="row">
-      <div><label>用户名</label><input id="username" placeholder="alice" /></div>
-      <div><label>密码</label><input id="password" type="password" placeholder="••••••" /></div>
-    </div>
-    <div style="margin-top:14px; display:flex; gap:10px;">
-      <button onclick="auth('login')">登录</button>
-      <button class="ghost" onclick="auth('register')">注册</button>
-    </div>
-    <p class="muted" id="authHint" style="margin-top:12px"></p>
-  </section>
+  <a class="skip-link" href="#messageComposer">跳到消息输入框</a>
 
-  <!-- 已登录区 -->
-  <div id="appArea" class="hidden">
-    <div class="tabs">
-      <button class="active" data-tab="gen" onclick="tab('gen')">出题</button>
-      <button data-tab="paper" onclick="tab('paper')">组卷</button>
-      <button data-tab="rec" onclick="tab('rec')">智能推荐</button>
-      <button data-tab="usage" onclick="tab('usage')">用量</button>
-    </div>
-
-    <!-- 出题 -->
-    <section class="panel tabpane" id="tab-gen">
-      <h2>单题生成</h2>
-      <div class="row">
-        <div><label>学科</label>
-          <select id="g_disc"><option value="math">数学</option><option value="physics">物理</option></select>
-        </div>
-        <div><label>题型</label>
-          <select id="g_type">
-            <option value="proof">证明</option><option value="computational">计算</option>
-            <option value="construction">构造</option>
-          </select>
-        </div>
-        <div><label>难度 (1-10)</label><input id="g_diff" type="number" min="1" max="10" value="5" /></div>
+  <div class="app-shell" id="appShell">
+    <header class="topbar">
+      <button class="icon-button mobile-only" id="navToggle" type="button" aria-label="打开会话栏" aria-controls="leftRail" aria-expanded="false">
+        <span aria-hidden="true">☰</span>
+      </button>
+      <a class="brand" href="/app/" aria-label="SciForge 出题研究台首页">
+        <span class="brand-mark" aria-hidden="true">S<span>ƒ</span></span>
+        <span><strong>SciForge</strong><small>出题研究台</small></span>
+      </a>
+      <div class="topbar-context" aria-live="polite">
+        <span class="crumb">工作区</span>
+        <span aria-hidden="true">/</span>
+        <strong id="topConversationTitle">未命名研究</strong>
       </div>
-      <label>主题（逗号分隔）</label>
-      <input id="g_topics" placeholder="极限, 连续性" />
-      <label>科目</label>
-      <input id="g_subject" placeholder="数学分析" />
-      <div style="margin-top:14px"><button id="genBtn" onclick="generate()">生成题目</button></div>
-      <div id="genOut"></div>
-    </section>
+      <div class="topbar-actions">
+        <span class="connection-badge" id="connectionBadge"><i aria-hidden="true"></i>正在连接</span>
+        <button class="text-button" id="accountButton" type="button" aria-haspopup="dialog">连接方式</button>
+        <button class="icon-button mobile-only" id="inspectorToggle" type="button" aria-label="打开运行检视器" aria-controls="rightRail" aria-expanded="false">
+          <span aria-hidden="true">◫</span>
+        </button>
+      </div>
+    </header>
 
-    <!-- 组卷 -->
-    <section class="panel tabpane hidden" id="tab-paper">
-      <h2>按条件组卷</h2>
-      <div class="row">
-        <div><label>学科</label>
-          <select id="p_disc"><option value="math">数学</option><option value="physics">物理</option></select>
+    <aside class="left-rail" id="leftRail" aria-label="会话和模板">
+      <div class="rail-section rail-primary">
+        <button class="new-conversation" id="newConversationButton" type="button">
+          <span aria-hidden="true">＋</span><span>开始新的出题研究</span>
+        </button>
+      </div>
+
+      <section class="rail-section conversation-section" aria-labelledby="conversationHeading">
+        <div class="section-heading">
+          <h2 id="conversationHeading">最近会话</h2>
+          <button class="mini-button" id="refreshConversations" type="button" aria-label="刷新会话">↻</button>
         </div>
-        <div><label>难度下限</label><input id="p_dmin" type="number" min="1" max="10" value="1" /></div>
-        <div><label>难度上限</label><input id="p_dmax" type="number" min="1" max="10" value="10" /></div>
-        <div><label>题量</label><input id="p_count" type="number" min="1" max="100" value="10" /></div>
-      </div>
-      <div style="margin-top:14px; display:flex; gap:10px;">
-        <button onclick="papers()">组卷预览</button>
-        <button class="ghost" onclick="exportPaper('markdown')">导出 Markdown</button>
-        <button class="ghost" onclick="exportPaper('docx')">导出 DOCX</button>
-      </div>
-      <div id="paperOut"></div>
-    </section>
+        <nav class="conversation-list" id="conversationList" aria-label="会话列表">
+          <div class="rail-empty">连接后显示历史会话</div>
+        </nav>
+      </section>
 
-    <!-- 推荐 -->
-    <section class="panel tabpane hidden" id="tab-rec">
-      <h2>个性化推荐</h2>
-      <p class="muted">基于你的练习画像（掌握难度 + 薄弱标签）推荐题目。可先「标记练习结果」积累画像。</p>
-      <div class="row">
-        <div><label>学科</label>
-          <select id="r_disc"><option value="math">数学</option><option value="physics">物理</option></select>
+      <section class="rail-section template-section" aria-labelledby="templateHeading">
+        <div class="section-heading">
+          <h2 id="templateHeading">出题模板</h2>
+          <span class="count-label" id="templateCount">0</span>
         </div>
-        <div><label>条数</label><input id="r_limit" type="number" min="1" max="50" value="10" /></div>
-      </div>
-      <div style="margin-top:14px"><button onclick="recommend()">获取推荐</button></div>
-      <div id="recOut"></div>
-    </section>
+        <div class="template-list" id="templateList">
+          <button class="template-card skeleton-template" type="button" disabled>
+            <span class="template-symbol">∴</span><span><strong>载入模板中</strong><small>请稍候</small></span>
+          </button>
+        </div>
+      </section>
 
-    <!-- 用量 -->
-    <section class="panel tabpane hidden" id="tab-usage">
-      <h2>用量与配额</h2>
-      <button onclick="usage()">刷新</button>
-      <pre class="usage" id="usageOut">点击刷新查看</pre>
-    </section>
+      <section class="rail-section legacy-section" aria-labelledby="legacyHeading">
+        <h2 id="legacyHeading">快捷工具</h2>
+        <div class="legacy-grid">
+          <button type="button" data-legacy-action="generate"><span>✦</span>快速生成</button>
+          <button type="button" data-legacy-action="solve"><span>∫</span>独立求解</button>
+          <button type="button" data-legacy-action="paper"><span>▤</span>智能组卷</button>
+          <button type="button" data-legacy-action="recommend"><span>◎</span>题目推荐</button>
+        </div>
+      </section>
+
+      <footer class="rail-footer">
+        <span>API v1</span><span aria-hidden="true">·</span><button id="usageButton" type="button">查看用量</button>
+      </footer>
+    </aside>
+
+    <main class="chat-workspace" id="mainContent">
+      <header class="chat-header">
+        <div>
+          <p class="eyebrow">QGEN HARNESS / VERIFIED GENERATION</p>
+          <h1 id="conversationTitle">把题目、解答与验证放在同一条证据链上</h1>
+        </div>
+        <button class="outline-button compact" id="renameConversation" type="button" disabled>重命名</button>
+      </header>
+
+      <div class="mode-strip" role="toolbar" aria-label="选择出题模式">
+        <button class="mode-chip active" type="button" data-mode="new" aria-pressed="true"><span>01</span>出新题</button>
+        <button class="mode-chip" type="button" data-mode="evolve" aria-pressed="false"><span>02</span>自进化</button>
+        <button class="mode-chip" type="button" data-mode="variant" aria-pressed="false"><span>03</span>微调变式</button>
+        <button class="mode-chip" type="button" data-mode="deepen" aria-pressed="false"><span>04</span>深入推演</button>
+        <button class="mode-chip" type="button" data-mode="adjust_difficulty" aria-pressed="false"><span>05</span>调整难度</button>
+        <button class="mode-chip" type="button" data-mode="evaluate" aria-pressed="false"><span>06</span>评估题目</button>
+        <button class="mode-chip" type="button" data-mode="solve" aria-pressed="false"><span>07</span>求解验证</button>
+      </div>
+
+      <section class="messages" id="messageList" role="log" aria-live="polite" aria-relevant="additions" aria-label="对话消息">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-glyph" aria-hidden="true"><span>Q</span><i>✓</i></div>
+          <p class="eyebrow">从一个可检验的问题开始</p>
+          <h2>描述你想训练的能力，<br />其余约束交给研究台。</h2>
+          <p>例如：为实分析研究生设计一道关于一致收敛的反例构造题，要求数值抽样与 Lean 形式化均可复核。</p>
+          <div class="starter-grid" aria-label="示例指令">
+            <button type="button" data-starter="围绕一致收敛与积分换序，设计一道需要构造反例的证明题。">反例构造 <small>数学分析 · 难度 8</small></button>
+            <button type="button" data-starter="生成一道带参数的电磁学计算题，并用代码核对量纲和数值。">数值验证 <small>电磁学 · 难度 6</small></button>
+            <button type="button" data-starter="评估我给出的题目是否存在歧义、捷径或难度失准，并提出修订版。">题目评估 <small>歧义 · 难度 · 区分度</small></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="composer-dock" aria-label="消息与生成参数">
+        <div class="active-context" id="activeContext" hidden>
+          <span>已引用知识</span><strong id="activeContextTitle"></strong><button id="clearContext" type="button" aria-label="移除知识引用">×</button>
+        </div>
+
+        <form class="composer" id="composerForm">
+          <label class="sr-only" for="messageComposer">描述题目或后续要求</label>
+          <textarea id="messageComposer" rows="3" placeholder="描述知识范围、希望考查的能力，或粘贴一道题继续加工……"></textarea>
+          <div class="composer-toolbar">
+            <button class="tool-button" id="parameterToggle" type="button" aria-expanded="false" aria-controls="parameterPanel">
+              <span aria-hidden="true">⌘</span>生成约束 <b id="constraintCount">5</b>
+            </button>
+            <button class="tool-button" id="knowledgeFocusButton" type="button"><span aria-hidden="true">⌕</span>检索知识库</button>
+            <span class="keyboard-hint"><kbd>⌘</kbd><kbd>Enter</kbd> 发送</span>
+            <button class="send-button" id="sendButton" type="submit">
+              <span>开始推演</span><i aria-hidden="true">↗</i>
+            </button>
+          </div>
+        </form>
+
+        <div class="parameter-panel" id="parameterPanel" hidden>
+          <div class="field-grid">
+            <label>领域
+              <select id="disciplineField">
+                <option value="math">数学</option><option value="physics">物理</option>
+                <option value="chemistry">化学</option><option value="biology">生物</option>
+                <option value="other">其他领域</option>
+              </select>
+            </label>
+            <label>科目
+              <input id="subjectField" value="数学分析" placeholder="如：数学分析" />
+            </label>
+            <label>题型
+              <select id="questionTypeField">
+                <option value="proof">证明题</option><option value="computational">计算题</option>
+                <option value="construction">构造题</option><option value="multiple_choice">选择题</option>
+                <option value="open_ended">开放题</option>
+              </select>
+            </label>
+            <label>输出
+              <select id="outputTypeField">
+                <option value="question_solution">题目 + 完整解答</option><option value="question_only">仅题目</option>
+                <option value="structured_json">结构化 JSON</option><option value="lecture_note">讲义片段</option>
+              </select>
+            </label>
+            <label class="wide-field">知识主题
+              <input id="topicsField" value="极限, 连续性" placeholder="逗号分隔，如：极限, 一致收敛" />
+            </label>
+            <label class="wide-field" id="sourceQuestionFieldWrap" hidden>源题 ID
+              <input id="sourceQuestionField" placeholder="变式、深化、难度调整和评估必须填写" />
+            </label>
+            <label id="variantStrategyFieldWrap" hidden>变式策略
+              <select id="variantStrategyField">
+                <option value="A1_parameter_shift">A1 参数变化</option>
+                <option value="A2_method_shift">A2 方法变化</option>
+                <option value="A3_type_shift">A3 题型变化</option>
+                <option value="A6_reverse">A6 逆向构造</option>
+              </select>
+            </label>
+            <label>模板
+              <select id="templateField"><option value="">不使用模板</option></select>
+            </label>
+            <label>验证策略
+              <select id="verificationField">
+                <option value="balanced">平衡：代码 + 数值按需</option>
+                <option value="strict">严格：所有适用验证必需</option>
+                <option value="formal">形式化：要求 Lean 证据</option>
+                <option value="fast">快速：仅关键检查</option>
+              </select>
+            </label>
+            <label class="difficulty-field">目标难度 <output id="difficultyOutput" for="difficultyField">6 / 10</output>
+              <input id="difficultyField" type="range" min="1" max="10" value="6" />
+            </label>
+          </div>
+        </div>
+        <p class="composer-note">模型输出可能需要人工复核；验证面板会明确区分“通过、失败、不可用”，不会把缺失证据标成通过。</p>
+      </section>
+    </main>
+
+    <aside class="right-rail" id="rightRail" aria-label="运行、验证与知识检视器">
+      <div class="inspector-head">
+        <div><p class="eyebrow">EVIDENCE DESK</p><h2>运行检视器</h2></div>
+        <button class="icon-button mobile-only" id="inspectorClose" type="button" aria-label="关闭运行检视器">×</button>
+      </div>
+      <div class="inspector-tabs" role="tablist" aria-label="检视器视图">
+        <button id="runTab" type="button" role="tab" aria-selected="true" aria-controls="runPanel" data-inspector="run">运行</button>
+        <button id="verifyTab" type="button" role="tab" aria-selected="false" aria-controls="verifyPanel" data-inspector="verify">验证 <span id="verificationCount">0</span></button>
+        <button id="knowledgeTab" type="button" role="tab" aria-selected="false" aria-controls="knowledgePanel" data-inspector="knowledge">知识</button>
+      </div>
+
+      <section class="inspector-panel" id="runPanel" role="tabpanel" aria-labelledby="runTab">
+        <div class="run-summary">
+          <span class="run-state idle" id="runState">尚未运行</span>
+          <button class="danger-link" id="cancelRunButton" type="button" disabled>停止运行</button>
+        </div>
+        <ol class="evidence-rail" id="timelineList">
+          <li class="pending"><i></i><div><strong>等待任务</strong><p>发送一条消息后，这里会实时记录规划、生成与复核步骤。</p></div></li>
+        </ol>
+        <dl class="run-metrics">
+          <div><dt>模型调用</dt><dd id="metricCalls">—</dd></div>
+          <div><dt>累计 token</dt><dd id="metricTokens">—</dd></div>
+          <div><dt>运行时间</dt><dd id="metricDuration">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="inspector-panel" id="verifyPanel" role="tabpanel" aria-labelledby="verifyTab" hidden>
+        <div class="verification-stack" id="verificationStack">
+          <article class="verification-card neutral"><span class="verification-icon">#</span><div><strong>尚无验证证据</strong><p>代码、数值与 Lean 结果会分别呈现，包含退出码和诊断摘要。</p></div></article>
+        </div>
+      </section>
+
+      <section class="inspector-panel knowledge-panel" id="knowledgePanel" role="tabpanel" aria-labelledby="knowledgeTab" hidden>
+        <form class="knowledge-search" id="knowledgeSearchForm" role="search">
+          <label for="knowledgeQuery">检索当前知识库</label>
+          <div><input id="knowledgeQuery" type="search" placeholder="概念、定理或标签" /><button type="submit" aria-label="搜索">⌕</button></div>
+        </form>
+        <div class="knowledge-results" id="knowledgeResults">
+          <div class="knowledge-empty"><span>⌁</span><p>检索结果可直接加入当前出题上下文，并保留来源定位。</p></div>
+        </div>
+      </section>
+    </aside>
   </div>
-</main>
-<div class="toast" id="toast"></div>
 
-<script>
-const API = ""; // 同源
-let token = localStorage.getItem("sf_token") || "";
-let lastGenId = "";
+  <div class="rail-scrim" id="railScrim" hidden></div>
 
-function headers(json=true){
-  const h = {};
-  if (json) h["Content-Type"] = "application/json";
-  if (token) h["Authorization"] = "Bearer " + token;
-  return h;
-}
-function toast(msg, ok=true){
-  const t = document.getElementById("toast");
-  t.textContent = msg; t.className = "toast show " + (ok ? "ok":"err");
-  setTimeout(()=>{ t.className = "toast " + (ok?"ok":"err"); }, 2600);
-}
-function renderMath(el){
-  if (window.renderMathInElement) renderMathInElement(el, {
-    delimiters:[{left:"$$",right:"$$",display:true},{left:"$",right:"$",display:false}],
-    throwOnError:false });
-}
-async function api(path, opts={}){
-  const r = await fetch(API + path, opts);
-  if (r.status === 401){ logout(); toast("登录已过期，请重新登录", false); throw new Error("401"); }
-  return r;
-}
+  <dialog class="account-dialog" id="accountDialog" aria-labelledby="accountTitle">
+    <form method="dialog" class="dialog-close-form"><button class="icon-button" value="cancel" aria-label="关闭">×</button></form>
+    <p class="eyebrow">CONNECTION</p>
+    <h2 id="accountTitle">连接 SciForge</h2>
+    <p class="dialog-lede">同源开放服务无需凭据；私有部署可使用账户 token 或 API Key。</p>
+    <div class="connection-options" role="tablist" aria-label="连接方式">
+      <button type="button" role="tab" data-auth-tab="account" aria-selected="true">账户</button>
+      <button type="button" role="tab" data-auth-tab="key" aria-selected="false">API Key</button>
+      <button type="button" role="tab" data-auth-tab="open" aria-selected="false">开放模式</button>
+    </div>
+    <section class="auth-pane" data-auth-pane="account">
+      <label>用户名<input id="usernameField" autocomplete="username" placeholder="alice" /></label>
+      <label>密码<input id="passwordField" type="password" autocomplete="current-password" placeholder="至少 8 位" /></label>
+      <div class="dialog-actions"><button class="primary-button" id="loginButton" type="button">登录</button><button class="outline-button" id="registerButton" type="button">注册新账户</button></div>
+    </section>
+    <section class="auth-pane" data-auth-pane="key" hidden>
+      <label>API Key<input id="apiKeyField" type="password" autocomplete="off" placeholder="sf_••••••••••••" /></label>
+      <button class="primary-button full-button" id="saveApiKeyButton" type="button">保存并连接</button>
+    </section>
+    <section class="auth-pane open-pane" data-auth-pane="open" hidden>
+      <p>开放模式只在后端未启用 SaaS 鉴权时可用。浏览器不会发送任何身份凭据。</p>
+      <button class="primary-button full-button" id="useOpenModeButton" type="button">以开放模式继续</button>
+    </section>
+    <div class="current-connection" id="currentConnection"><span>当前</span><strong>尚未确认</strong><button id="clearCredentialsButton" type="button">清除凭据</button></div>
+  </dialog>
 
-async function auth(mode){
-  const username = document.getElementById("username").value.trim();
-  const password = document.getElementById("password").value;
-  if (!username || !password){ toast("请输入用户名和密码", false); return; }
-  const r = await fetch(API + "/v1/auth/" + mode, {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({username, password}) });
-  const body = await r.json();
-  if (!r.ok){ document.getElementById("authHint").textContent = body.detail || "失败"; return; }
-  token = body.token; localStorage.setItem("sf_token", token);
-  localStorage.setItem("sf_user", username);
-  showApp(username);
-  toast(mode === "login" ? "已登录" : "注册成功，已登录");
-}
-function logout(){
-  token = ""; localStorage.removeItem("sf_token"); localStorage.removeItem("sf_user");
-  document.getElementById("appArea").classList.add("hidden");
-  document.getElementById("authPanel").classList.remove("hidden");
-  document.getElementById("who").textContent = "";
-  document.getElementById("logoutBtn").style.display = "none";
-}
-function showApp(username){
-  document.getElementById("authPanel").classList.add("hidden");
-  document.getElementById("appArea").classList.remove("hidden");
-  document.getElementById("who").textContent = "👤 " + username;
-  document.getElementById("logoutBtn").style.display = "inline-block";
-}
-function tab(name){
-  document.querySelectorAll(".tabpane").forEach(p=>p.classList.add("hidden"));
-  document.getElementById("tab-"+name).classList.remove("hidden");
-  document.querySelectorAll(".tabs button").forEach(b=>
-    b.classList.toggle("active", b.dataset.tab === name));
-}
+  <dialog class="utility-dialog" id="utilityDialog" aria-labelledby="utilityTitle">
+    <form method="dialog" class="dialog-close-form"><button class="icon-button" value="cancel" aria-label="关闭">×</button></form>
+    <p class="eyebrow" id="utilityEyebrow">QUICK TOOL</p>
+    <h2 id="utilityTitle">快捷工具</h2>
+    <div id="utilityBody"></div>
+  </dialog>
 
-async function generate(){
-  const btn = document.getElementById("genBtn");
-  btn.disabled = true; btn.textContent = "生成中…";
-  const out = document.getElementById("genOut");
-  out.innerHTML = '<p class="muted">正在调用生成引擎（QGenAgent 5 阶段闭环）…</p>';
-  try {
-    const topics = document.getElementById("g_topics").value.split(",").map(s=>s.trim()).filter(Boolean);
-    const r = await api("/v1/generate", { method:"POST", headers: headers(), body: JSON.stringify({
-      discipline: document.getElementById("g_disc").value,
-      subject: document.getElementById("g_subject").value,
-      topics, difficulty: +document.getElementById("g_diff").value,
-      question_type: document.getElementById("g_type").value }) });
-    const body = await r.json();
-    if (!body.success){ out.innerHTML = '<p class="muted">未生成合格题目：'+(body.reason||"")+'</p>'; return; }
-    const q = body.question; lastGenId = q.id;
-    out.innerHTML = renderQuestion(q, true);
-    renderMath(out);
-    toast("生成成功（" + body.rounds_used + " 轮）");
-  } catch(e){ if(e.message!=="401") out.innerHTML = '<p class="muted">请求失败</p>'; }
-  finally { btn.disabled = false; btn.textContent = "生成题目"; }
-}
-function renderQuestion(q, withMark){
-  const verified = q.verified ? '<span class="badge ok">✓ 已验证</span>' : '<span class="badge">未验证</span>';
-  let html = '<div class="card"><div class="meta">'+
-    '<span class="badge">'+q.question_type+'</span>'+
-    '<span>难度 '+(q.difficulty?.toFixed ? q.difficulty.toFixed(1) : q.difficulty)+'</span>'+verified+
-    '<span class="muted">id '+q.id.slice(0,8)+'</span></div>'+
-    '<div>'+escapeHtml(q.content)+'</div>';
-  if (q.solution) html += '<div class="solution"><b>解答</b><br/>'+escapeHtml(q.solution)+'</div>';
-  if (withMark) html += '<div style="margin-top:12px; display:flex; gap:8px;">'+
-    '<button class="ghost" onclick="mark(\''+q.id+'\','+q.difficulty+',\'correct\')">标记答对</button>'+
-    '<button class="ghost" onclick="mark(\''+q.id+'\','+q.difficulty+',\'incorrect\')">标记答错</button></div>';
-  html += '</div>';
-  return html;
-}
-function escapeHtml(s){ const d=document.createElement("div"); d.textContent=s||""; return d.innerHTML; }
-
-async function mark(qid, difficulty, outcome){
-  try {
-    await api("/v1/behavior", { method:"POST", headers: headers(), body: JSON.stringify({
-      question_id: qid, outcome, difficulty: Math.round(difficulty)||5 }) });
-    toast("已记录："+(outcome==="correct"?"答对":"答错"));
-  } catch(e){}
-}
-
-async function papers(){
-  const out = document.getElementById("paperOut");
-  out.innerHTML = '<p class="muted">抽题中…</p>';
-  try {
-    const r = await api("/v1/papers", { method:"POST", headers: headers(), body: JSON.stringify(paperReq()) });
-    const body = await r.json();
-    if (!body.questions?.length){ out.innerHTML = '<p class="muted">题库中暂无匹配题目（先用「出题」并保存，或导入题库）。</p>'; return; }
-    out.innerHTML = '<h3 class="muted">'+body.title+'（'+body.count+' 题）</h3>'+
-      body.questions.map(q=>renderQuestion(q,false)).join("");
-    renderMath(out);
-  } catch(e){}
-}
-function paperReq(){
-  return { discipline: document.getElementById("p_disc").value,
-    difficulty_min:+document.getElementById("p_dmin").value,
-    difficulty_max:+document.getElementById("p_dmax").value,
-    count:+document.getElementById("p_count").value };
-}
-async function exportPaper(fmt){
-  try {
-    const r = await api("/v1/papers/export", { method:"POST", headers: headers(),
-      body: JSON.stringify({...paperReq(), format: fmt, include_solutions:true}) });
-    if (!r.ok){ toast("导出失败", false); return; }
-    const blob = await r.blob(); const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = fmt === "docx" ? "paper.docx" : "paper.md"; a.click();
-    URL.revokeObjectURL(url); toast("已导出 "+fmt);
-  } catch(e){}
-}
-
-async function recommend(){
-  const out = document.getElementById("recOut");
-  out.innerHTML = '<p class="muted">计算画像中…</p>';
-  try {
-    const r = await api("/v1/recommend?discipline="+document.getElementById("r_disc").value+
-      "&limit="+document.getElementById("r_limit").value, { headers: headers(false) });
-    const body = await r.json();
-    let head = '<p class="muted">掌握难度 '+body.mastered_difficulty.toFixed(1)+
-      ' · 正确率 '+(body.accuracy*100).toFixed(0)+'%'+
-      (body.weak_tags?.length ? ' · 薄弱：'+body.weak_tags.join("，") : '')+'</p>';
-    if (!body.items?.length){ out.innerHTML = head+'<p class="muted">题库暂无可推荐题目。</p>'; return; }
-    out.innerHTML = head + body.items.map(it=>'<div class="card"><div class="meta">'+
-      '<span class="badge">难度 '+it.difficulty+'</span><span>评分 '+it.score.toFixed(2)+'</span>'+
-      (it.matched_weak_tags?.length?'<span class="badge">薄弱命中</span>':'')+
-      '</div><div>'+escapeHtml(it.content||it.question_id)+'</div>'+
-      '<div class="muted" style="margin-top:6px">'+escapeHtml(it.reason)+'</div></div>').join("");
-    renderMath(out);
-  } catch(e){}
-}
-
-async function usage(){
-  try {
-    const r = await api("/v1/usage", { headers: headers(false) });
-    const body = await r.json();
-    document.getElementById("usageOut").textContent = JSON.stringify(body, null, 2);
-  } catch(e){}
-}
-
-// 启动：有 token 直接进控制台
-if (token){ showApp(localStorage.getItem("sf_user") || "用户"); }
-</script>
+  <div class="toast-region" id="toastRegion" aria-live="assertive" aria-atomic="true"></div>
 </body>
 </html>
