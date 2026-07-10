@@ -218,7 +218,14 @@ class DurableQGenHarness:
             run_id = created.run_id
         else:
             run_id = existing.run_id
-            checkpoint = self.store.prepare_resume(run_id)
+            # API workers pre-create a pending run so they can return a stable
+            # ID before background execution.  That is still a first run, not
+            # a recovery; only started/paused work needs resume preparation.
+            checkpoint = (
+                None
+                if existing.status is RunStatus.PENDING
+                else self.store.prepare_resume(run_id)
+            )
 
         assert run_id is not None
         self.store.begin_run(run_id)

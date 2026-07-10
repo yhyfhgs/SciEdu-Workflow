@@ -177,3 +177,23 @@ async def test_resume_rejects_request_drift(tmp_path: Path) -> None:
 
     with pytest.raises(InvalidRunTransitionError, match="different generation request"):
         await harness.run(changed, run_id=run_id, resume=True)
+
+
+@pytest.mark.asyncio
+async def test_precreated_pending_run_is_first_execution_not_resume(tmp_path: Path) -> None:
+    store = SQLiteRunStore(tmp_path / "runtime.db")
+    agent = _FakeQGen()
+    harness = DurableQGenHarness(agent, store)  # type: ignore[arg-type]
+    request = _input()
+    store.create_run(
+        "qgen",
+        request.request.model_dump(mode="json"),
+        run_id="api-precreated",
+    )
+
+    _, output = await harness.run(request, run_id="api-precreated", resume=True)
+
+    assert output.reason.startswith("workflow completed")
+    event_types = [event.event_type for event in store.list_events("api-precreated")]
+    assert "run.resume_prepared" not in event_types
+    assert event_types[:2] == ["run.created", "run.started"]
