@@ -217,6 +217,46 @@ def test_quality_gate_rejects_item_kind_mismatch(backend: SQLiteStorageBackend) 
         )
 
 
+def test_quality_gate_blocks_pending_concepts_and_unresolved_review_work(
+    backend: SQLiteStorageBackend,
+) -> None:
+    _seed(backend)
+    backend.save_evaluation_batch(
+        evaluate_item_rows(backend.evaluation_rows("book.md", "math"))
+    )
+    policy = QualityGateFilter(item_kind="question")
+    assert backend.search_questions({"quality_gate": policy}) == ["q-good"]
+
+    backend._conn.execute(
+        "INSERT INTO concepts "
+        "(id, discipline, branch, canonical_en, status, depth) "
+        "VALUES ('math.pending', 'math', 'analysis', 'pending', 'pending', 1)"
+    )
+    backend._conn.execute(
+        "INSERT INTO item_concepts (item_id, item_kind, concept_id, role, weight) "
+        "VALUES ('q-good', 'question', 'math.pending', 'uses', 1.0)"
+    )
+    backend._conn.commit()
+    assert backend.search_questions({"quality_gate": policy}) == []
+
+    backend._conn.execute(
+        "UPDATE concepts SET status = 'active' WHERE id = 'math.pending'"
+    )
+    backend._conn.execute(
+        "INSERT INTO review_queue "
+        "(item_id, item_kind, rubric_version, reason, status) "
+        "VALUES ('q-good', 'question', 'v1', 'manual_review', 'open')"
+    )
+    backend._conn.commit()
+    assert backend.search_questions({"quality_gate": policy}) == []
+
+    backend._conn.execute(
+        "UPDATE review_queue SET status = 'resolved' WHERE item_id = 'q-good'"
+    )
+    backend._conn.commit()
+    assert backend.search_questions({"quality_gate": policy}) == ["q-good"]
+
+
 def test_literal_text_query_filters_before_limit_and_escapes_wildcards(
     backend: SQLiteStorageBackend,
 ) -> None:

@@ -104,10 +104,12 @@ def _escape_like(value: str) -> str:
 
 
 def _quality_gate_clause(policy: QualityGateFilter) -> tuple[str, list[object]]:
+    outer_table = "knowledge_points" if policy.item_kind == "knowledge" else "questions"
     identity = [policy.item_kind, policy.rubric_version, policy.source]
     eligible = (
         "EXISTS (SELECT 1 FROM item_evaluations AS ie "
-        "WHERE ie.item_id = id AND ie.item_kind = ? AND ie.rubric_version = ? "
+        f"WHERE ie.item_id = {outer_table}.id "
+        "AND ie.item_kind = ? AND ie.rubric_version = ? "
         "AND ie.source = ? AND ie.extraction_quality >= ? "
         "AND ie.solution_completeness >= ?)"
     )
@@ -117,16 +119,32 @@ def _quality_gate_clause(policy: QualityGateFilter) -> tuple[str, list[object]]:
         policy.solution_min,
     ]
     accepted = "ingestion_status = 'accepted'"
+    active_concepts = (
+        "NOT EXISTS (SELECT 1 FROM item_concepts AS ic "
+        f"WHERE ic.item_id = {outer_table}.id AND ic.item_kind = ? "
+        "AND ic.concept_id IN (SELECT id FROM concepts WHERE status != 'active'))"
+    )
+    review_resolved = (
+        "NOT EXISTS (SELECT 1 FROM review_queue AS rq "
+        f"WHERE rq.item_id = {outer_table}.id AND rq.item_kind = ? "
+        "AND rq.rubric_version = ? AND rq.status IN ('open','in_progress'))"
+    )
+    governed = f"{accepted} AND {active_concepts} AND {review_resolved}"
+    governance_params: list[object] = [
+        policy.item_kind,
+        policy.item_kind,
+        policy.rubric_version,
+    ]
     if not policy.allow_legacy_when_unscored:
-        return f"({accepted} AND {eligible})", eligible_params
+        return f"({governed} AND {eligible})", [*governance_params, *eligible_params]
     no_evaluations = (
         "NOT EXISTS (SELECT 1 FROM item_evaluations AS population "
         "WHERE population.item_kind = ? AND population.rubric_version = ? "
         "AND population.source = ?)"
     )
     return (
-        f"({accepted} AND ({no_evaluations} OR {eligible}))",
-        [*identity, *eligible_params],
+        f"({governed} AND ({no_evaluations} OR {eligible}))",
+        [*governance_params, *identity, *eligible_params],
     )
 
 
