@@ -112,15 +112,11 @@ def test_every_read_and_child_write_is_tenant_scoped(tmp_path: Path) -> None:
     assert store.list_artifacts("conversation-a", "tenant-b") == []
 
     with pytest.raises(LookupError, match="conversation not found"):
-        store.add_message(
-            "conversation-a", "tenant-b", role="user", content="cross-tenant write"
-        )
+        store.add_message("conversation-a", "tenant-b", role="user", content="cross-tenant write")
     with pytest.raises(LookupError, match="conversation not found"):
         store.link_run("conversation-a", "tenant-b", "run-b")
     with pytest.raises(LookupError, match="conversation not found"):
-        store.add_artifact(
-            "conversation-a", "tenant-b", kind="leak", payload={"x": 1}
-        )
+        store.add_artifact("conversation-a", "tenant-b", kind="leak", payload={"x": 1})
 
 
 def test_invalid_roles_limits_and_duplicate_ids_fail_atomically(tmp_path: Path) -> None:
@@ -174,9 +170,7 @@ def test_schema_version_mismatch_is_rejected(tmp_path: Path) -> None:
     db_path = tmp_path / "conversations.db"
     ConversationStore(db_path)
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE conversation_meta SET value = '999' WHERE key = 'schema_version'"
-        )
+        conn.execute("UPDATE conversation_meta SET value = '999' WHERE key = 'schema_version'")
 
     with pytest.raises(RuntimeError, match="unsupported conversation schema version"):
         ConversationStore(db_path)
@@ -280,9 +274,7 @@ def test_assistant_result_is_atomic_and_idempotent(tmp_path: Path) -> None:
         artifact_kind="generated_question",
         artifact_payload={"passed": True, "score": 9},
     )
-    updated_after_first_delivery = store.get_conversation(
-        "conversation", "local"
-    ).updated_at
+    updated_after_first_delivery = store.get_conversation("conversation", "local").updated_at
     second_message, second_artifact = store.record_assistant_result(
         "conversation",
         "local",
@@ -299,8 +291,7 @@ def test_assistant_result_is_atomic_and_idempotent(tmp_path: Path) -> None:
     assert messages[-1] == first_message
     assert store.list_artifacts("conversation", "local") == [first_artifact]
     assert (
-        store.get_conversation("conversation", "local").updated_at
-        == updated_after_first_delivery
+        store.get_conversation("conversation", "local").updated_at == updated_after_first_delivery
     )
 
 

@@ -140,9 +140,7 @@ async def test_earlier_span_patch_is_sorted_before_final_id_allocation() -> None
     )
     later = _item("3.2", 103, 104)
     payload = _Payload([later])
-    window = _annotated(
-        ["习题 3.1 求极限。", "", "定理 3.2 内容说明。", "证明：显然。"], 101
-    )
+    window = _annotated(["习题 3.1 求极限。", "", "定理 3.2 内容说明。", "证明：显然。"], 101)
 
     patched = await stage._apply_local_patches(window, 101, 4, payload)
     payload.items = list(payload.items) + patched

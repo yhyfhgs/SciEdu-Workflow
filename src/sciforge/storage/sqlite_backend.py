@@ -537,10 +537,7 @@ class SQLiteStorageBackend:
                         "WHERE reason = 'non_accepted_ingestion_status' "
                         "AND item_id IN (SELECT id FROM questions WHERE tenant_id = ? "
                         "AND content_hash = ? AND ingestion_status = 'accepted')",
-                        [
-                            (q.tenant_id, _content_hash(q.content))
-                            for q in accepted_questions
-                        ],
+                        [(q.tenant_id, _content_hash(q.content)) for q in accepted_questions],
                     )
         logger.info("storage_batch_saved", kps=len(kps), questions=len(questions))
         return len(kps) + len(questions)

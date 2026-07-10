@@ -107,9 +107,7 @@ class MultiTenantSQLiteBackend(SQLiteStorageBackend):
 
     # ── 语义向量检索 ────────────────────────────────────────
 
-    def save_embedding(
-        self, item_id: str, vector: list[float], *, kind: str = "question"
-    ) -> None:
+    def save_embedding(self, item_id: str, vector: list[float], *, kind: str = "question") -> None:
         if kind not in _KIND_TABLE:
             raise ValueError(f"未知 kind: {kind}（应为 question / knowledge_point）")
         # 记录该 item 的 tenant_id，使语义检索也做行级隔离。
@@ -145,8 +143,7 @@ class MultiTenantSQLiteBackend(SQLiteStorageBackend):
             raise ValueError(f"未知 kind: {kind}")
         tclause, tparams = self._tenant_clause(tenant_id, include_public)
         rows = self._conn.execute(
-            "SELECT item_id, vector_json FROM item_embeddings "
-            f"WHERE kind = ? AND {tclause}",  # noqa: S608
+            f"SELECT item_id, vector_json FROM item_embeddings WHERE kind = ? AND {tclause}",  # noqa: S608
             [kind, *tparams],
         ).fetchall()
         scored: list[tuple[str, float]] = []

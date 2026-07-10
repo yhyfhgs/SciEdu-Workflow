@@ -160,9 +160,7 @@ class ContextRetriever:
         }
         self._apply_quality_gate(pin_filters, "knowledge")
         eligible_pinned_ids = set(self.storage.search_knowledge(pin_filters))
-        pinned_by_id = {
-            kp.id: kp for kp in self.storage.load_knowledge_by_ids(pinned_ids)
-        }
+        pinned_by_id = {kp.id: kp for kp in self.storage.load_knowledge_by_ids(pinned_ids)}
         pinned = [
             pinned_by_id[kp_id]
             for kp_id in pinned_ids

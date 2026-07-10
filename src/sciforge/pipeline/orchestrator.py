@@ -150,9 +150,7 @@ class NoopStorageBackend:
         del content, item_type
         return []
 
-    def count_existing_content(
-        self, contents: list[str], scope: str, tenant_id: str = ""
-    ) -> int:
+    def count_existing_content(self, contents: list[str], scope: str, tenant_id: str = "") -> int:
         del contents, scope, tenant_id
         return 0
 

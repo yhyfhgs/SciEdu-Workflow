@@ -100,9 +100,7 @@ _CONVERSATION_CONTEXT_MESSAGES = 8
 _CONVERSATION_CONTEXT_CHARS = 6000
 _CONVERSATION_CONTEXT_PER_MESSAGE_CHARS = 1200
 
-_GENERATION_MODES = frozenset(
-    {"new", "evolve", "variant", "adjust_difficulty", "deepen"}
-)
+_GENERATION_MODES = frozenset({"new", "evolve", "variant", "adjust_difficulty", "deepen"})
 _SOURCE_GENERATION_MODES = frozenset({"variant", "adjust_difficulty", "deepen"})
 
 
@@ -123,9 +121,7 @@ def _build_verification_plan(
     """Return the immutable evidence plan shared by request, run and recovery paths."""
     if policy not in {"fast", "balanced", "strict", "formal"}:
         raise ValueError(f"未知验证策略: {policy}")
-    proof_applicable = (
-        discipline is Discipline.MATH and question_type in _PROOF_QUESTION_TYPES
-    )
+    proof_applicable = discipline is Discipline.MATH and question_type in _PROOF_QUESTION_TYPES
     numeric_applicable = question_type in _NUMERIC_QUESTION_TYPES
     if policy == "formal" and not proof_applicable:
         raise ValueError("formal 验证只适用于数学证明类题目，并要求 Lean 证据")
@@ -156,14 +152,12 @@ def _validate_question_contract(
     if question_type not in spec.allowed_question_types:
         allowed = ", ".join(spec.allowed_question_types)
         raise ValueError(
-            f"学科 {discipline.value} 不支持 question_type={question_type!r}; "
-            f"允许值: {allowed}"
+            f"学科 {discipline.value} 不支持 question_type={question_type!r}; 允许值: {allowed}"
         )
     if question_form and question_form not in spec.allowed_question_forms:
         allowed = ", ".join(spec.allowed_question_forms)
         raise ValueError(
-            f"学科 {discipline.value} 不支持 question_form={question_form!r}; "
-            f"允许值: {allowed}"
+            f"学科 {discipline.value} 不支持 question_form={question_form!r}; 允许值: {allowed}"
         )
 
 
@@ -183,6 +177,7 @@ def _api_verification_plan(
         return _build_verification_plan(policy, discipline, question_type)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
 
 _ACTION_TEMPLATES = (
     ActionTemplateOut(
@@ -382,9 +377,7 @@ class _RunRecoveryCoordinator:
                     qgen_result,
                     storage=None,
                     storage_factory=self.storage_factory,
-                    storage_tenant_id=str(
-                        record.metadata.get("storage_tenant_id", "") or ""
-                    ),
+                    storage_tenant_id=str(record.metadata.get("storage_tenant_id", "") or ""),
                 )
                 if persisted_id and not _run_event_exists(
                     self.runs,
@@ -404,9 +397,7 @@ class _RunRecoveryCoordinator:
                 record.run_id,
                 artifact_kind=artifact_kind,
             )
-            final_event_exists = _run_event_exists(
-                self.runs, record.run_id, "assistant.final"
-            )
+            final_event_exists = _run_event_exists(self.runs, record.run_id, "assistant.final")
             if product_exists and final_event_exists:
                 return
             _record_success(
@@ -1121,9 +1112,7 @@ def _increment_run_budget(
         max_steps=add_int("max_steps", current.max_steps),
         max_llm_calls=add_int("max_llm_calls", current.max_llm_calls),
         max_tokens=add_int("max_tokens", current.max_tokens),
-        max_wall_time_seconds=add_float(
-            "max_wall_time_seconds", current.max_wall_time_seconds
-        ),
+        max_wall_time_seconds=add_float("max_wall_time_seconds", current.max_wall_time_seconds),
     )
 
 
@@ -1198,9 +1187,7 @@ def _rebuild_background_task(
 
     if record.run_kind == "qgen":
         generation_request = GenerationRequest.model_validate(record.input_payload)
-        _validate_embedded_question_tenant(
-            generation_request.source_question, storage_tenant_id
-        )
+        _validate_embedded_question_tenant(generation_request.source_question, storage_tenant_id)
         _validate_question_contract(
             generation_request.discipline,
             generation_request.question_type,
@@ -1358,10 +1345,13 @@ def _validate_embedded_question_tenant(
 
 
 def _next_step_attempt(runs: SQLiteRunStore, run_id: str, name: str) -> int:
-    return max(
-        (step.attempt for step in runs.list_steps(run_id) if step.name == name),
-        default=0,
-    ) + 1
+    return (
+        max(
+            (step.attempt for step in runs.list_steps(run_id) if step.name == name),
+            default=0,
+        )
+        + 1
+    )
 
 
 def _user_message_content(req: ConversationMessageRequest) -> str:
@@ -1565,11 +1555,14 @@ async def _run_qgen(
         persisted_id: str | None = None
         with scope_agent_storage(agent, storage_tenant_id, storage_factory):
             if isinstance(agent, QGenAgent):
-                with _temporary_qgen_flags(agent, mode_flags), _temporary_verification_policy(
-                    agent,
-                    policy=verification_policy,
-                    discipline=generation_request.discipline,
-                    question_type=generation_request.question_type,
+                with (
+                    _temporary_qgen_flags(agent, mode_flags),
+                    _temporary_verification_policy(
+                        agent,
+                        policy=verification_policy,
+                        discipline=generation_request.discipline,
+                        question_type=generation_request.question_type,
+                    ),
                 ):
                     _identifier, result = await DurableQGenHarness(agent, runs).run(
                         QGenInput(request=generation_request),
@@ -1617,9 +1610,7 @@ async def _run_qgen(
             artifact_kind="generated_question",
             artifact_payload=output,
         )
-        _record_usage_safely(
-            saas_store, runs, run_id, tenant_id, "/v1/conversations/messages"
-        )
+        _record_usage_safely(saas_store, runs, run_id, tenant_id, "/v1/conversations/messages")
     except Exception as exc:  # noqa: BLE001
         _record_failure(conversations, runs, conversation_id, tenant_id, run_id, exc)
 
@@ -1643,9 +1634,7 @@ def _persist_generated_question(
     generated = getattr(result, "generated", None)
     if generated is None or not bool(generated.verification.passed):
         return None
-    solution_text = (
-        generated.solution.solution_latex or generated.solution.solution_plain
-    ).strip()
+    solution_text = (generated.solution.solution_latex or generated.solution.solution_plain).strip()
     updates: dict[str, object] = {"solution_content": solution_text or None}
     if storage_tenant_id:
         updates["tenant_id"] = storage_tenant_id
@@ -1739,9 +1728,7 @@ async def _run_solve(
             artifact_kind="solution",
             artifact_payload=artifact_payload,
         )
-        _record_usage_safely(
-            saas_store, runs, run_id, tenant_id, "/v1/conversations/solve"
-        )
+        _record_usage_safely(saas_store, runs, run_id, tenant_id, "/v1/conversations/solve")
     except Exception as exc:  # noqa: BLE001
         _record_failure(conversations, runs, conversation_id, tenant_id, run_id, exc)
 
@@ -1765,13 +1752,16 @@ async def _run_evaluate(
 ) -> None:
     try:
         runs.begin_run(run_id)
-        with scope_agent_storage(agent, storage_tenant_id, storage_factory), (
-            _temporary_verification_policy(
-                agent,
-                policy=verification_policy,
-                discipline=question.discipline,
-                question_type=question.question_type,
-            )
+        with (
+            scope_agent_storage(agent, storage_tenant_id, storage_factory),
+            (
+                _temporary_verification_policy(
+                    agent,
+                    policy=verification_policy,
+                    discipline=question.discipline,
+                    question_type=question.question_type,
+                )
+            ),
         ):
             context_request = GenerationRequest(
                 discipline=question.discipline,
@@ -1878,9 +1868,7 @@ async def _run_evaluate(
             artifact_kind="evaluation",
             artifact_payload=output,
         )
-        _record_usage_safely(
-            saas_store, runs, run_id, tenant_id, "/v1/conversations/evaluate"
-        )
+        _record_usage_safely(saas_store, runs, run_id, tenant_id, "/v1/conversations/evaluate")
     except Exception as exc:  # noqa: BLE001
         _record_failure(conversations, runs, conversation_id, tenant_id, run_id, exc)
 
@@ -1964,11 +1952,7 @@ def _record_failure(
     cancelled = final is not None and final.status is RunStatus.CANCELLED
     paused = final is not None and final.status is RunStatus.PAUSED
     prefix = (
-        "任务已暂停，可调整预算后恢复"
-        if paused
-        else "任务已取消"
-        if cancelled
-        else "任务执行失败"
+        "任务已暂停，可调整预算后恢复" if paused else "任务已取消" if cancelled else "任务执行失败"
     )
     try:
         message = conversations.add_message(

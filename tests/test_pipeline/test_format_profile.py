@@ -61,9 +61,7 @@ def test_detect_genre_extended_keeps_other_genres() -> None:
 
 
 def test_problem_set_needs_scarce_solutions() -> None:
-    with_solutions = "\n".join(
-        f"{i}. 证明命题。\n解：显然成立。" for i in range(1, 31)
-    )
+    with_solutions = "\n".join(f"{i}. 证明命题。\n解：显然成立。" for i in range(1, 31))
     assert detect_genre(with_solutions, extended=True) != "problem_set"
 
 

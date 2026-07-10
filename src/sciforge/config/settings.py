@@ -387,8 +387,7 @@ class AppConfig(BaseSettings):
         self._load_from_env()
         if self.require_numerical_verification and not self.enable_numerical_verification:
             raise ValueError(
-                "require_numerical_verification=true requires "
-                "enable_numerical_verification=true"
+                "require_numerical_verification=true requires enable_numerical_verification=true"
             )
         if self.require_lean_verification and not self.enable_lean_verification:
             raise ValueError(

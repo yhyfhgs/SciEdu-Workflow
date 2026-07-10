@@ -20,9 +20,7 @@ from sciforge.core.models import (
 
 
 def _kp(content: str, tags: list[str]) -> KnowledgePoint:
-    return KnowledgePoint(
-        discipline=Discipline.MATH, kp_type="theorem", content=content, tags=tags
-    )
+    return KnowledgePoint(discipline=Discipline.MATH, kp_type="theorem", content=content, tags=tags)
 
 
 def test_hybrid_sort_tag_overlap_priority() -> None:
@@ -78,14 +76,9 @@ class _MockStorage:
             return [
                 item_id
                 for item_id in filters["include_ids"]
-                if item_id in self._kps
-                and self._kps[item_id].ingestion_status == "accepted"
+                if item_id in self._kps and self._kps[item_id].ingestion_status == "accepted"
             ]
-        return [
-            item_id
-            for item_id, kp in self._kps.items()
-            if kp.ingestion_status == "accepted"
-        ]
+        return [item_id for item_id, kp in self._kps.items() if kp.ingestion_status == "accepted"]
 
     def load_knowledge_by_ids(self, ids: list[str]) -> list[KnowledgePoint]:
         return [self._kps[i] for i in ids if i in self._kps]

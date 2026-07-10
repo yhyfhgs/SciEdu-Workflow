@@ -105,9 +105,7 @@ async def test_high_risk_window_only_adds_evaluator(
     )
     monkeypatch.setattr(stage, "_extract_batch", extract)
     monkeypatch.setattr("sciforge.pipeline.extract_evaluator.run_evaluator", evaluator)
-    window = _annotated(
-        ["定理 3.1 内容。", "证明：显然。", "习题 3.1 求极限。", "定理 3.2 内容。"]
-    )
+    window = _annotated(["定理 3.1 内容。", "证明：显然。", "习题 3.1 求极限。", "定理 3.2 内容。"])
 
     result = await stage._extract_window(window, 101, 104)
 
@@ -125,9 +123,7 @@ async def test_unsupported_provider_never_calls_evaluator(
     evaluator = AsyncMock(return_value=EvaluatorVerdict(ran=True))
     monkeypatch.setattr(stage, "_extract_batch", extract)
     monkeypatch.setattr("sciforge.pipeline.extract_evaluator.run_evaluator", evaluator)
-    window = _annotated(
-        ["定理 3.1 内容。", "证明：显然。", "习题 3.1 求极限。", "定理 3.2 内容。"]
-    )
+    window = _annotated(["定理 3.1 内容。", "证明：显然。", "习题 3.1 求极限。", "定理 3.2 内容。"])
 
     await stage._extract_window(window, 101, 104)
 
@@ -168,9 +164,7 @@ async def test_evaluator_failure_keeps_first_result_without_reextract(
     evaluator = AsyncMock(side_effect=RuntimeError("validator unavailable"))
     monkeypatch.setattr(stage, "_extract_batch", extract)
     monkeypatch.setattr("sciforge.pipeline.extract_evaluator.run_evaluator", evaluator)
-    window = _annotated(
-        ["定理 3.1 内容。", "证明：显然。", "习题 3.1 求极限。", "定理 3.2 内容。"]
-    )
+    window = _annotated(["定理 3.1 内容。", "证明：显然。", "习题 3.1 求极限。", "定理 3.2 内容。"])
 
     result = await stage._extract_window(window, 101, 104)
 

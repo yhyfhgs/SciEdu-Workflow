@@ -112,9 +112,7 @@ def test_quality_gate_is_applied_before_search_limit(backend: SQLiteStorageBacke
     batch = evaluate_item_rows(backend.evaluation_rows("bulk.md", "math"))
     backend.save_evaluation_batch(batch)
 
-    ids = backend.search_questions(
-        {"quality_gate": QualityGateFilter(item_kind="question")}
-    )
+    ids = backend.search_questions({"quality_gate": QualityGateFilter(item_kind="question")})
 
     assert ids == ["good-after-limit"]
 
@@ -156,9 +154,7 @@ def test_quality_gate_legacy_fallback_only_when_corpus_has_no_evaluations(
         ],
     )
     backend.save_evaluation_batch(
-        evaluate_item_rows(
-            backend.evaluation_rows("evaluated.md", "math"), rubric_version="v1"
-        )
+        evaluate_item_rows(backend.evaluation_rows("evaluated.md", "math"), rubric_version="v1")
     )
     # 一旦该 kind/rubric/source 存在评价，兼容回退整体结束；逐条无证据不再
     # 等同于质量通过，且已评价但不达标的题也被排除。
@@ -201,29 +197,21 @@ def test_nonaccepted_ingestion_is_reviewed_and_never_quality_eligible(
     )
     backend._conn.commit()
     assert backend.quality_eligible_item_ids(item_kind="question") == []
-    assert backend.search_questions(
-        {"quality_gate": QualityGateFilter(item_kind="question")}
-    ) == []
+    assert backend.search_questions({"quality_gate": QualityGateFilter(item_kind="question")}) == []
 
 
 def test_quality_gate_rejects_item_kind_mismatch(backend: SQLiteStorageBackend) -> None:
     with pytest.raises(ValueError, match="does not match search table"):
-        backend.search_questions(
-            {"quality_gate": QualityGateFilter(item_kind="knowledge")}
-        )
+        backend.search_questions({"quality_gate": QualityGateFilter(item_kind="knowledge")})
     with pytest.raises(ValueError, match="does not match search table"):
-        backend.search_knowledge(
-            {"quality_gate": QualityGateFilter(item_kind="question")}
-        )
+        backend.search_knowledge({"quality_gate": QualityGateFilter(item_kind="question")})
 
 
 def test_quality_gate_blocks_pending_concepts_and_unresolved_review_work(
     backend: SQLiteStorageBackend,
 ) -> None:
     _seed(backend)
-    backend.save_evaluation_batch(
-        evaluate_item_rows(backend.evaluation_rows("book.md", "math"))
-    )
+    backend.save_evaluation_batch(evaluate_item_rows(backend.evaluation_rows("book.md", "math")))
     policy = QualityGateFilter(item_kind="question")
     assert backend.search_questions({"quality_gate": policy}) == ["q-good"]
 
@@ -239,9 +227,7 @@ def test_quality_gate_blocks_pending_concepts_and_unresolved_review_work(
     backend._conn.commit()
     assert backend.search_questions({"quality_gate": policy}) == []
 
-    backend._conn.execute(
-        "UPDATE concepts SET status = 'active' WHERE id = 'math.pending'"
-    )
+    backend._conn.execute("UPDATE concepts SET status = 'active' WHERE id = 'math.pending'")
     backend._conn.execute(
         "INSERT INTO review_queue "
         "(item_id, item_kind, rubric_version, reason, status) "
@@ -250,9 +236,7 @@ def test_quality_gate_blocks_pending_concepts_and_unresolved_review_work(
     backend._conn.commit()
     assert backend.search_questions({"quality_gate": policy}) == []
 
-    backend._conn.execute(
-        "UPDATE review_queue SET status = 'resolved' WHERE item_id = 'q-good'"
-    )
+    backend._conn.execute("UPDATE review_queue SET status = 'resolved' WHERE item_id = 'q-good'")
     backend._conn.commit()
     assert backend.search_questions({"quality_gate": policy}) == ["q-good"]
 

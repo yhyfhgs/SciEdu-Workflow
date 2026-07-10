@@ -257,9 +257,7 @@ def test_message_persists_pinned_knowledge_ids_for_recovery_and_audit(
                 "knowledge_ids": ["  kp-compactness  "],
             },
         )
-        messages = client.get(f"/v1/conversations/{conversation_id}/messages").json()[
-            "items"
-        ]
+        messages = client.get(f"/v1/conversations/{conversation_id}/messages").json()["items"]
 
     assert accepted.status_code == 202
     run = runs.require_run(accepted.json()["run_id"])
@@ -358,9 +356,7 @@ def test_output_type_controls_assistant_rendering(
                 "template_id": "new",
             },
         )
-        messages = client.get(f"/v1/conversations/{conversation_id}/messages").json()[
-            "items"
-        ]
+        messages = client.get(f"/v1/conversations/{conversation_id}/messages").json()["items"]
 
     assert response.status_code == 202
     assert expected in messages[-1]["content"]
@@ -432,9 +428,12 @@ def test_message_rejects_inapplicable_formal_and_noncanonical_question_type(
 
 
 def test_conversation_and_run_identifiers_do_not_cross_tenants(tmp_path: Path) -> None:
-    with SaasStore(tmp_path / "saas.db") as saas, _stores(tmp_path) as (
-        conversations,
-        runs,
+    with (
+        SaasStore(tmp_path / "saas.db") as saas,
+        _stores(tmp_path) as (
+            conversations,
+            runs,
+        ),
     ):
         tenant_a = saas.create_tenant("A")
         tenant_b = saas.create_tenant("B")
@@ -463,25 +462,29 @@ def test_conversation_and_run_identifiers_do_not_cross_tenants(tmp_path: Path) -
         )
         conversations.link_run(conversation_id, tenant_a, run.run_id)
 
-        assert client.get(
-            f"/v1/conversations/{conversation_id}", headers={"X-API-Key": key_b}
-        ).status_code == 404
-        assert client.get(
-            f"/v1/conversations/{conversation_id}/messages",
-            headers={"X-API-Key": key_b},
-        ).status_code == 404
-        assert client.get(
-            f"/v1/runs/{run.run_id}", headers={"X-API-Key": key_b}
-        ).status_code == 404
-        assert client.get(
-            f"/v1/runs/{run.run_id}/events", headers={"X-API-Key": key_b}
-        ).status_code == 404
-        assert client.post(
-            f"/v1/runs/{run.run_id}/cancel", headers={"X-API-Key": key_b}
-        ).status_code == 404
-        assert client.get(
-            "/v1/conversations", headers={"X-API-Key": key_b}
-        ).json()["items"] == []
+        assert (
+            client.get(
+                f"/v1/conversations/{conversation_id}", headers={"X-API-Key": key_b}
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(
+                f"/v1/conversations/{conversation_id}/messages",
+                headers={"X-API-Key": key_b},
+            ).status_code
+            == 404
+        )
+        assert client.get(f"/v1/runs/{run.run_id}", headers={"X-API-Key": key_b}).status_code == 404
+        assert (
+            client.get(f"/v1/runs/{run.run_id}/events", headers={"X-API-Key": key_b}).status_code
+            == 404
+        )
+        assert (
+            client.post(f"/v1/runs/{run.run_id}/cancel", headers={"X-API-Key": key_b}).status_code
+            == 404
+        )
+        assert client.get("/v1/conversations", headers={"X-API-Key": key_b}).json()["items"] == []
 
 
 def test_qgen_facade_background_success_persists_message_artifact_and_events(
@@ -568,9 +571,7 @@ def test_qgen_facade_background_failure_is_terminal_and_user_visible(tmp_path: P
         run_id = accepted.json()["run_id"]
 
         run = client.get(f"/v1/runs/{run_id}")
-        messages = client.get(f"/v1/conversations/{conversation_id}/messages").json()[
-            "items"
-        ]
+        messages = client.get(f"/v1/conversations/{conversation_id}/messages").json()["items"]
 
     assert run.json()["status"] == "failed"
     assert "facade generation exploded" in run.json()["error"]
@@ -714,9 +715,7 @@ def test_solve_rejects_explicit_verification_policy_that_it_cannot_honor(
 def test_sse_replays_only_events_after_last_event_id(tmp_path: Path) -> None:
     with _stores(tmp_path) as (conversations, runs):
         client = _local_app(conversations, runs)
-        _conversation_id, run_id = _seed_owned_run(
-            conversations, runs, status=RunStatus.RUNNING
-        )
+        _conversation_id, run_id = _seed_owned_run(conversations, runs, status=RunStatus.RUNNING)
         marker = runs.append_event(run_id, "verification.numeric", {"passed": True})
         runs.complete_run(run_id, {"ok": True})
 
@@ -725,9 +724,7 @@ def test_sse_replays_only_events_after_last_event_id(tmp_path: Path) -> None:
             f"/v1/runs/{run_id}/events",
             headers={"Last-Event-ID": str(marker.sequence)},
         )
-        invalid = client.get(
-            f"/v1/runs/{run_id}/events", headers={"Last-Event-ID": "not-an-int"}
-        )
+        invalid = client.get(f"/v1/runs/{run_id}/events", headers={"Last-Event-ID": "not-an-int"})
 
     assert full.status_code == 200
     assert "event: verification.numeric" in full.text
@@ -740,9 +737,7 @@ def test_sse_replays_only_events_after_last_event_id(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_sse_terminal_grace_captures_delayed_assistant_event(tmp_path: Path) -> None:
     with _stores(tmp_path) as (conversations, runs):
-        _conversation_id, run_id = _seed_owned_run(
-            conversations, runs, status=RunStatus.RUNNING
-        )
+        _conversation_id, run_id = _seed_owned_run(conversations, runs, status=RunStatus.RUNNING)
         runs.complete_run(run_id, {"ok": True})
 
         async def append_final() -> None:
@@ -750,10 +745,7 @@ async def test_sse_terminal_grace_captures_delayed_assistant_event(tmp_path: Pat
             runs.append_event(run_id, "assistant.final", {"message_id": "late"})
 
         append_task = asyncio.create_task(append_final())
-        chunks = [
-            chunk
-            async for chunk in _stream_events(runs, run_id, after_sequence=0)
-        ]
+        chunks = [chunk async for chunk in _stream_events(runs, run_id, after_sequence=0)]
         await append_task
 
     stream = "".join(chunks)
@@ -815,9 +807,7 @@ class _AuditableVerifier:
 
 
 class _MinimalRetriever:
-    def build_context(
-        self, _request: object, _discipline: Discipline
-    ) -> Any:
+    def build_context(self, _request: object, _discipline: Discipline) -> Any:
         from sciforge.core.models import ContextBundle
 
         return ContextBundle()
@@ -1112,12 +1102,16 @@ def test_knowledge_search_applies_publication_quality_gate_before_browsing(
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["items"]] == ["kp-good"]
-    assert response.json()["items"][0] | {
-        "source_file": "quality.md",
-        "source_page": 12,
-        "start_line": 1,
-        "end_line": 8,
-    } == response.json()["items"][0]
+    assert (
+        response.json()["items"][0]
+        | {
+            "source_file": "quality.md",
+            "source_page": 12,
+            "start_line": 1,
+            "end_line": 8,
+        }
+        == response.json()["items"][0]
+    )
     assert [item["id"] for item in filtered.json()["items"]] == ["kp-good"]
 
 

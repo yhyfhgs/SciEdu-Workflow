@@ -81,8 +81,7 @@ BIOLOGY_SPEC = DisciplineSpec(
         "discipline_example_tag_root": "biology:生物",
         "discipline_taxonomy_root": "biology",
         "discipline_tag_example": (
-            '["biology:生物", "molecular_biology:分子生物学", '
-            '"gene_expression:基因表达"]'
+            '["biology:生物", "molecular_biology:分子生物学", "gene_expression:基因表达"]'
         ),
         "discipline_example_theorem_content": (
             "中心法则描述遗传信息从 DNA 经 RNA 流向蛋白质的基本路径。"

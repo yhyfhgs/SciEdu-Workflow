@@ -79,8 +79,7 @@ CHEMISTRY_SPEC = DisciplineSpec(
         "discipline_example_tag_root": "chemistry:化学",
         "discipline_taxonomy_root": "chemistry",
         "discipline_tag_example": (
-            '["chemistry:化学", "physical_chemistry:物理化学", '
-            '"thermodynamics:热力学"]'
+            '["chemistry:化学", "physical_chemistry:物理化学", "thermodynamics:热力学"]'
         ),
         "discipline_example_theorem_content": (
             "在恒温恒压条件下，自发过程的吉布斯自由能变化小于零。"

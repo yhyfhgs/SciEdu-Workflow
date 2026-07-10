@@ -492,8 +492,7 @@ def create_app(
         if not req.topics:
             raise HTTPException(status_code=422, detail="topics 不能为空")
         question_type = (
-            req.question_type
-            or DISCIPLINE_REGISTRY.get(discipline).allowed_question_types[0]
+            req.question_type or DISCIPLINE_REGISTRY.get(discipline).allowed_question_types[0]
         )
         _validate_generation_shape(discipline, question_type, req.question_form)
 
@@ -669,8 +668,7 @@ def create_app(
         if not req.topics:
             raise HTTPException(status_code=422, detail="topics 不能为空")
         question_type = (
-            req.question_type
-            or DISCIPLINE_REGISTRY.get(discipline).allowed_question_types[0]
+            req.question_type or DISCIPLINE_REGISTRY.get(discipline).allowed_question_types[0]
         )
         _validate_generation_shape(discipline, question_type, req.question_form)
         task_id = saas_store.create_task_if_quota_available(principal.tenant_id, req.count)

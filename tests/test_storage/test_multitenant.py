@@ -57,12 +57,12 @@ def test_same_content_is_deduplicated_per_tenant(backend: MultiTenantSQLiteBacke
 
     assert backend.load_question(a.id).tenant_id == "tenant-A"
     assert backend.load_question(b.id).tenant_id == "tenant-B"
-    assert backend.search_questions_for_tenant(
-        {}, tenant_id="tenant-A", include_public=False
-    ) == [a.id]
-    assert backend.search_questions_for_tenant(
-        {}, tenant_id="tenant-B", include_public=False
-    ) == [b.id]
+    assert backend.search_questions_for_tenant({}, tenant_id="tenant-A", include_public=False) == [
+        a.id
+    ]
+    assert backend.search_questions_for_tenant({}, tenant_id="tenant-B", include_public=False) == [
+        b.id
+    ]
     assert backend.count_existing_content([a.content], "question", "tenant-A") == 1
     assert backend.count_existing_content([a.content], "question", "tenant-B") == 1
     assert backend.count_existing_content([a.content], "question") == 0
@@ -112,17 +112,27 @@ def test_tenant_filter_combines_with_other_filters(backend: MultiTenantSQLiteBac
     backend.save_batch(
         [],
         [
-            Question(content="A证明题", discipline=Discipline.MATH, question_type="proof",
-                     tenant_id="tenant-A"),
-            Question(content="A计算题", discipline=Discipline.MATH, question_type="computational",
-                     tenant_id="tenant-A"),
-            Question(content="B证明题", discipline=Discipline.MATH, question_type="proof",
-                     tenant_id="tenant-B"),
+            Question(
+                content="A证明题",
+                discipline=Discipline.MATH,
+                question_type="proof",
+                tenant_id="tenant-A",
+            ),
+            Question(
+                content="A计算题",
+                discipline=Discipline.MATH,
+                question_type="computational",
+                tenant_id="tenant-A",
+            ),
+            Question(
+                content="B证明题",
+                discipline=Discipline.MATH,
+                question_type="proof",
+                tenant_id="tenant-B",
+            ),
         ],
     )
-    ids = backend.search_questions_for_tenant(
-        {"question_type": "proof"}, tenant_id="tenant-A"
-    )
+    ids = backend.search_questions_for_tenant({"question_type": "proof"}, tenant_id="tenant-A")
     contents = [backend.load_question(i).content for i in ids]
     assert contents == ["A证明题"]  # 只 A 的 proof，不含 B 的 proof
 

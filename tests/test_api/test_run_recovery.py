@@ -183,9 +183,7 @@ def test_startup_reconciles_succeeded_product_once_and_ignores_unrelated_runs(
         pass
 
     messages_after_first = conversations.list_messages(conversation.conversation_id, "local")
-    artifacts_after_first = conversations.list_artifacts(
-        conversation.conversation_id, "local"
-    )
+    artifacts_after_first = conversations.list_artifacts(conversation.conversation_id, "local")
     final_events_after_first = [
         event for event in runs.list_events(run.run_id) if event.event_type == "assistant.final"
     ]
@@ -213,9 +211,7 @@ def test_startup_reconciles_succeeded_product_once_and_ignores_unrelated_runs(
     assert conversations.list_artifacts(conversation.conversation_id, "local") == (
         artifacts_after_first
     )
-    assert sum(
-        event.event_type == "assistant.final" for event in runs.list_events(run.run_id)
-    ) == 1
+    assert sum(event.event_type == "assistant.final" for event in runs.list_events(run.run_id)) == 1
 
 
 def test_startup_rebuilds_solve_and_evaluate_products_without_agents(tmp_path: Path) -> None:
@@ -373,9 +369,7 @@ def test_startup_recovery_fails_closed_for_invalid_verification_contract(
     assert facade.inputs == []
     assert runs.require_run(run.run_id).status is RunStatus.PENDING
     failure = next(
-        event
-        for event in runs.list_events(run.run_id)
-        if event.event_type == "run.recovery_failed"
+        event for event in runs.list_events(run.run_id) if event.event_type == "run.recovery_failed"
     )
     assert error_fragment in str(failure.payload["error"])
 
@@ -445,7 +439,5 @@ def test_paused_resume_is_tenant_scoped_incremental_and_idempotent(tmp_path: Pat
     events = runs.list_events(run.run_id)
     assert sum(event.event_type == "run.resume_requested" for event in events) == 1
     assert sum(event.event_type == "run.recovery_scheduled" for event in events) == 1
-    attempts = [
-        step.attempt for step in runs.list_steps(run.run_id) if step.name == "qgen_facade"
-    ]
+    attempts = [step.attempt for step in runs.list_steps(run.run_id) if step.name == "qgen_facade"]
     assert attempts == [1, 2]

@@ -294,9 +294,7 @@ class RunBudgetIncrementRequest(BaseModel):
 
 
 class RunResumeRequest(BaseModel):
-    budget_increment: RunBudgetIncrementRequest = Field(
-        default_factory=RunBudgetIncrementRequest
-    )
+    budget_increment: RunBudgetIncrementRequest = Field(default_factory=RunBudgetIncrementRequest)
 
 
 class RunResumeResponse(BaseModel):

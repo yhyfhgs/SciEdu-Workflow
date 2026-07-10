@@ -158,11 +158,7 @@ class Evolver:
                 if data.get("correct_option") is not None
                 else candidate.correct_option
             ),
-            blanks=(
-                int(data["blanks"])
-                if data.get("blanks") is not None
-                else candidate.blanks
-            ),
+            blanks=(int(data["blanks"]) if data.get("blanks") is not None else candidate.blanks),
             difficulty=difficulty,
             subject=candidate.subject,
             tags=list(candidate.tags),

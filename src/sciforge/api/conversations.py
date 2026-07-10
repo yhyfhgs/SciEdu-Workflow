@@ -172,9 +172,7 @@ class ConversationStore:
             raise RuntimeError("conversation transaction lost its inserted row")
         return _conversation_from_row(row)
 
-    def get_conversation(
-        self, conversation_id: str, tenant_id: str
-    ) -> ConversationRecord | None:
+    def get_conversation(self, conversation_id: str, tenant_id: str) -> ConversationRecord | None:
         with self._read() as conn:
             row = conn.execute(
                 "SELECT * FROM conversations WHERE conversation_id = ? AND tenant_id = ?",
@@ -474,8 +472,7 @@ class ConversationStore:
             )
             self._touch_conversation(conn, conversation_id, tenant_id, now)
             row = conn.execute(
-                "SELECT * FROM conversation_artifacts "
-                "WHERE artifact_id = ? AND tenant_id = ?",
+                "SELECT * FROM conversation_artifacts WHERE artifact_id = ? AND tenant_id = ?",
                 (identifier, tenant_id),
             ).fetchone()
         if row is None:
@@ -505,9 +502,7 @@ class ConversationStore:
         artifact_id = _stable_result_id("artifact", run_identifier, kind)
         message_id = _stable_result_id("message", run_identifier, "assistant.final")
         payload_json = _json_dumps(artifact_payload)
-        metadata_json = _json_dumps(
-            {"artifact_id": artifact_id, "artifact_kind": kind}
-        )
+        metadata_json = _json_dumps({"artifact_id": artifact_id, "artifact_kind": kind})
 
         with self._write() as conn:
             now = _utc_now()
@@ -606,9 +601,7 @@ class ConversationStore:
                     (str(_SCHEMA_VERSION),),
                 )
             elif int(row["value"]) != _SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"unsupported conversation schema version: {row['value']}"
-                )
+                raise RuntimeError(f"unsupported conversation schema version: {row['value']}")
             conn.commit()
         except Exception:
             conn.rollback()

@@ -96,9 +96,7 @@ async def test_invalid_request_is_rejected_before_durable_row_creation(
     store = SQLiteRunStore(tmp_path / "runtime.db")
     harness = DurableQGenHarness(_FakeQGen(), store)  # type: ignore[arg-type]
     invalid = _input().model_copy(
-        update={
-            "request": _input().request.model_copy(update={"question_type": "invalid"})
-        }
+        update={"request": _input().request.model_copy(update={"question_type": "invalid"})}
     )
 
     with pytest.raises(ValueError, match="invalid question contract"):
@@ -140,9 +138,7 @@ async def test_durable_harness_persists_steps_usage_checkpoints_and_output(
         END,
     ]
     assert QGenGraphSnapshot.model_validate(checkpoints[-1].state["graph"]).output is not None
-    progress = [
-        event for event in store.list_events(run_id) if event.event_type == "qgen.progress"
-    ]
+    progress = [event for event in store.list_events(run_id) if event.event_type == "qgen.progress"]
     assert [event.payload["phase"] for event in progress] == [
         "retrieve",
         "generate",

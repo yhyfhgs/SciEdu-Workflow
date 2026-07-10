@@ -298,9 +298,7 @@ class OpenAIBackend(BaseBackend):
                         "type": "function",
                         "function": {
                             "name": call.get("name", ""),
-                            "arguments": json.dumps(
-                                call.get("arguments", {}), ensure_ascii=False
-                            ),
+                            "arguments": json.dumps(call.get("arguments", {}), ensure_ascii=False),
                         },
                     }
                 )
