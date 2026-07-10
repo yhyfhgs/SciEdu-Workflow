@@ -409,12 +409,12 @@ class AppConfig(BaseSettings):
         providers_section = data.get("providers", {})
         for name, cfg in providers_section.items():
             if not isinstance(cfg, dict):
-                continue
+                raise ValueError(f"provider {name!r} must be a TOML table")
             interpolated = _interpolate_env(cfg)
             try:
                 self.providers[name] = ProviderConfig(**interpolated)
             except Exception as exc:
-                logger.warning("invalid_provider_config", name=name, error=str(exc))
+                raise ValueError(f"invalid provider config {name!r}: {exc}") from exc
 
         # default_provider_ref (顶层)
         if "default_provider_ref" in data and self.default_provider_ref is None:
@@ -424,7 +424,7 @@ class AppConfig(BaseSettings):
         tasks_section = data.get("tasks", {})
         for task_name, task_cfg in tasks_section.items():
             if not isinstance(task_cfg, dict):
-                continue
+                raise ValueError(f"task {task_name!r} must be a TOML table")
             interpolated = _interpolate_env(task_cfg)
             try:
                 if task_name not in self.task_llm:
@@ -436,7 +436,7 @@ class AppConfig(BaseSettings):
                         if hasattr(existing, key) and getattr(existing, key) is None:
                             setattr(existing, key, value)
             except Exception as exc:
-                logger.warning("invalid_task_config", task=task_name, error=str(exc))
+                raise ValueError(f"invalid task config {task_name!r}: {exc}") from exc
 
         # [pipeline]
         pipeline_section = data.get("pipeline", {})
@@ -461,12 +461,10 @@ class AppConfig(BaseSettings):
         """
         for key, value in section.items():
             if key not in type(self).model_fields:
-                logger.warning(
-                    "unknown_config_field",
-                    section=section_name,
-                    field=key,
+                raise ValueError(
+                    f"unknown [{section_name}] config field {key!r}; "
+                    "fix the spelling or remove the unsupported option"
                 )
-                continue
             field_info = type(self).model_fields[key]
             # 自动把 str 转 Path（若字段类型是 Path）
             if field_info.annotation is Path and isinstance(value, str):

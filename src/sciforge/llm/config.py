@@ -19,7 +19,7 @@ import os
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
@@ -49,6 +49,8 @@ def _resolve_env_api_key(ptype: LLMProvider) -> str | None:
 class ProviderConfig(BaseModel):
     """命名的 LLM 连接配置（TOML [providers.<name>] 的一条）"""
 
+    model_config = ConfigDict(extra="forbid")
+
     type: LLMProvider
     api_key: str | None = None
     base_url: str | None = None
@@ -69,6 +71,8 @@ class TaskLLMConfig(BaseModel):
 
     `provider_ref` 指向 AppConfig.providers 的 key；未指定则使用 default_provider_ref。
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     provider_ref: str | None = None
     model: str | None = None
