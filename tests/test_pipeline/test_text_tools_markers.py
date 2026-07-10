@@ -70,3 +70,22 @@ def test_global_line_uses_line_base() -> None:
 
 def test_plain_text_yields_nothing() -> None:
     assert find_item_markers(["这是一段普通叙述。", "", "  另一段。"]) == []
+
+
+def test_cross_discipline_markers_are_typed_and_strength_aware() -> None:
+    markers = find_item_markers(
+        [
+            "反应 2.1 酯化反应",
+            "实验 4.2 验证酶活性",
+            "过程 3.1 有丝分裂",
+            "功能 说明如下。",
+        ]
+    )
+
+    assert [marker.kind for marker in markers] == [
+        "reaction",
+        "experiment",
+        "process",
+        "function",
+    ]
+    assert [marker.strength for marker in markers] == ["strong", "strong", "strong", "weak"]

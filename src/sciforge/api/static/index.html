@@ -114,7 +114,7 @@
 
       <section class="composer-dock" aria-label="消息与生成参数">
         <div class="active-context" id="activeContext" hidden>
-          <span>已引用知识</span><strong id="activeContextTitle"></strong><button id="clearContext" type="button" aria-label="移除知识引用">×</button>
+          <span>已引用知识</span><strong id="activeContextTitle"></strong><small id="activeContextSource"></small><button id="clearContext" type="button" aria-label="移除知识引用">×</button>
         </div>
 
         <form class="composer" id="composerForm">
@@ -146,9 +146,15 @@
             </label>
             <label>题型
               <select id="questionTypeField">
-                <option value="proof">证明题</option><option value="computational">计算题</option>
-                <option value="construction">构造题</option><option value="multiple_choice">选择题</option>
-                <option value="open_ended">开放题</option>
+                <option value="proof">证明题</option><option value="calculation">计算题</option>
+                <option value="construction">构造题</option><option value="exploration">开放探究</option>
+              </select>
+            </label>
+            <label>题面形式
+              <select id="questionFormField">
+                <option value="subjective">主观解答</option><option value="short_answer">简答</option>
+                <option value="choice">单选</option><option value="multiple_choice">多选</option>
+                <option value="fill_blank">填空</option><option value="true_false">判断</option>
               </select>
             </label>
             <label>输出
@@ -251,13 +257,17 @@
       <button type="button" role="tab" data-auth-tab="open" aria-selected="false">开放模式</button>
     </div>
     <section class="auth-pane" data-auth-pane="account">
-      <label>用户名<input id="usernameField" autocomplete="username" placeholder="alice" /></label>
-      <label>密码<input id="passwordField" type="password" autocomplete="current-password" placeholder="至少 8 位" /></label>
-      <div class="dialog-actions"><button class="primary-button" id="loginButton" type="button">登录</button><button class="outline-button" id="registerButton" type="button">注册新账户</button></div>
+      <form id="accountAuthForm">
+        <label>用户名<input id="usernameField" autocomplete="username" placeholder="alice" /></label>
+        <label>密码<input id="passwordField" type="password" autocomplete="current-password" placeholder="至少 8 位" /></label>
+        <div class="dialog-actions"><button class="primary-button" id="loginButton" type="submit">登录</button><button class="outline-button" id="registerButton" type="button">注册新账户</button></div>
+      </form>
     </section>
     <section class="auth-pane" data-auth-pane="key" hidden>
-      <label>API Key<input id="apiKeyField" type="password" autocomplete="off" placeholder="sf_••••••••••••" /></label>
-      <button class="primary-button full-button" id="saveApiKeyButton" type="button">保存并连接</button>
+      <form id="apiKeyAuthForm">
+        <label>API Key<input id="apiKeyField" type="password" autocomplete="off" placeholder="sf_••••••••••••" /></label>
+        <button class="primary-button full-button" id="saveApiKeyButton" type="submit">保存并连接</button>
+      </form>
     </section>
     <section class="auth-pane open-pane" data-auth-pane="open" hidden>
       <p>开放模式只在后端未启用 SaaS 鉴权时可用。浏览器不会发送任何身份凭据。</p>

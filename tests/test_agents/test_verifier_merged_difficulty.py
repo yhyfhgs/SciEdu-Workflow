@@ -33,7 +33,7 @@ def _q() -> Question:
 
 def _sol() -> Solution:
     return Solution(
-        content="Proof: By definition, f'(x) = lim ... = 2x+2.",
+        solution_plain="Proof: By definition, f'(x) = lim ... = 2x+2.",
         confidence="high",
     )
 
@@ -61,6 +61,7 @@ async def test_pass_with_difficulty_scores_populates_score() -> None:
     pipeline = VerificationPipeline(
         review_llm=_MockReviewLLM(review_response),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
+        enable_solution_relevance=False,
     )
     result = await pipeline.verify(_q(), _sol())
 
@@ -83,6 +84,7 @@ async def test_pass_without_scores_no_difficulty() -> None:
     pipeline = VerificationPipeline(
         review_llm=_MockReviewLLM(review_response),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
+        enable_solution_relevance=False,
     )
     result = await pipeline.verify(_q(), _sol())
 
@@ -102,6 +104,7 @@ async def test_fail_ignores_difficulty_scores() -> None:
     pipeline = VerificationPipeline(
         review_llm=_MockReviewLLM(review_response),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
+        enable_solution_relevance=False,
     )
     result = await pipeline.verify(_q(), _sol())
 
@@ -121,6 +124,7 @@ async def test_malformed_difficulty_scores_graceful_fallback() -> None:
     pipeline = VerificationPipeline(
         review_llm=_MockReviewLLM(review_response),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
+        enable_solution_relevance=False,
     )
     result = await pipeline.verify(_q(), _sol())
 
@@ -143,6 +147,7 @@ async def test_partial_scores_uses_defaults() -> None:
     pipeline = VerificationPipeline(
         review_llm=_MockReviewLLM(review_response),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
+        enable_solution_relevance=False,
     )
     result = await pipeline.verify(_q(), _sol())
 

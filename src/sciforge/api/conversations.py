@@ -259,6 +259,33 @@ class ConversationStore:
             ).fetchall()
         return [_message_from_row(row) for row in rows]
 
+    def list_recent_messages(
+        self,
+        conversation_id: str,
+        tenant_id: str,
+        *,
+        limit: int = 8,
+    ) -> list[MessageRecord]:
+        """Return the newest messages in chronological order.
+
+        ``list_messages`` intentionally preserves the public oldest-first paging
+        contract.  Prompt construction needs the other end of a potentially long
+        conversation, so it uses a bounded DESC query rather than loading hundreds
+        of stale messages and slicing them in Python.
+        """
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self._read() as conn:
+            if not self._conversation_exists(conn, conversation_id, tenant_id):
+                return []
+            rows = conn.execute(
+                "SELECT * FROM conversation_messages "
+                "WHERE conversation_id = ? AND tenant_id = ? "
+                "ORDER BY created_at DESC, message_id DESC LIMIT ?",
+                (conversation_id, tenant_id, limit),
+            ).fetchall()
+        return [_message_from_row(row) for row in reversed(rows)]
+
     def add_user_message_and_link_run(
         self,
         conversation_id: str,

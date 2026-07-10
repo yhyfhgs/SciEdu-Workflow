@@ -32,6 +32,10 @@ class _FakeQGen:
     def create_trace(self, request: GenerationRequest) -> GenerationTrace:
         return GenerationTrace(request_summary={"subject": request.subject})
 
+    def validate_request(self, request: GenerationRequest) -> None:
+        if request.question_type == "invalid":
+            raise ValueError("invalid question contract")
+
     def create_graph_state(self, request: GenerationRequest) -> dict[str, Any]:
         return QGenAgent.create_graph_state(request)
 
@@ -83,6 +87,24 @@ def _input() -> QGenInput:
             strategy=VariantStrategy.TOPIC_GENERATION,
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_invalid_request_is_rejected_before_durable_row_creation(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteRunStore(tmp_path / "runtime.db")
+    harness = DurableQGenHarness(_FakeQGen(), store)  # type: ignore[arg-type]
+    invalid = _input().model_copy(
+        update={
+            "request": _input().request.model_copy(update={"question_type": "invalid"})
+        }
+    )
+
+    with pytest.raises(ValueError, match="invalid question contract"):
+        await harness.run(invalid, run_id="invalid-run")
+
+    assert store.get_run("invalid-run") is None
 
 
 @pytest.mark.asyncio

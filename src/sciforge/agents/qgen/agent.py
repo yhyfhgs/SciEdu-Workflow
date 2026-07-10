@@ -225,10 +225,17 @@ class QGenAgent(BaseAgent[QGenInput, QGenOutput]):
                 "topics": list(request.topics),
                 "difficulty_target": request.difficulty_target,
                 "question_type": request.question_type,
+                "question_form": request.question_form,
+                "knowledge_pin_count": len(request.knowledge_ids),
                 "strategy": request.strategy.value,
                 "discipline": self.discipline.value,
             }
         )
+
+    def validate_request(self, request: GenerationRequest) -> None:
+        """Validate the stable discipline contract before retrieval or persistence."""
+
+        self.generator.validate_request(request)
 
     @staticmethod
     def create_graph_state(request: GenerationRequest) -> dict[str, Any]:
@@ -290,6 +297,7 @@ class QGenAgent(BaseAgent[QGenInput, QGenOutput]):
 
     async def run(self, input: QGenInput) -> QGenOutput:
         request = input.request
+        self.validate_request(request)
         self._log_start(
             subject=request.subject,
             topics=request.topics,

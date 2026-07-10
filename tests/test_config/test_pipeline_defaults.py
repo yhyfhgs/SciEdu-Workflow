@@ -1,4 +1,6 @@
-"""Release defaults for the lossless schema-v13 ingestion profile."""
+"""Release defaults for the lossless schema-v14 ingestion profile."""
+
+import pytest
 
 from sciforge.config.settings import AppConfig
 
@@ -24,3 +26,17 @@ def test_expensive_or_semantically_risky_features_remain_opt_in() -> None:
     assert config.intra_doc_parallel_extract is False
     assert config.reconciliation_autofix is False
     assert config.extract_char_span_enabled is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"require_numerical_verification": True},
+        {"require_lean_verification": True},
+    ],
+)
+def test_required_verification_backend_cannot_be_disabled(
+    overrides: dict[str, bool],
+) -> None:
+    with pytest.raises(ValueError, match="requires enable"):
+        AppConfig(llm_config_file=None, **overrides)

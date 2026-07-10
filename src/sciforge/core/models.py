@@ -488,6 +488,13 @@ class GenerationRequest(BaseModel):
     topics: list[str]
     difficulty_target: int = Field(ge=1, le=10)
     question_type: str = "proof"
+    question_form: str = ""
+    # 用户在知识浏览器中明确固定的条目。Retriever 会把合法、同学科条目置于
+    # 自动检索结果之前，避免“选中知识点”退化成只复制 tag 的弱提示。
+    knowledge_ids: list[str] = Field(default_factory=list, max_length=20)
+    # 仅保存有界、带角色标签的近期会话摘要；它随 durable input 一起持久化，
+    # 因而恢复执行得到与首次调度完全相同的上下文。
+    conversation_context: str = Field(default="", max_length=6000)
     strategy: VariantStrategy
     source_question: Question | None = None
     exclusion_ids: set[str] = Field(default_factory=set)

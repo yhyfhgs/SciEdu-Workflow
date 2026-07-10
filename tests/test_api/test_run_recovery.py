@@ -333,6 +333,53 @@ def test_startup_interrupts_stale_solve_step_and_uses_next_attempt(tmp_path: Pat
     assert runs.get_step(stale.step_id).error == "service startup recovery"
 
 
+@pytest.mark.parametrize(
+    ("verification_policy", "question_type", "error_fragment"),
+    [
+        ("invented", "proof", "persisted verification policy is invalid"),
+        ("formal", "calculation", "formal 验证只适用于数学证明"),
+    ],
+)
+def test_startup_recovery_fails_closed_for_invalid_verification_contract(
+    tmp_path: Path,
+    verification_policy: str,
+    question_type: str,
+    error_fragment: str,
+) -> None:
+    conversations = ConversationStore(tmp_path / "conversations.db")
+    runs = SQLiteRunStore(tmp_path / "runs.db")
+    conversation = conversations.create_conversation("local", discipline="math")
+    request = _generation_request().model_copy(update={"question_type": question_type})
+    metadata = _metadata("local", conversation.conversation_id, mode="new")
+    metadata["verification_policy"] = verification_policy
+    run = runs.create_run(
+        "qgen",
+        request.model_dump(mode="json"),
+        metadata=metadata,
+    )
+    conversations.link_run(conversation.conversation_id, "local", run.run_id)
+    facade = _RecoverableQGenFacade()
+    app = create_app(
+        lambda _discipline: facade,
+        lambda _discipline: _RecoverableSolveFacade(),
+        conversation_store=conversations,
+        run_store=runs,
+        serve_console=False,
+    )
+
+    with TestClient(app):
+        pass
+
+    assert facade.inputs == []
+    assert runs.require_run(run.run_id).status is RunStatus.PENDING
+    failure = next(
+        event
+        for event in runs.list_events(run.run_id)
+        if event.event_type == "run.recovery_failed"
+    )
+    assert error_fragment in str(failure.payload["error"])
+
+
 def test_paused_resume_is_tenant_scoped_incremental_and_idempotent(tmp_path: Path) -> None:
     conversations = ConversationStore(tmp_path / "conversations.db")
     runs = SQLiteRunStore(tmp_path / "runs.db")

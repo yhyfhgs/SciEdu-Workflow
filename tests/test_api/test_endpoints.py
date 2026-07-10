@@ -76,6 +76,36 @@ def test_generate_unknown_discipline_422() -> None:
     assert r.status_code == 422
 
 
+def test_generate_uses_domain_default_type_and_structured_form() -> None:
+    agent = MagicMock()
+    agent.run = AsyncMock(return_value=QGenOutput(generated=None, reason="capture"))
+    client = TestClient(create_app(lambda _discipline: agent, _noop_factory()))
+
+    response = client.post(
+        "/v1/generate",
+        json={
+            "discipline": "chemistry",
+            "topics": ["kinetics:动力学"],
+            "question_form": "choice",
+        },
+    )
+
+    assert response.status_code == 200
+    request = agent.run.await_args.args[0].request
+    assert request.discipline is Discipline.CHEMISTRY
+    assert request.question_type == "calculation"
+    assert request.question_form == "choice"
+
+
+def test_generate_rejects_noncanonical_question_type() -> None:
+    client = TestClient(create_app(_noop_factory(), _noop_factory()))
+    response = client.post(
+        "/v1/generate",
+        json={"topics": ["analysis:分析"], "question_type": "computational"},
+    )
+    assert response.status_code == 422
+
+
 def test_solve_success() -> None:
     out = SolveOutput(solution=Solution(solution_latex="解答内容"), confidence="high")
     client = TestClient(create_app(_noop_factory(), _factory_returning(out)))

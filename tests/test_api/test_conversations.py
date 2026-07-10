@@ -209,7 +209,12 @@ def test_message_inherits_conversation_discipline_and_validates_template_contrac
         conversation_id = created.json()["id"]
         generated = client.post(
             f"/v1/conversations/{conversation_id}/messages",
-            json={"mode": "new", "content": "design a mechanics problem"},
+            json={
+                "mode": "new",
+                "content": "design a mechanics problem",
+                "question_type": "calculation",
+                "question_form": "choice",
+            },
         )
         mismatch = client.post(
             f"/v1/conversations/{conversation_id}/messages",
@@ -227,9 +232,99 @@ def test_message_inherits_conversation_discipline_and_validates_template_contrac
     assert generated.status_code == 202
     generation_request = facade.inputs[0].request
     assert generation_request.discipline is Discipline.PHYSICS
-    assert generation_request.question_type == "proof"
+    assert generation_request.question_type == "calculation"
+    assert generation_request.question_form == "choice"
     assert mismatch.status_code == 422
     assert missing_difficulty.status_code == 422
+
+
+def test_message_persists_pinned_knowledge_ids_for_recovery_and_audit(
+    tmp_path: Path,
+) -> None:
+    facade = _QGenFacade()
+    with _stores(tmp_path) as (conversations, runs):
+        client = _local_app(
+            conversations,
+            runs,
+            qgen_factory=lambda _discipline: facade,
+        )
+        conversation_id = _create_local_conversation(client)
+        accepted = client.post(
+            f"/v1/conversations/{conversation_id}/messages",
+            json={
+                "mode": "new",
+                "content": "Use the pinned theorem",
+                "knowledge_ids": ["  kp-compactness  "],
+            },
+        )
+        messages = client.get(f"/v1/conversations/{conversation_id}/messages").json()[
+            "items"
+        ]
+
+    assert accepted.status_code == 202
+    run = runs.require_run(accepted.json()["run_id"])
+    assert run.metadata["knowledge_ids"] == ["kp-compactness"]
+    assert run.input_payload["knowledge_ids"] == ["kp-compactness"]
+    assert messages[0]["metadata"]["knowledge_ids"] == ["kp-compactness"]
+
+
+@pytest.mark.parametrize(
+    "knowledge_ids",
+    [
+        [f"kp-{index}" for index in range(21)],
+        ["   "],
+        ["x" * 201],
+    ],
+)
+def test_message_rejects_invalid_pinned_knowledge_ids(
+    tmp_path: Path,
+    knowledge_ids: list[str],
+) -> None:
+    with _stores(tmp_path) as (conversations, runs):
+        client = _local_app(conversations, runs)
+        conversation_id = _create_local_conversation(client)
+        response = client.post(
+            f"/v1/conversations/{conversation_id}/messages",
+            json={
+                "mode": "new",
+                "content": "Use pinned context",
+                "knowledge_ids": knowledge_ids,
+            },
+        )
+
+    assert response.status_code == 422
+
+
+def test_generation_snapshots_recent_turns_into_durable_request_context(
+    tmp_path: Path,
+) -> None:
+    facade = _QGenFacade()
+    with _stores(tmp_path) as (conversations, runs):
+        client = _local_app(
+            conversations,
+            runs,
+            qgen_factory=lambda _discipline: facade,
+        )
+        conversation_id = _create_local_conversation(client)
+        first = client.post(
+            f"/v1/conversations/{conversation_id}/messages",
+            json={"mode": "new", "content": "先出一道关于紧致性的基础题。"},
+        )
+        second = client.post(
+            f"/v1/conversations/{conversation_id}/messages",
+            json={"mode": "new", "content": "沿用刚才主题，但改成反例题。"},
+        )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert facade.inputs[0].request.conversation_context == ""
+    second_request = facade.inputs[1].request
+    assert "[user/new]" in second_request.conversation_context
+    assert "先出一道关于紧致性的基础题" in second_request.conversation_context
+    assert "[assistant]" in second_request.conversation_context
+    assert "沿用刚才主题" not in second_request.conversation_context
+    persisted = runs.require_run(second.json()["run_id"]).input_payload
+    assert persisted["conversation_context"] == second_request.conversation_context
 
 
 @pytest.mark.parametrize(
@@ -291,6 +386,49 @@ def test_strict_policy_rejects_non_configurable_generation_facade(tmp_path: Path
 
     assert response.status_code == 503
     assert "真实 QGenAgent verifier" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "mode": "new",
+            "content": "calculate an integral",
+            "question_type": "calculation",
+            "verification_policy": "formal",
+        },
+        {
+            "mode": "new",
+            "content": "invalid legacy type",
+            "question_type": "computational",
+        },
+        {
+            "mode": "new",
+            "content": "derive a physics law",
+            "discipline": "physics",
+            "question_type": "proof",
+            "verification_policy": "formal",
+        },
+    ],
+)
+def test_message_rejects_inapplicable_formal_and_noncanonical_question_type(
+    tmp_path: Path,
+    payload: dict[str, object],
+) -> None:
+    with _stores(tmp_path) as (conversations, runs):
+        client = _local_app(
+            conversations,
+            runs,
+            qgen_factory=lambda _discipline: _QGenFacade(),
+        )
+        conversation_id = _create_local_conversation(client)
+        response = client.post(
+            f"/v1/conversations/{conversation_id}/messages",
+            json=payload,
+        )
+
+    assert response.status_code == 422
+    assert conversations.list_messages(conversation_id, "local") == []
 
 
 def test_conversation_and_run_identifiers_do_not_cross_tenants(tmp_path: Path) -> None:
@@ -383,6 +521,36 @@ def test_qgen_facade_background_success_persists_message_artifact_and_events(
         "run.succeeded",
         "assistant.final",
     }
+
+
+def test_verified_qgen_result_is_materialized_with_solution_for_followup(
+    tmp_path: Path,
+) -> None:
+    bank_path = tmp_path / "bank.db"
+    with SQLiteStorageBackend(bank_path):
+        pass
+    with _stores(tmp_path) as (conversations, runs):
+        client = _local_app(
+            conversations,
+            runs,
+            qgen_factory=lambda _discipline: _QGenFacade(),
+            storage_factory=lambda: SQLiteStorageBackend(bank_path),
+        )
+        conversation_id = _create_local_conversation(client)
+        accepted = client.post(
+            f"/v1/conversations/{conversation_id}/messages",
+            json={"mode": "new", "content": "生成可继续加工的紧致性题目"},
+        )
+
+    assert accepted.status_code == 202
+    with SQLiteStorageBackend(bank_path) as storage:
+        saved = storage.load_question("generated-question")
+    assert saved.solution_content == "由紧致性取有限子覆盖，再取最小半径即可。"
+    assert any(
+        event.event_type == "question.persisted"
+        and event.payload == {"question_id": "generated-question"}
+        for event in runs.list_events(accepted.json()["run_id"])
+    )
 
 
 def test_qgen_facade_background_failure_is_terminal_and_user_visible(tmp_path: Path) -> None:
@@ -512,6 +680,7 @@ def test_manual_solve_records_real_client_counters_and_pauses_on_budget(
     assert success_run.usage.tokens == 42
     assert success_run.usage.wall_time_seconds > 0
     assert paused_run.status is RunStatus.PAUSED
+    assert paused_run.metadata["verification_policy"] == "fast"
     assert paused_run.usage.llm_calls == 0
     assert any(
         event.event_type == "assistant.paused" for event in runs.list_events(paused_run.run_id)
@@ -832,13 +1001,60 @@ def test_verification_policy_is_temporary_and_only_requires_applicable_backends(
 
         with _temporary_verification_policy(
             agent,
-            policy="formal",
+            policy="balanced",
             discipline=Discipline.MATH,
             question_type="calculation",
         ):
             assert verifier.enable_numerical_verification is True
-            assert verifier.require_numerical_verification is True
-            assert verifier.require_lean_verification is False
+            assert verifier.require_numerical_verification is False
+            assert verifier.enable_lean_verification is False
+
+        with _temporary_verification_policy(
+            agent,
+            policy="formal",
+            discipline=Discipline.MATH,
+            question_type="proof",
+        ):
+            assert verifier.enable_lean_verification is True
+            assert verifier.require_lean_verification is True
+            assert verifier.enable_numerical_verification is False
+
+        with pytest.raises(ValueError, match="只适用于数学证明"):
+            with _temporary_verification_policy(
+                agent,
+                policy="formal",
+                discipline=Discipline.MATH,
+                question_type="calculation",
+            ):
+                pass
+    finally:
+        bank.close()
+
+
+def test_balanced_policy_lazily_loads_and_restores_relevance_template(
+    tmp_path: Path,
+) -> None:
+    bank = _seed_source_question(tmp_path / "bank.db")
+    try:
+        agent = QGenAgent(
+            MagicMock(),
+            bank,
+            Discipline.MATH,
+            enable_solution_relevance=False,
+        )
+        assert agent.verifier._relevance_template == ""
+
+        with _temporary_verification_policy(
+            agent,
+            policy="balanced",
+            discipline=Discipline.MATH,
+            question_type="proof",
+        ):
+            assert agent.verifier.enable_solution_relevance is True
+            assert agent.verifier._relevance_template
+
+        assert agent.verifier.enable_solution_relevance is False
+        assert agent.verifier._relevance_template == ""
     finally:
         bank.close()
 
@@ -859,6 +1075,7 @@ def _seed_quality_gated_knowledge(db_path: Path) -> None:
                     taxonomy_path="math.analysis.uniform_continuity",
                     tags=["math:数学", "analysis:分析"],
                     source_file="quality.md",
+                    page=12,
                     start_line=1,
                     end_line=8,
                     order_index=1,
@@ -895,6 +1112,12 @@ def test_knowledge_search_applies_publication_quality_gate_before_browsing(
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["items"]] == ["kp-good"]
+    assert response.json()["items"][0] | {
+        "source_file": "quality.md",
+        "source_page": 12,
+        "start_line": 1,
+        "end_line": 8,
+    } == response.json()["items"][0]
     assert [item["id"] for item in filtered.json()["items"]] == ["kp-good"]
 
 

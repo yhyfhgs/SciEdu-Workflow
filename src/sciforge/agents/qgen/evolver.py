@@ -146,7 +146,23 @@ class Evolver:
         return Question(
             discipline=candidate.discipline,
             question_type=candidate.question_type,
+            question_form=candidate.question_form,
             content=content,
+            options=(
+                [str(option) for option in data.get("options") or []]
+                if "options" in data
+                else list(candidate.options)
+            ),
+            correct_option=(
+                str(data["correct_option"])
+                if data.get("correct_option") is not None
+                else candidate.correct_option
+            ),
+            blanks=(
+                int(data["blanks"])
+                if data.get("blanks") is not None
+                else candidate.blanks
+            ),
             difficulty=difficulty,
             subject=candidate.subject,
             tags=list(candidate.tags),

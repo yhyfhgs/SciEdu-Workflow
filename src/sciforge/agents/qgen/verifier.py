@@ -55,6 +55,12 @@ class VerificationPipeline:
         sandbox: VerificationSandbox | None = None,
         sandbox_trust_policy: TrustPolicy | str = TrustPolicy.CONTAINER_REQUIRED,
     ) -> None:
+        if require_numerical_verification and not enable_numerical_verification:
+            raise ValueError(
+                "require_numerical_verification requires enable_numerical_verification"
+            )
+        if require_lean_verification and not enable_lean_verification:
+            raise ValueError("require_lean_verification requires enable_lean_verification")
         self.review_llm = review_llm  # 独立实例避免确认偏差
         self.discipline = discipline
         self.enable_solution_relevance = enable_solution_relevance
@@ -99,6 +105,7 @@ class VerificationPipeline:
         suggestions: list[str] = []
         numerical_verification: NumericalVerification | None = None
         evidence: list[VerificationEvidence] = []
+        solution_text = (solution.solution_latex or solution.solution_plain).strip()
 
         # Check 1: 解题置信度
         checks["solve_confidence"] = solution.confidence in ("high", "medium")
@@ -169,34 +176,45 @@ class VerificationPipeline:
             )
         )
 
-        # Check 4 (G5): 解答相关性 —— 解答是否在解这道题（套餐可配，默认开）。
-        # 仅在有解答文本时执行；字段缺失或基础设施故障时降级为通过，不误杀候选。
-        if self.enable_solution_relevance and solution.solution_latex.strip():
-            checks["solution_relevant"] = await self._check_solution_relevance(candidate, solution)
-            evidence.append(
-                VerificationEvidence(
+        # Check 4 (G5): 解答相关性。启用后属于核心门禁；缺正文或基础设施错误
+        # 形成显式 error 证据，绝不能静默跳过后让 all(checks) 误判为通过。
+        if self.enable_solution_relevance:
+            relevance_evidence = (
+                await self._check_solution_relevance(candidate, solution)
+                if solution_text
+                else VerificationEvidence(
                     kind="solution_relevance",
-                    status=(
-                        VerificationEvidenceStatus.PASSED
-                        if checks["solution_relevant"]
-                        else VerificationEvidenceStatus.FAILED
-                    ),
+                    status=VerificationEvidenceStatus.ERROR,
                     required=True,
-                    backend=_llm_backend_name(self.review_llm),
-                    summary="solution addresses the candidate question",
+                    backend="deterministic",
+                    summary="solution relevance cannot run without solution text",
                 )
             )
+            evidence.append(relevance_evidence)
+            checks["solution_relevant"] = (
+                relevance_evidence.status is VerificationEvidenceStatus.PASSED
+            )
             if not checks["solution_relevant"]:
-                suggestions.append("解答与题目主题不一致（疑似答非所问），请检查题目表述是否清晰")
+                suggestions.append(f"解答相关性未通过：{relevance_evidence.summary}")
 
         # Check 5 (G4): 数值验证 —— 生成 sympy/numpy 代码在安全策略沙箱执行（opt-in）。
         # 数学反例=failed；执行失败/超时=error；后两者仅在 required policy 下阻止发布。
-        if self.enable_numerical_verification and solution.solution_latex.strip():
-            numerical_verification, numerical_evidence = await self._check_numerical(
-                candidate,
-                solution,
-                required=self.require_numerical_verification,
-            )
+        if self.enable_numerical_verification:
+            if solution_text:
+                numerical_verification, numerical_evidence = await self._check_numerical(
+                    candidate,
+                    solution,
+                    required=self.require_numerical_verification,
+                )
+            else:
+                numerical_verification = NumericalVerification(all_passed=False)
+                numerical_evidence = VerificationEvidence(
+                    kind="numerical",
+                    status=VerificationEvidenceStatus.ERROR,
+                    required=self.require_numerical_verification,
+                    backend="deterministic",
+                    summary="numerical verification cannot run without solution text",
+                )
             evidence.append(numerical_evidence)
             if (
                 numerical_evidence.status
@@ -219,11 +237,21 @@ class VerificationPipeline:
             ):
                 suggestions.append(f"必需的数值验证未完成：{numerical_evidence.summary}")
 
-        if self.enable_lean_verification and solution.solution_latex.strip():
-            lean_evidence = await self._check_lean(
-                candidate,
-                solution,
-                required=self.require_lean_verification,
+        if self.enable_lean_verification:
+            lean_evidence = (
+                await self._check_lean(
+                    candidate,
+                    solution,
+                    required=self.require_lean_verification,
+                )
+                if solution_text
+                else VerificationEvidence(
+                    kind="lean",
+                    status=VerificationEvidenceStatus.ERROR,
+                    required=self.require_lean_verification,
+                    backend="deterministic",
+                    summary="Lean verification cannot run without solution text",
+                )
             )
             evidence.append(lean_evidence)
             if (
@@ -312,18 +340,51 @@ class VerificationPipeline:
             logger.warning("review_failed", error=str(exc)[:200])
             return {"passed": False, "issues": [f"review_error: {exc}"]}
 
-    async def _check_solution_relevance(self, question: Question, solution: Solution) -> bool:
+    async def _check_solution_relevance(
+        self, question: Question, solution: Solution
+    ) -> VerificationEvidence:
         """G5：判断解答是否在尝试解这道题（方向/主题一致即可，不要求正确或完整）"""
         prompt = self._relevance_template.format(
             question_latex=question.content,
-            solution_latex=solution.solution_latex,
+            solution_latex=solution.solution_latex or solution.solution_plain,
         )
         try:
             result = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)
-            return bool(result.get("relevant", True))
+            relevant = result.get("relevant")
+            if not isinstance(relevant, bool):
+                return VerificationEvidence(
+                    kind="solution_relevance",
+                    status=VerificationEvidenceStatus.ERROR,
+                    required=True,
+                    backend=_llm_backend_name(self.review_llm),
+                    summary="solution relevance verifier returned no boolean verdict",
+                )
+            reason = str(result.get("reason") or "").strip()
+            return VerificationEvidence(
+                kind="solution_relevance",
+                status=(
+                    VerificationEvidenceStatus.PASSED
+                    if relevant
+                    else VerificationEvidenceStatus.FAILED
+                ),
+                required=True,
+                backend=_llm_backend_name(self.review_llm),
+                summary=reason
+                or (
+                    "solution addresses the candidate question"
+                    if relevant
+                    else "solution does not address the candidate question"
+                ),
+            )
         except Exception as exc:
             logger.warning("solution_relevance_failed", error=str(exc)[:200])
-            return True  # 基础设施故障降级为通过，不因验证器自身故障误杀候选
+            return VerificationEvidence(
+                kind="solution_relevance",
+                status=VerificationEvidenceStatus.ERROR,
+                required=True,
+                backend=_llm_backend_name(self.review_llm),
+                summary=f"solution relevance verification failed: {exc}",
+            )
 
     async def _check_numerical(
         self,
@@ -335,7 +396,7 @@ class VerificationPipeline:
         """生成数值检查并在显式信任策略的 sandbox 中执行。"""
         prompt = self._numerical_template.format(
             question_latex=question.content,
-            solution_sketch=solution.solution_latex,
+            solution_sketch=solution.solution_latex or solution.solution_plain,
         )
         try:
             data = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)
@@ -416,7 +477,7 @@ class VerificationPipeline:
     ) -> VerificationEvidence:
         prompt = self._lean_template.format(
             question_latex=question.content,
-            solution_latex=solution.solution_latex,
+            solution_latex=solution.solution_latex or solution.solution_plain,
         )
         try:
             data = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)

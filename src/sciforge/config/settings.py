@@ -231,7 +231,7 @@ class AppConfig(BaseSettings):
     qgen_retriever_max_kps: int = 8
     qgen_retriever_max_refs: int = 8
     qgen_retriever_max_negatives: int = 5
-    # 默认生成/推荐池使用 schema v13 量规门禁。旧库在该 kind/rubric 完全没有
+    # 默认生成/推荐池使用 schema v14 量规门禁。旧库在该 kind/rubric 完全没有
     # evaluation 时允许兼容读取；一旦评价开始，未评价条目也不进入默认池。
     qgen_quality_gate_enabled: bool = True
     qgen_quality_gate_allow_legacy_unscored: bool = True
@@ -385,6 +385,15 @@ class AppConfig(BaseSettings):
         load_dotenv(override=False)
         self._load_from_toml()
         self._load_from_env()
+        if self.require_numerical_verification and not self.enable_numerical_verification:
+            raise ValueError(
+                "require_numerical_verification=true requires "
+                "enable_numerical_verification=true"
+            )
+        if self.require_lean_verification and not self.enable_lean_verification:
+            raise ValueError(
+                "require_lean_verification=true requires enable_lean_verification=true"
+            )
         self._warn_legacy_env_vars()
         return self
 

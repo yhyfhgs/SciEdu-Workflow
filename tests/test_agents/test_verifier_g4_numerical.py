@@ -128,3 +128,44 @@ async def test_g4_disabled_by_default() -> None:
     result = await pipe.verify(_q(), _sol())
     assert "numerical_valid" not in result.checks
     assert result.numerical_verification is None
+
+
+@pytest.mark.asyncio
+async def test_g4_required_plain_only_solution_is_not_skipped() -> None:
+    code = 'print("ALL_PASSED")'
+    pipe = VerificationPipeline(
+        review_llm=_LLM({"verification_code": code}),  # type: ignore[arg-type]
+        enable_numerical_verification=True,
+        require_numerical_verification=True,
+        sandbox=VerificationSandbox(),
+        sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
+    )
+    solution = Solution(solution_plain="The derivative at 3 equals 6.", confidence="high")
+
+    result = await pipe.verify(_q(), solution)
+
+    assert result.checks["numerical_valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_g4_required_missing_solution_creates_error_and_blocks() -> None:
+    pipe = VerificationPipeline(
+        review_llm=_LLM({"verification_code": 'print("ALL_PASSED")'}),  # type: ignore[arg-type]
+        enable_solution_relevance=False,
+        enable_numerical_verification=True,
+        require_numerical_verification=True,
+    )
+
+    result = await pipe.verify(_q(), Solution(confidence="high"))
+
+    assert result.checks["numerical_valid"] is False
+    evidence = next(item for item in result.evidence if item.kind == "numerical")
+    assert evidence.status is VerificationEvidenceStatus.ERROR
+
+
+def test_g4_required_cannot_be_disabled() -> None:
+    with pytest.raises(ValueError, match="requires enable_numerical"):
+        VerificationPipeline(  # type: ignore[arg-type]
+            review_llm=_LLM({}),
+            require_numerical_verification=True,
+        )

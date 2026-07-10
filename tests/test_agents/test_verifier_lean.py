@@ -119,3 +119,45 @@ async def test_required_lean_unavailable_blocks_but_optional_does_not_fake_pass(
         evidence for evidence in optional_result.evidence if evidence.kind == "lean"
     )
     assert optional_evidence.status is VerificationEvidenceStatus.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_required_lean_plain_only_solution_is_not_skipped() -> None:
+    sandbox = _Sandbox(_execution(SandboxStatus.SUCCEEDED))
+    pipeline = VerificationPipeline(
+        review_llm=_LLM(),  # type: ignore[arg-type]
+        enable_lean_verification=True,
+        require_lean_verification=True,
+        sandbox=sandbox,  # type: ignore[arg-type]
+    )
+    solution = Solution(solution_plain="For every n, reflexivity gives n = n.", confidence="high")
+
+    result = await pipeline.verify(_question(), solution)
+
+    assert result.checks["lean_valid"] is True
+    assert sandbox.sources
+
+
+@pytest.mark.asyncio
+async def test_required_lean_missing_solution_creates_error_and_blocks() -> None:
+    pipeline = VerificationPipeline(
+        review_llm=_LLM(),  # type: ignore[arg-type]
+        enable_solution_relevance=False,
+        enable_lean_verification=True,
+        require_lean_verification=True,
+        sandbox=_Sandbox(_execution(SandboxStatus.SUCCEEDED)),  # type: ignore[arg-type]
+    )
+
+    result = await pipeline.verify(_question(), Solution(confidence="high"))
+
+    assert result.checks["lean_valid"] is False
+    evidence = next(item for item in result.evidence if item.kind == "lean")
+    assert evidence.status is VerificationEvidenceStatus.ERROR
+
+
+def test_required_lean_cannot_be_disabled() -> None:
+    with pytest.raises(ValueError, match="requires enable_lean"):
+        VerificationPipeline(  # type: ignore[arg-type]
+            review_llm=_LLM(),
+            require_lean_verification=True,
+        )

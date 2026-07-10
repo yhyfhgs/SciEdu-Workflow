@@ -185,6 +185,9 @@ class DurableQGenHarness:
         metadata: Mapping[str, Any] | None = None,
         resume: bool = False,
     ) -> tuple[str, QGenOutput]:
+        # Fail before creating a durable row: an invalid domain/form contract is
+        # a caller error, not a resumable Agent task.
+        self.agent.validate_request(input.request)
         existing = self.store.get_run(run_id) if run_id else None
         requested_payload = input.request.model_dump(mode="json")
         if existing is not None and existing.input_payload != requested_payload:

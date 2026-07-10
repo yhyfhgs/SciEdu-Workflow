@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 
 class GenerateRequest(BaseModel):
@@ -12,7 +12,8 @@ class GenerateRequest(BaseModel):
     subject: str = ""
     topics: list[str] = Field(default_factory=list)
     difficulty: int = Field(default=5, ge=1, le=10)
-    question_type: str = "proof"
+    question_type: str = ""
+    question_form: str = ""
 
 
 class GeneratedQuestionOut(BaseModel):
@@ -21,6 +22,7 @@ class GeneratedQuestionOut(BaseModel):
     solution: str
     difficulty: float
     question_type: str
+    question_form: str = ""
     verified: bool
 
 
@@ -51,6 +53,7 @@ class PaperItem(BaseModel):
     content: str
     difficulty: int
     question_type: str
+    question_form: str = ""
     solution: str = ""
 
 
@@ -58,6 +61,7 @@ class PaperRequest(BaseModel):
     discipline: str = "math"
     subject: str = ""
     question_type: str = ""
+    question_form: str = ""
     difficulty_min: int = Field(default=1, ge=1, le=10)
     difficulty_max: int = Field(default=10, ge=1, le=10)
     count: int = Field(default=10, ge=1, le=100)
@@ -169,11 +173,18 @@ class ConversationMessageRequest(BaseModel):
     mode: ChatMode = "new"
     content: str = Field(default="", max_length=100_000)
     source_question_id: str = Field(default="", max_length=200)
+    knowledge_ids: list[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+        ]
+    ] = Field(default_factory=list, max_length=20)
     discipline: str = ""
     subject: str = ""
     topics: list[str] = Field(default_factory=list, max_length=50)
     difficulty: int = Field(default=5, ge=1, le=10)
     question_type: str = ""
+    question_form: str = ""
     variant_strategy: Literal[
         "A1_parameter_shift",
         "A2_method_shift",
@@ -204,6 +215,10 @@ class ConversationMessageRequest(BaseModel):
             and self.verification_policy != "fast"
         ):
             raise ValueError("solve 只提供求解器置信度；独立验证请使用 evaluate 模式")
+        if self.mode == "solve":
+            # Omitted policy used to remain the model default "balanced" even
+            # though SolveAgent cannot execute it. Persist the honest contract.
+            self.verification_policy = "fast"
         if self.output_format == "json" and "output_type" not in self.model_fields_set:
             self.output_type = "structured_json"
         return self
@@ -314,6 +329,10 @@ class KnowledgeSearchItem(BaseModel):
     content: str
     difficulty: int = 5
     tags: list[str] = Field(default_factory=list)
+    source_file: str = ""
+    source_page: int | None = None
+    start_line: int = Field(default=0, ge=0)
+    end_line: int = Field(default=0, ge=0)
 
 
 class KnowledgeSearchResponse(BaseModel):

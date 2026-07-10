@@ -29,6 +29,13 @@
     prepare_solution: "准备可评估解答",
     qgen_facade: "兼容生成任务",
   };
+  const QUESTION_TYPES = {
+    math: [["proof", "证明"], ["constructive_proof", "构造性证明"], ["existence_proof", "存在性证明"], ["counterexample", "反例"], ["calculation", "计算"], ["construction", "构造"], ["discrimination", "判别"], ["application", "应用"], ["exploration", "开放探究"]],
+    physics: [["calculation", "计算"], ["proof", "推导/证明"], ["experiment_design", "实验设计"], ["explanation", "解释"]],
+    chemistry: [["calculation", "计算"], ["explanation", "解释"], ["mechanism_analysis", "机理分析"], ["experiment_design", "实验设计"], ["application", "应用"], ["discrimination", "判别"], ["synthesis_design", "合成设计"], ["exploration", "开放探究"]],
+    biology: [["explanation", "解释"], ["data_analysis", "数据分析"], ["experiment_design", "实验设计"], ["application", "应用"], ["comparison", "比较"], ["discrimination", "判别"], ["modeling", "建模"], ["exploration", "开放探究"]],
+    other: [["explanation", "解释"], ["analysis", "分析"], ["calculation", "计算"], ["application", "应用"], ["construction", "构造"], ["comparison", "比较"], ["discrimination", "判别"], ["exploration", "开放探究"]],
+  };
 
   const state = {
     authMode: sessionStorage.getItem("sciforge.authMode") || "open",
@@ -379,6 +386,28 @@
     dom.send.querySelector("span").textContent = mode === "evaluate" ? "开始评估" : "开始推演";
   }
 
+  function syncQuestionContract() {
+    const discipline = $("#disciplineField").value;
+    const typeField = $("#questionTypeField");
+    const previous = typeField.value;
+    typeField.replaceChildren();
+    for (const [value, label] of QUESTION_TYPES[discipline] || QUESTION_TYPES.other) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      typeField.append(option);
+    }
+    if ([...typeField.options].some((option) => option.value === previous)) {
+      typeField.value = previous;
+    }
+    const formal = $("#verificationField option[value='formal']");
+    formal.disabled = discipline !== "math" || !["proof", "constructive_proof", "existence_proof", "counterexample"].includes(typeField.value);
+    if (formal.disabled && $("#verificationField").value === "formal") {
+      $("#verificationField").value = "balanced";
+      toast("形式化策略仅适用于数学证明类题目，已切换为平衡策略。", "error");
+    }
+  }
+
   async function submitMessage(event) {
     event.preventDefault();
     if (!state.connected) {
@@ -410,11 +439,13 @@
         mode: state.mode,
         content,
         source_question_id: sourceId,
+        knowledge_ids: state.selectedKnowledge ? [state.selectedKnowledge.id] : [],
         discipline: $("#disciplineField").value,
         subject: $("#subjectField").value.trim(),
         topics,
         difficulty: Number(dom.difficulty.value),
         question_type: $("#questionTypeField").value,
+        question_form: $("#questionFormField").value,
         variant_strategy: $("#variantStrategyField").value,
         output_format: $("#outputTypeField").value === "structured_json" ? "json" : "markdown",
         output_type: $("#outputTypeField").value,
@@ -674,6 +705,18 @@
     }
     const verification = run.output?.generated?.verification || run.output?.verification;
     if (verification?.evidence) renderVerification(verification.evidence, verification.passed);
+    const generatedQuestion = run.output?.generated?.question;
+    if (
+      run.status === "succeeded"
+      && generatedQuestion?.id
+      && run.output?.generated?.verification?.passed !== false
+    ) {
+      // A successful QGen run is materialized in the question bank by the
+      // backend.  Remember its stable ID so switching to variant/deepen/
+      // adjust/evaluate forms a natural multi-turn workflow.
+      dom.source.value = generatedQuestion.id;
+      dom.source.dataset.generated = "true";
+    }
     return run;
   }
 
@@ -760,9 +803,13 @@
     const params = new URLSearchParams({
       q: query,
       discipline: $("#disciplineField").value,
-      subject: $("#subjectField").value.trim(),
       limit: "30",
     });
+    const subject = $("#subjectField").value.trim();
+    // Storage uses canonical english:中文 subject identifiers. Human labels
+    // remain valid generation instructions but must not become accidental
+    // exact-match filters in the knowledge browser.
+    if (subject.includes(":")) params.set("subject", subject);
     try {
       const data = await api(`/v1/knowledge/search?${params}`);
       renderKnowledge(data.items || []);
@@ -790,7 +837,11 @@
       excerpt.textContent = item.content.slice(0, 180);
       const meta = document.createElement("small");
       meta.textContent = `难度 ${item.difficulty} · ${(item.tags || []).slice(-2).join(" / ")}`;
-      button.append(title, excerpt, meta);
+      const source = document.createElement("small");
+      source.className = "knowledge-source";
+      source.textContent = formatSourceLocator(item);
+      source.title = source.textContent;
+      button.append(title, excerpt, meta, source);
       button.addEventListener("click", () => selectKnowledge(item));
       dom.knowledgeResults.append(button);
     }
@@ -800,11 +851,28 @@
     state.selectedKnowledge = item;
     $("#activeContext").hidden = false;
     $("#activeContextTitle").textContent = item.number || item.tags?.at(-1) || item.item_type;
+    $("#activeContextSource").textContent = formatSourceLocator(item);
+    $("#activeContextSource").title = formatSourceLocator(item);
     const topicField = $("#topicsField");
     const existing = topicField.value.split(/[,，]/).map((part) => part.trim()).filter(Boolean);
     const additions = (item.tags || []).filter((tag) => !existing.includes(tag));
     topicField.value = [...existing, ...additions.slice(-3)].join(", ");
+    if (item.subject) $("#subjectField").value = item.subject;
     toast("知识条目已加入生成主题与上下文提示。", "success");
+  }
+
+  function formatSourceLocator(item) {
+    const parts = [];
+    if (item.source_file) parts.push(item.source_file);
+    if (Number.isInteger(item.source_page) && item.source_page > 0) {
+      parts.push(`第 ${item.source_page} 页`);
+    }
+    const start = Number(item.start_line) || 0;
+    const end = Number(item.end_line) || 0;
+    if (start > 0) {
+      parts.push(end > start ? `第 ${start}–${end} 行` : `第 ${start} 行`);
+    }
+    return parts.length ? parts.join(" · ") : "来源定位未记录";
   }
 
   function selectInspector(name) {
@@ -952,6 +1020,8 @@
       dom.difficultyOutput.value = `${dom.difficulty.value} / 10`;
       dom.difficultyOutput.textContent = `${dom.difficulty.value} / 10`;
     });
+    $("#disciplineField").addEventListener("change", syncQuestionContract);
+    $("#questionTypeField").addEventListener("change", syncQuestionContract);
     $("#templateField").addEventListener("change", (event) => {
       const button = $(`.template-card[data-template-id="${CSS.escape(event.target.value)}"]`);
       button?.click();
@@ -965,15 +1035,22 @@
     $("#clearContext").addEventListener("click", () => {
       state.selectedKnowledge = null;
       $("#activeContext").hidden = true;
+      $("#activeContextSource").textContent = "";
     });
     $$("[data-inspector]").forEach((button) => button.addEventListener("click", () => selectInspector(button.dataset.inspector)));
     dom.cancel.addEventListener("click", cancelRun);
     dom.resume.addEventListener("click", showResumeDialog);
     $("#resumeForm").addEventListener("submit", resumeRun);
     $("#resumeCancelButton").addEventListener("click", () => dom.resumeDialog.close());
-    $("#loginButton").addEventListener("click", () => authenticate("login"));
+    $("#accountAuthForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      authenticate("login");
+    });
     $("#registerButton").addEventListener("click", () => authenticate("register"));
-    $("#saveApiKeyButton").addEventListener("click", saveApiKey);
+    $("#apiKeyAuthForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveApiKey();
+    });
     $("#useOpenModeButton").addEventListener("click", useOpenMode);
     $("#clearCredentialsButton").addEventListener("click", () => {
       state.token = "";
@@ -1031,6 +1108,7 @@
   }
 
   bindEvents();
+  syncQuestionContract();
   setMode("new");
   bootstrap();
 })();

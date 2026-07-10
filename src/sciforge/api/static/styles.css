@@ -964,12 +964,25 @@ a:focus-visible {
 }
 
 .active-context strong {
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.active-context small {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .active-context button {
+  flex: 0 0 auto;
   width: 18px;
   height: 18px;
   padding: 0;
@@ -1574,6 +1587,15 @@ kbd {
   font-size: 8px;
 }
 
+.knowledge-item .knowledge-source {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--blue-deep);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .knowledge-item button {
   flex: 0 0 auto;
   padding: 4px 6px;
@@ -1640,6 +1662,11 @@ dialog h2 {
 }
 
 .auth-pane {
+  display: grid;
+  gap: 11px;
+}
+
+.auth-pane form {
   display: grid;
   gap: 11px;
 }

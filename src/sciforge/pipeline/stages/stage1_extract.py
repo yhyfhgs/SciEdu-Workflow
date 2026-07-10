@@ -62,17 +62,19 @@ logger = structlog.get_logger()
 _ITEM_MARKER_RE = re.compile(
     r"(?:"
     # LaTeX 环境
-    r"\\begin\{(?:theorem|definition|lemma|corollary|proposition|"
-    r"property|example|problem|exercise|remark|proof|solution)\}"
+    r"\\begin\{(?:theorem|definition|lemma|corollary|proposition|property|formula|"
+    r"law|principle|reaction|mechanism|model|experiment|method|process|structure|"
+    r"function|classification|fact|example|problem|exercise|remark|proof|solution)\}"
     # 中文关键字 + 可选空格 + 数字（允许半角或全角数字，允许可选 ** 粗体）
     # 关键字后允许 0-2 个空白字符（半角/全角），必须跟着一个数字或字母 X（如 "定义 X"）
     r"|(?:\*\*\s*)?"
-    r"(?:定[理义]|引理|推论|命题|性质|公式|例题?|习题|问题|注记?|备注|方法|"
-    r"结论|法则|算法)"
+    r"(?:定[理义律]|引理|推论|命题|性质|公式|反应|机理|机制|模型|实验|过程|"
+    r"结构|功能|分类|事实|例题?|习题|问题|注记?|备注|方法|原理|结论|法则|算法)"
     r"[\s\u00a0\u3000]{0,3}[\d\uff10-\uff19X]"
     # 英文全称 + 编号（含物理 Law/Principle/Axiom）
     r"|(?:Theorem|Definition|Lemma|Corollary|Proposition|Property|"
-    r"Example|Exercise|Problem|Remark|Formula|Method|Algorithm|Law|Principle|Axiom)"
+    r"Example|Exercise|Problem|Remark|Formula|Method|Algorithm|Law|Principle|Axiom|"
+    r"Reaction|Mechanism|Model|Experiment|Process|Structure|Function|Classification|Fact)"
     r"\s+[\d.]"
     # 英文缩写 + 编号（Thm/Def/Prop/Cor/Lem/Pf/Rmk/Eg）
     r"|(?:Thm|Def|Prop|Cor|Lem|Pf|Rmk|Eg)\.?\s*\d"

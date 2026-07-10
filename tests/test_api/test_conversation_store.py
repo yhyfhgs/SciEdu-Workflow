@@ -136,12 +136,38 @@ def test_invalid_roles_limits_and_duplicate_ids_fail_atomically(tmp_path: Path) 
     with pytest.raises(ValueError, match="positive"):
         store.list_messages("conversation-a", "tenant-a", limit=0)
     with pytest.raises(ValueError, match="positive"):
+        store.list_recent_messages("conversation-a", "tenant-a", limit=0)
+    with pytest.raises(ValueError, match="positive"):
         store.list_artifacts("conversation-a", "tenant-a", limit=0)
 
     with pytest.raises(sqlite3.IntegrityError):
         store.create_conversation("tenant-b", conversation_id="conversation-a")
     assert store.get_conversation("conversation-a", "tenant-a") is not None
     assert store.get_conversation("conversation-a", "tenant-b") is None
+
+
+def test_recent_messages_reads_newest_page_but_returns_chronological_order(
+    tmp_path: Path,
+) -> None:
+    store = ConversationStore(tmp_path / "conversations.db")
+    store.create_conversation("tenant-a", conversation_id="conversation-a")
+    for index in range(12):
+        store.add_message(
+            "conversation-a",
+            "tenant-a",
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"message-{index:02d}",
+            message_id=f"message-{index:02d}",
+        )
+
+    recent = store.list_recent_messages("conversation-a", "tenant-a", limit=3)
+
+    assert [message.content for message in recent] == [
+        "message-09",
+        "message-10",
+        "message-11",
+    ]
+    assert store.list_recent_messages("missing", "tenant-a") == []
 
 
 def test_schema_version_mismatch_is_rejected(tmp_path: Path) -> None:

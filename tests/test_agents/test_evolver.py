@@ -23,6 +23,7 @@ def _candidate() -> Question:
     return Question(
         discipline=Discipline.MATH,
         question_type="proof",
+        question_form="subjective",
         content="设 $f$ 在 $[0,1]$ 上连续，证明 $f$ 有界。",
         difficulty=5,
         subject="real_analysis:实分析",
@@ -104,6 +105,7 @@ async def test_evolve_inherits_parent_fields() -> None:
     q = record.question
     assert q.discipline == parent.discipline
     assert q.question_type == parent.question_type
+    assert q.question_form == parent.question_form
     assert q.subject == parent.subject
     assert q.tags == parent.tags
     # 新题是独立对象，id 不应等于父题

@@ -8,6 +8,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import structlog
@@ -60,6 +61,7 @@ from sciforge.core.models import (
     VariantStrategy,
     VerificationResult,
 )
+from sciforge.disciplines import DISCIPLINE_REGISTRY
 from sciforge.storage.query import QualityGateFilter
 
 if TYPE_CHECKING:
@@ -94,11 +96,93 @@ _ASSISTANT_TERMINAL_EVENTS = frozenset(
 )
 _SSE_TERMINAL_GRACE_SECONDS = 0.25
 _SSE_HEARTBEAT_SECONDS = 15.0
+_CONVERSATION_CONTEXT_MESSAGES = 8
+_CONVERSATION_CONTEXT_CHARS = 6000
+_CONVERSATION_CONTEXT_PER_MESSAGE_CHARS = 1200
 
 _GENERATION_MODES = frozenset(
     {"new", "evolve", "variant", "adjust_difficulty", "deepen"}
 )
 _SOURCE_GENERATION_MODES = frozenset({"variant", "adjust_difficulty", "deepen"})
+
+
+@dataclass(frozen=True, slots=True)
+class _VerificationPlan:
+    solution_relevance: bool
+    numerical_enabled: bool
+    numerical_required: bool
+    lean_enabled: bool
+    lean_required: bool
+
+
+def _build_verification_plan(
+    policy: str,
+    discipline: Discipline,
+    question_type: str,
+) -> _VerificationPlan:
+    """Return the immutable evidence plan shared by request, run and recovery paths."""
+    if policy not in {"fast", "balanced", "strict", "formal"}:
+        raise ValueError(f"未知验证策略: {policy}")
+    proof_applicable = (
+        discipline is Discipline.MATH and question_type in _PROOF_QUESTION_TYPES
+    )
+    numeric_applicable = question_type in _NUMERIC_QUESTION_TYPES
+    if policy == "formal" and not proof_applicable:
+        raise ValueError("formal 验证只适用于数学证明类题目，并要求 Lean 证据")
+    if policy == "fast":
+        return _VerificationPlan(False, False, False, False, False)
+    if policy == "balanced":
+        return _VerificationPlan(True, numeric_applicable, False, False, False)
+    if policy == "formal":
+        return _VerificationPlan(True, False, False, True, True)
+    return _VerificationPlan(
+        True,
+        numeric_applicable,
+        numeric_applicable,
+        proof_applicable,
+        proof_applicable,
+    )
+
+
+def _validate_question_contract(
+    discipline: Discipline,
+    question_type: str,
+    question_form: str = "",
+) -> None:
+    try:
+        spec = DISCIPLINE_REGISTRY.get(discipline)
+    except KeyError as exc:
+        raise ValueError(f"学科 {discipline.value!r} 尚未配置命题规范") from exc
+    if question_type not in spec.allowed_question_types:
+        allowed = ", ".join(spec.allowed_question_types)
+        raise ValueError(
+            f"学科 {discipline.value} 不支持 question_type={question_type!r}; "
+            f"允许值: {allowed}"
+        )
+    if question_form and question_form not in spec.allowed_question_forms:
+        allowed = ", ".join(spec.allowed_question_forms)
+        raise ValueError(
+            f"学科 {discipline.value} 不支持 question_form={question_form!r}; "
+            f"允许值: {allowed}"
+        )
+
+
+def _default_question_type(discipline: Discipline) -> str:
+    try:
+        return DISCIPLINE_REGISTRY.get(discipline).allowed_question_types[0]
+    except (KeyError, IndexError) as exc:
+        raise ValueError(f"学科 {discipline.value!r} 没有可用题型") from exc
+
+
+def _api_verification_plan(
+    policy: str,
+    discipline: Discipline,
+    question_type: str,
+) -> _VerificationPlan:
+    try:
+        return _build_verification_plan(policy, discipline, question_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 _ACTION_TEMPLATES = (
     ActionTemplateOut(
@@ -290,6 +374,29 @@ class _RunRecoveryCoordinator:
             # published.  Corrupt or unrelated runs remain untouched.
             return
         try:
+            if record.run_kind == "qgen":
+                from sciforge.agents import QGenOutput
+
+                qgen_result = QGenOutput.model_validate(record.output_payload)
+                persisted_id = _persist_generated_question(
+                    qgen_result,
+                    storage=None,
+                    storage_factory=self.storage_factory,
+                    storage_tenant_id=str(
+                        record.metadata.get("storage_tenant_id", "") or ""
+                    ),
+                )
+                if persisted_id and not _run_event_exists(
+                    self.runs,
+                    record.run_id,
+                    "question.persisted",
+                    {"question_id": persisted_id},
+                ):
+                    self.runs.append_event(
+                        record.run_id,
+                        "question.persisted",
+                        {"question_id": persisted_id},
+                    )
             content, artifact_kind, artifact_payload = _rebuild_product_delivery(record)
             product_exists = self.conversations.has_assistant_result(
                 link.conversation_id,
@@ -509,6 +616,14 @@ def install_conversation_routes(
         tenant_id = tenant_for(principal)
         storage_tenant_id = str(getattr(principal, "tenant_id", "") or "")
         conversation = require_conversation(conversations, conversation_id, tenant_id)
+        # Snapshot history before the current command is written.  The snapshot
+        # becomes part of the durable QGen input, so retries and process recovery
+        # cannot observe a different, later conversation state.
+        conversation_context = _conversation_history_context(
+            conversations,
+            conversation_id,
+            tenant_id,
+        )
 
         source: Question | None = None
         if req.mode in _SOURCE_GENERATION_MODES or req.mode == "evaluate":
@@ -538,11 +653,23 @@ def install_conversation_routes(
             "output_format": req.output_format,
             "template_id": req.template_id,
             "verification_policy": req.verification_policy,
+            "question_form": req.question_form,
+            "knowledge_ids": list(req.knowledge_ids),
         }
 
         background_task: BackgroundTaskSpec
         if req.mode in _GENERATION_MODES:
-            generation_request, mode_flags = _generation_request(req, conversation, source)
+            generation_request, mode_flags = _generation_request(
+                req,
+                conversation,
+                source,
+                conversation_context=conversation_context,
+            )
+            _api_verification_plan(
+                req.verification_policy,
+                generation_request.discipline,
+                generation_request.question_type,
+            )
             agent = qgen_factory(generation_request.discipline)
             if req.verification_policy in {"strict", "formal"}:
                 if not _supports_configurable_verification(agent):
@@ -588,6 +715,19 @@ def install_conversation_routes(
                     detail="evaluate 模式必须提供可访问的 source_question_id",
                 )
             agent = qgen_factory(source.discipline)
+            try:
+                _validate_question_contract(
+                    source.discipline,
+                    source.question_type,
+                    source.question_form,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            _api_verification_plan(
+                req.verification_policy,
+                source.discipline,
+                source.question_type,
+            )
             if not _supports_evaluation(agent):
                 raise HTTPException(
                     status_code=503,
@@ -634,6 +774,8 @@ def install_conversation_routes(
                     "topics": req.topics,
                     "difficulty": req.difficulty,
                     "question_type": req.question_type,
+                    "question_form": req.question_form,
+                    "knowledge_ids": list(req.knowledge_ids),
                     "output_type": req.output_type,
                     "template_id": req.template_id,
                     "verification_policy": req.verification_policy,
@@ -818,6 +960,10 @@ def install_conversation_routes(
                     content=item.content,
                     difficulty=item.difficulty,
                     tags=item.tags,
+                    source_file=item.source_file,
+                    source_page=item.page,
+                    start_line=item.start_line,
+                    end_line=item.end_line,
                 )
                 for item in knowledge[:limit]
             ]
@@ -862,10 +1008,20 @@ def _question_from_content(req: ConversationMessageRequest) -> Question | None:
     content = req.content.strip()
     if not content:
         return None
+    discipline = _parse_discipline(req.discipline or Discipline.MATH.value)
+    try:
+        question_type = req.question_type or _default_question_type(discipline)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        _validate_question_contract(discipline, question_type, req.question_form)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return Question(
-        discipline=_parse_discipline(req.discipline or Discipline.MATH.value),
+        discipline=discipline,
         subject=req.subject,
-        question_type=req.question_type or "proof",
+        question_type=question_type,
+        question_form=req.question_form,
         difficulty=req.difficulty,
         content=content,
     )
@@ -875,6 +1031,8 @@ def _generation_request(
     req: ConversationMessageRequest,
     conversation: ConversationRecord,
     source: Question | None,
+    *,
+    conversation_context: str = "",
 ) -> tuple[GenerationRequest, dict[str, bool]]:
     mode = req.mode
     if mode not in _GENERATION_MODES:
@@ -888,13 +1046,18 @@ def _generation_request(
             raise HTTPException(status_code=422, detail=f"{mode} 模式需提供 topics 或 content")
         strategy = VariantStrategy.TOPIC_GENERATION
         subject = req.subject
-        question_type = req.question_type or "proof"
+        try:
+            question_type = req.question_type or _default_question_type(discipline)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        question_form = req.question_form
     else:
         discipline = source.discipline
         topics = [topic.strip() for topic in req.topics if topic.strip()]
         topics = topics or list(source.tags) or [source.subject or "general:通用"]
         subject = req.subject or source.subject
         question_type = req.question_type or source.question_type
+        question_form = req.question_form or source.question_form
         if mode == "variant":
             strategy = VariantStrategy(req.variant_strategy)
         elif mode == "adjust_difficulty":
@@ -909,6 +1072,10 @@ def _generation_request(
         else:  # pragma: no cover - guarded by the generation-mode set above
             raise ValueError(f"not a generation mode: {mode}")
 
+    try:
+        _validate_question_contract(discipline, question_type, question_form)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     evolution = mode == "evolve"
     generation_request = GenerationRequest(
         discipline=discipline,
@@ -916,6 +1083,9 @@ def _generation_request(
         topics=topics,
         difficulty_target=req.difficulty,
         question_type=question_type,
+        question_form=question_form,
+        knowledge_ids=list(req.knowledge_ids),
+        conversation_context=conversation_context,
         strategy=strategy,
         source_question=source,
         enable_evolution=evolution,
@@ -994,9 +1164,24 @@ def _rebuild_background_task(
         "lecture_note",
     }:
         output_type = "question_solution"
-    verification_policy = str(record.metadata.get("verification_policy", "balanced"))
-    if verification_policy not in {"fast", "balanced", "strict", "formal"}:
-        verification_policy = "balanced"
+    raw_policy = record.metadata.get("verification_policy")
+    if raw_policy is None:
+        verification_policy = "fast" if record.run_kind == "solve" else "balanced"
+    elif not isinstance(raw_policy, str) or raw_policy not in {
+        "fast",
+        "balanced",
+        "strict",
+        "formal",
+    }:
+        raise ValueError(f"persisted verification policy is invalid: {raw_policy!r}")
+    else:
+        verification_policy = raw_policy
+    if record.run_kind == "solve":
+        if verification_policy == "balanced":
+            # Legacy omitted solve policy was persisted as the old schema default.
+            verification_policy = "fast"
+        elif verification_policy != "fast":
+            raise ValueError("solve recovery cannot honor a non-fast verification policy")
     common: dict[str, Any] = {
         "run_id": record.run_id,
         "conversation_id": conversation_id,
@@ -1015,6 +1200,16 @@ def _rebuild_background_task(
         generation_request = GenerationRequest.model_validate(record.input_payload)
         _validate_embedded_question_tenant(
             generation_request.source_question, storage_tenant_id
+        )
+        _validate_question_contract(
+            generation_request.discipline,
+            generation_request.question_type,
+            generation_request.question_form,
+        )
+        _build_verification_plan(
+            verification_policy,
+            generation_request.discipline,
+            generation_request.question_type,
         )
         agent = qgen_factory(generation_request.discipline)
         if verification_policy in {"strict", "formal"} and not (
@@ -1049,6 +1244,16 @@ def _rebuild_background_task(
     if record.run_kind == "evaluate":
         question = Question.model_validate(record.input_payload.get("question"))
         _validate_embedded_question_tenant(question, storage_tenant_id)
+        _validate_question_contract(
+            question.discipline,
+            question.question_type,
+            question.question_form,
+        )
+        _build_verification_plan(
+            verification_policy,
+            question.discipline,
+            question.question_type,
+        )
         agent = qgen_factory(question.discipline)
         if not _supports_evaluation(agent):
             raise ValueError("evaluate recovery requires retriever, solver and verifier")
@@ -1169,6 +1374,40 @@ def _user_message_content(req: ConversationMessageRequest) -> str:
     return req.mode
 
 
+def _conversation_history_context(
+    conversations: ConversationStore,
+    conversation_id: str,
+    tenant_id: str,
+) -> str:
+    """Build a bounded, role-labelled snapshot of the newest completed turns."""
+
+    messages = conversations.list_recent_messages(
+        conversation_id,
+        tenant_id,
+        limit=_CONVERSATION_CONTEXT_MESSAGES,
+    )
+    newest_first: list[str] = []
+    remaining = _CONVERSATION_CONTEXT_CHARS
+    for message in reversed(messages):
+        if message.role not in {"user", "assistant"}:
+            continue
+        content = message.content.strip()
+        if not content:
+            continue
+        content = content[:_CONVERSATION_CONTEXT_PER_MESSAGE_CHARS]
+        mode = f"/{message.mode}" if message.mode else ""
+        fragment = f"[{message.role}{mode}]\n{content}"
+        if len(fragment) > remaining:
+            fragment = fragment[:remaining]
+        if not fragment:
+            break
+        newest_first.append(fragment)
+        remaining -= len(fragment) + 2
+        if remaining <= 0:
+            break
+    return "\n\n".join(reversed(newest_first))
+
+
 def _supports_evaluation(agent: Any) -> bool:
     """Require the three real evaluation capabilities, not a pre-baked verdict."""
 
@@ -1213,6 +1452,7 @@ def _temporary_verification_policy(
 ) -> Iterator[None]:
     """Apply one request's evidence policy without mutating a shared agent permanently."""
 
+    plan = _build_verification_plan(policy, discipline, question_type)
     if not _supports_configurable_verification(agent):
         yield
         return
@@ -1224,29 +1464,24 @@ def _temporary_verification_policy(
         "require_numerical_verification",
         "enable_lean_verification",
         "require_lean_verification",
+        "_relevance_template",
         "_numerical_template",
         "_lean_template",
     )
     original = {name: getattr(verifier, name) for name in names}
-    proof_applicable = (
-        discipline is Discipline.MATH and question_type in _PROOF_QUESTION_TYPES
-    )
-    numeric_applicable = question_type in _NUMERIC_QUESTION_TYPES
     try:
-        verifier.enable_solution_relevance = policy != "fast"
-        if policy == "fast":
-            verifier.enable_numerical_verification = False
-            verifier.require_numerical_verification = False
-            verifier.enable_lean_verification = False
-            verifier.require_lean_verification = False
-        elif policy == "balanced":
-            verifier.require_numerical_verification = False
-            verifier.require_lean_verification = False
-        else:
-            verifier.enable_numerical_verification = numeric_applicable
-            verifier.require_numerical_verification = numeric_applicable
-            verifier.enable_lean_verification = proof_applicable
-            verifier.require_lean_verification = proof_applicable
+        verifier.enable_solution_relevance = plan.solution_relevance
+        verifier.enable_numerical_verification = plan.numerical_enabled
+        verifier.require_numerical_verification = plan.numerical_required
+        verifier.enable_lean_verification = plan.lean_enabled
+        verifier.require_lean_verification = plan.lean_required
+
+        if verifier.enable_solution_relevance and not verifier._relevance_template:
+            from sciforge.prompts.templates import get_generation_prompt_template
+
+            verifier._relevance_template = get_generation_prompt_template(
+                "verification/solution_relevance.txt", discipline
+            )
 
         if verifier.enable_numerical_verification and not verifier._numerical_template:
             from sciforge.prompts.templates import get_generation_prompt_template
@@ -1327,6 +1562,7 @@ async def _run_qgen(
     from sciforge.agents import DurableQGenHarness, QGenAgent, QGenInput, QGenOutput
 
     try:
+        persisted_id: str | None = None
         with scope_agent_storage(agent, storage_tenant_id, storage_factory):
             if isinstance(agent, QGenAgent):
                 with _temporary_qgen_flags(agent, mode_flags), _temporary_verification_policy(
@@ -1355,6 +1591,20 @@ async def _run_qgen(
                 runs.complete_step(step.step_id, result.model_dump(mode="json"))
                 runs.complete_run(run_id, result.model_dump(mode="json"))
 
+            persisted_id = _persist_generated_question(
+                result,
+                storage=getattr(agent, "storage", None),
+                storage_factory=storage_factory,
+                storage_tenant_id=storage_tenant_id,
+            )
+
+        if persisted_id:
+            runs.append_event(
+                run_id,
+                "question.persisted",
+                {"question_id": persisted_id},
+            )
+
         output = result.model_dump(mode="json")
         assistant = _render_qgen_result(result, output_type=output_type)
         _record_success(
@@ -1372,6 +1622,58 @@ async def _run_qgen(
         )
     except Exception as exc:  # noqa: BLE001
         _record_failure(conversations, runs, conversation_id, tenant_id, run_id, exc)
+
+
+def _persist_generated_question(
+    result: Any,
+    *,
+    storage: Any | None,
+    storage_factory: Callable[[], Any] | None,
+    storage_tenant_id: str,
+) -> str | None:
+    """Materialize a verified QGen result as a reusable source question.
+
+    Runtime output keeps ``Question`` and ``Solution`` separate for auditability.
+    The question bank stores the learner-facing solution on ``solution_content``
+    so every later mode can reconstruct the same source by ID.  A missing storage
+    is a supported artifact-only deployment; a configured-but-failing storage is
+    allowed to fail so startup reconciliation can retry the product post-process.
+    """
+
+    generated = getattr(result, "generated", None)
+    if generated is None or not bool(generated.verification.passed):
+        return None
+    solution_text = (
+        generated.solution.solution_latex or generated.solution.solution_plain
+    ).strip()
+    updates: dict[str, object] = {"solution_content": solution_text or None}
+    if storage_tenant_id:
+        updates["tenant_id"] = storage_tenant_id
+    question = generated.question.model_copy(update=updates)
+    generated.question = question
+
+    target = storage if callable(getattr(storage, "save_batch", None)) else None
+    owned_base: Any | None = None
+    scoped: TenantScopedStorageView | None = None
+    if target is None and storage_factory is not None:
+        owned_base = storage_factory()
+        if storage_tenant_id:
+            scoped = TenantScopedStorageView(owned_base, storage_tenant_id)
+            target = scoped
+        else:
+            target = owned_base
+    if target is None:
+        return None
+    try:
+        target.save_batch([], [question])
+    finally:
+        if scoped is not None:
+            scoped.close()
+        if owned_base is not None:
+            close = getattr(owned_base, "close", None)
+            if callable(close):
+                close()
+    return str(question.id)
 
 
 async def _run_solve(
@@ -1477,6 +1779,7 @@ async def _run_evaluate(
                 topics=list(question.tags) or [question.subject or "general:通用"],
                 difficulty_target=question.difficulty,
                 question_type=question.question_type,
+                question_form=question.question_form,
                 strategy=VariantStrategy.PARAMETER_SHIFT,
                 source_question=question,
             )

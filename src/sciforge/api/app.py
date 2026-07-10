@@ -59,6 +59,7 @@ from sciforge.core.models import (
     Question,
     VariantStrategy,
 )
+from sciforge.disciplines import DISCIPLINE_REGISTRY
 from sciforge.export import render_docx, render_markdown
 from sciforge.storage.query import QualityGateFilter
 from sciforge.storage.saas import SaasStore, UsageSummary
@@ -140,6 +141,30 @@ def _parse_discipline(value: str) -> Discipline:
         return Discipline(value)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"未知学科: {value}") from exc
+
+
+def _validate_generation_shape(
+    discipline: Discipline,
+    question_type: str,
+    question_form: str = "",
+) -> None:
+    spec = DISCIPLINE_REGISTRY.get(discipline)
+    if question_type not in spec.allowed_question_types:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"学科 {discipline.value} 不支持 question_type={question_type!r}; "
+                f"允许值: {', '.join(spec.allowed_question_types)}"
+            ),
+        )
+    if question_form and question_form not in spec.allowed_question_forms:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"学科 {discipline.value} 不支持 question_form={question_form!r}; "
+                f"允许值: {', '.join(spec.allowed_question_forms)}"
+            ),
+        )
 
 
 def _trace_tokens(result: Any) -> int:
@@ -272,6 +297,11 @@ def _assemble_paper_items(
 ) -> list[PaperItem]:
     """按 req 过滤条件从题库抽题（用完释放 storage 连接）。"""
     discipline = _parse_discipline(req.discipline)
+    spec = DISCIPLINE_REGISTRY.get(discipline)
+    if req.question_type and req.question_type not in spec.allowed_question_types:
+        raise HTTPException(status_code=422, detail="question_type 不属于该学科白名单")
+    if req.question_form and req.question_form not in spec.allowed_question_forms:
+        raise HTTPException(status_code=422, detail="question_form 不属于题面形式白名单")
     storage = storage_factory()
     scoped: TenantScopedStorageView | None = None
     try:
@@ -290,6 +320,8 @@ def _assemble_paper_items(
             filters["subject"] = req.subject
         if req.question_type:
             filters["question_type"] = req.question_type
+        if req.question_form:
+            filters["question_form"] = req.question_form
         ids = read_storage.search_questions(filters)
         bank = read_storage.load_questions_by_ids(list(ids)[: req.count])
         return [
@@ -298,6 +330,7 @@ def _assemble_paper_items(
                 content=q.content,
                 difficulty=q.difficulty,
                 question_type=str(q.question_type),
+                question_form=q.question_form,
                 solution=q.solution_content or "",
             )
             for q in bank
@@ -458,6 +491,11 @@ def create_app(
         discipline = _parse_discipline(req.discipline)
         if not req.topics:
             raise HTTPException(status_code=422, detail="topics 不能为空")
+        question_type = (
+            req.question_type
+            or DISCIPLINE_REGISTRY.get(discipline).allowed_question_types[0]
+        )
+        _validate_generation_shape(discipline, question_type, req.question_form)
 
         agent = qgen_factory(discipline)
         gen_req = GenerationRequest(
@@ -465,7 +503,8 @@ def create_app(
             subject=req.subject,
             topics=req.topics,
             difficulty_target=req.difficulty,
-            question_type=req.question_type,
+            question_type=question_type,
+            question_form=req.question_form,
             strategy=VariantStrategy.TOPIC_GENERATION,
         )
         with _tenant_scoped_agent_storage(agent, principal.tenant_id, storage_factory):
@@ -491,6 +530,7 @@ def create_app(
                 solution=gq.solution.solution_latex,
                 difficulty=gq.difficulty_score.overall,
                 question_type=str(gq.question.question_type),
+                question_form=gq.question.question_form,
                 verified=gq.verification.passed,
             ),
         )
@@ -628,6 +668,11 @@ def create_app(
         discipline = _parse_discipline(req.discipline)
         if not req.topics:
             raise HTTPException(status_code=422, detail="topics 不能为空")
+        question_type = (
+            req.question_type
+            or DISCIPLINE_REGISTRY.get(discipline).allowed_question_types[0]
+        )
+        _validate_generation_shape(discipline, question_type, req.question_form)
         task_id = saas_store.create_task_if_quota_available(principal.tenant_id, req.count)
         if task_id is None:
             raise HTTPException(status_code=429, detail="请求数量超过本月剩余额度")
@@ -636,7 +681,8 @@ def create_app(
             subject=req.subject,
             topics=req.topics,
             difficulty_target=req.difficulty,
-            question_type=req.question_type,
+            question_type=question_type,
+            question_form=req.question_form,
             strategy=VariantStrategy.TOPIC_GENERATION,
         )
         background_tasks.add_task(

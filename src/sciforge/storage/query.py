@@ -39,6 +39,7 @@ _EXACT_FILTER_COLUMNS = frozenset(
         "discipline",
         "kp_type",
         "question_type",
+        "question_form",
         "subject",
         "source_file",
         "content_hash",
@@ -65,6 +66,16 @@ def compile_search_filters(
                 placeholders = ",".join("?" for _ in ids)
                 conditions.append(f"id NOT IN ({placeholders})")
                 params.extend(ids)
+        elif key == "include_ids" and isinstance(value, (list, set, tuple)):
+            ids = list(value)
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conditions.append(f"id IN ({placeholders})")
+                params.extend(ids)
+            else:
+                # An explicit empty allow-list must match nothing; silently
+                # dropping this filter would turn a pin query into a full scan.
+                conditions.append("0 = 1")
         elif key in _EXACT_FILTER_COLUMNS:
             conditions.append(f"{key} = ?")
             params.append(value)

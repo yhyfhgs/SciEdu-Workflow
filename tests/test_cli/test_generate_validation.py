@@ -7,10 +7,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
 from sciforge.agents.runtime import RunStatus, SQLiteRunStore
+from sciforge.cli.generate import _resolve_question_contract, _save_generated_question
 from sciforge.cli.main import app
+from sciforge.core.models import (
+    DifficultyScore,
+    Discipline,
+    GeneratedQuestion,
+    Question,
+    Solution,
+    VerificationResult,
+)
+from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 runner = CliRunner()
 
@@ -77,6 +89,47 @@ def test_generate_durable_commands_are_exposed() -> None:
     assert "durable" in result.output
     assert "resume" in result.output
     assert "cancel" in result.output
+
+
+def test_question_contract_uses_per_discipline_default_and_rejects_bad_form() -> None:
+    assert _resolve_question_contract(Discipline.PHYSICS, "", "choice") == (
+        "calculation",
+        "choice",
+    )
+
+    with pytest.raises(typer.BadParameter, match="video_essay"):
+        _resolve_question_contract(Discipline.BIOLOGY, "", "video_essay")
+
+
+def test_durable_cli_defaults_to_shared_qgen_runtime_db() -> None:
+    for command in ("durable", "resume", "cancel"):
+        result = runner.invoke(
+            app,
+            ["generate", command, "--help"],
+            terminal_width=240,
+        )
+        assert result.exit_code == 0
+        assert "qgen_runtime.db" in result.output
+
+
+def test_save_generated_question_materializes_public_solution(tmp_path: Path) -> None:
+    question = Question(id="generated", content="一道可复用的完整测试题目。")
+    generated = GeneratedQuestion(
+        question=question,
+        solution=Solution(
+            question_id=question.id,
+            solution_latex="第一步分析条件；第二步推导并得到结论。",
+            confidence="high",
+        ),
+        difficulty_score=DifficultyScore(overall=5.0),
+        verification=VerificationResult(passed=True),
+    )
+    with SQLiteStorageBackend(tmp_path / "bank.db") as storage:
+        saved = _save_generated_question(storage, generated)
+        loaded = storage.load_question(saved.id)
+
+    assert loaded.solution_content == "第一步分析条件；第二步推导并得到结论。"
+    assert generated.question.solution_content == loaded.solution_content
 
 
 def test_generate_cancel_immediately_finishes_pending_run(tmp_path: Path) -> None:

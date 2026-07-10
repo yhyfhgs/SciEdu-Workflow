@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from sciforge.agents.qgen.prefilter import (
     MAX_NEGATIVE_SIMILARITY,
     check_novelty,
+    check_question_form,
     check_structural_validity,
     cosine_similarity,
     prefilter_candidate,
@@ -122,6 +125,62 @@ def test_prefilter_combined_passes_valid_novel() -> None:
     neg = _q("Find the inverse of the matrix $\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}$.")
     ok, reason = prefilter_candidate(cand, [neg])
     assert ok, reason
+
+
+@pytest.mark.parametrize(
+    ("candidate", "reason"),
+    [
+        (
+            Question(
+                question_form="choice",
+                content="请选择下列关于连续函数与紧致区间关系的唯一正确陈述。",
+                options=["A. 仅有一个选项"],
+                correct_option="A",
+            ),
+            "at_least_two_options",
+        ),
+        (
+            Question(
+                question_form="multiple_choice",
+                content="请选择所有满足给定代数恒等式与定义域约束的正确表达式。",
+                options=["A. 表达式一", "B. 表达式二"],
+            ),
+            "requires_correct_option",
+        ),
+        (
+            Question(
+                question_form="fill_blank",
+                content="根据微积分基本定理完成下列积分计算并填入唯一数值答案。",
+                blanks=0,
+            ),
+            "positive_blanks",
+        ),
+        (
+            Question(
+                question_form="true_false",
+                content="判断下列关于完备度量空间中压缩映射不动点的陈述是否正确。",
+            ),
+            "requires_correct_option",
+        ),
+    ],
+)
+def test_question_form_contract_rejects_incomplete_structured_fields(
+    candidate: Question,
+    reason: str,
+) -> None:
+    ok, detail = check_question_form(candidate)
+    assert not ok
+    assert reason in detail
+
+
+def test_question_form_contract_accepts_complete_choice() -> None:
+    candidate = Question(
+        question_form="choice",
+        content="请选择下列关于连续函数与紧致区间关系的唯一正确陈述。",
+        options=["A. 正确陈述", "B. 错误陈述"],
+        correct_option="A",
+    )
+    assert check_question_form(candidate) == (True, "")
 
 
 def test_threshold_constants_reasonable() -> None:
