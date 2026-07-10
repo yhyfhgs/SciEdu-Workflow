@@ -91,6 +91,8 @@ class VerificationPipeline:
         candidate: Question,
         solution: Solution,
         context: ContextBundle | None = None,
+        *,
+        review_instruction: str = "",
     ) -> VerificationResult:
         """执行全部验证检查"""
         checks: dict[str, bool] = {}
@@ -117,7 +119,11 @@ class VerificationPipeline:
             suggestions.append("求解引擎置信度低，题目可能存在问题")
 
         # Check 2: 数学/物理正确性（独立审核 LLM）
-        review = await self._check_with_review_llm(candidate, solution)
+        review = await self._check_with_review_llm(
+            candidate,
+            solution,
+            review_instruction=review_instruction,
+        )
         raw_review_issues = review.get("issues", [])
         review_issues = (
             [str(issue) for issue in raw_review_issues]
@@ -272,13 +278,24 @@ class VerificationPipeline:
         )
 
     async def _check_with_review_llm(
-        self, question: Question, solution: Solution
+        self,
+        question: Question,
+        solution: Solution,
+        *,
+        review_instruction: str = "",
     ) -> dict[str, object]:
         """独立审核题面与完整解答，避免只看题面的确认偏差。"""
         prompt = self._review_template.format(
             question_latex=question.content,
             solution_latex=solution.solution_latex or solution.solution_plain,
         )
+        instruction = review_instruction.strip()[:2000]
+        if instruction:
+            prompt += (
+                "\n\n# 用户指定的评估关注点\n"
+                f"{instruction}\n\n"
+                "该关注点仅补充审查维度，不得放宽既有正确性与证据门禁。"
+            )
 
         try:
             result = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)
