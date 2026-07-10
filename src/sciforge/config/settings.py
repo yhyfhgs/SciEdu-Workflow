@@ -305,14 +305,15 @@ class AppConfig(BaseSettings):
     # REC-10：Stage3 攒小批再一次 save_batch+commit（WAL fsync N→N/批），去重计数批量预查。
     stage3_persist_batch_size: int = 16
 
-    # ── Pipeline v11 开关（全部默认关 = 行为与 v10 完全一致）──
+    # ── Pipeline v11 安全默认值 ───────────────────────────
+    # 纯确定性、完整性和发布门禁能力默认开启；额外多轮 LLM 与段级并行仍显式 opt-in。
     # §E.0（M1）：format/genre profile——extended 体裁探测（含 problem_set）+
     # 密度自适应窗口 + halo/carry 先验。关闭时体裁探测走 REC-14 白名单路径。
-    format_profile_enabled: bool = False
+    format_profile_enabled: bool = True
     # III.1（M1）：marker ledger 覆盖率审计——对每个已消费窗口段做标记台账对账，
     # 只写 structlog 指标 + ExtractedBatch.ledger_audit 附件，**不改任何提取行为**。
     # M1 使命：在真实文档上度量 T4 真值质量（误报/漏报率），M4 才注入 harness prompt。
-    marker_ledger_enabled: bool = False
+    marker_ledger_enabled: bool = True
     # II.4（M1）：字符级 span——prompt 追加锚点输出指令，LLM 抄边界逐字短串，
     # resolve_span 确定性定位精确 offset 落 start_char/end_char 列（exact/fuzzy/
     # line_fallback 三态降级，最坏退回行级=现状）。不覆写 corrected_content。
@@ -320,28 +321,28 @@ class AppConfig(BaseSettings):
     # III.2（M2）：carry 四态——窗口尾部未闭合条目的结构化跨窗交接。
     # 确定性判别 truly_no_answer/answer_deferred/content_truncated/stem_unfinished
     # 注入下窗 prompt 指导定案；滑窗语义不变（尾部仍下窗重扫 = v10 兜底）。
-    extract_active_carry_enabled: bool = False
+    extract_active_carry_enabled: bool = True
     # 同一条目连续跨窗未闭合的上限：到顶下一窗 force_extract 强制收尾
     # （solution_deferred），再不闭合则放弃 carry 退回 v10 被动重扫。
     extract_carry_max_windows: int = 3
     # III.4（M2）：segment halo——intra_doc_parallel_extract 时每段向后多读 N 行
     # 重叠区，跨段边界条目被前段完整看到，仲裁器确定性去重（安全并行）。
-    # 默认 0 = 关（段间零重叠 = 现状）；建议按体裁 60-120（> 典型条目长度）。
-    segment_halo_lines: int = 0
+    # 默认 80（> 典型条目长度）；仅 intra_doc_parallel_extract=True 时读取。
+    segment_halo_lines: int = 80
     # I.3（M3）：per-item 四态 + provisional id 出口 remap——出口按最终 start_line
     # 排序后一次性分配 final item_id（OrderIndexAllocator.reserve 零改动）。
-    # 默认 False：走现状"提取顺序即分配"；开启时回补 WP-22 carry 试探合并
+    # 显式关闭时走旧版"提取顺序即分配"；开启时回补 WP-22 carry 试探合并
     # （低置信度匹配标 uncertain 而非直接 accepted）。异常退回现状分配。
-    provisional_id_remap_enabled: bool = False
+    provisional_id_remap_enabled: bool = True
     # III.3（M3）：PatchInstruction 局部补抽——依赖 marker_ledger_enabled 产出的
     # 审计结果，对 missed_marker 做 micro LLM 补抽（±context_lines 小段，不重跑
     # 整窗）；boundary_fix/pairing_fix/type_fix 确定性修复不额外耗 LLM。
-    # 默认 False；仅在 marker_ledger_enabled=True 时生效（依赖其 AuditReport）。
-    patch_local_extraction_enabled: bool = False
+    # 默认开启；仅在 marker_ledger_enabled=True 时生效（依赖其 AuditReport）。
+    patch_local_extraction_enabled: bool = True
     patch_context_lines: int = 8
     # I.1–I.3（M4）：窗口级 ExtractionHarness 总开关。开启后 Stage1 仍只执行
     # 一次主 _extract_batch；locate/audit/carry 分析均为确定性增强，异常保留首次结果。
-    extract_harness_enabled: bool = False
+    extract_harness_enabled: bool = True
     # I.4/I.6（M4）：风险触发 Evaluator 多轮——仅 harness.risk_score 超阈值的
     # 高风险窗口触发（70-80% 干净窗口 0 额外调用）；provider 约束见 C8
     # （仅 Anthropic/anthropic_compatible 支持，其余 provider 自动跳过退单轮）。
@@ -349,11 +350,11 @@ class AppConfig(BaseSettings):
     extract_validator_max_turns: int = 3
     extract_validator_risk_threshold: float = 0.3
     # IV.1–IV.4（M5）：入库后以 taxonomy_path 为稳定身份建立 concept 四表，
-    # tags 仅作别名/展示；未知 tag 进入 pending 治理状态。默认关闭以保持 v11 行为。
-    concept_graph_enabled: bool = False
+    # tags 仅作别名/展示；未知 tag 进入 pending 治理状态。默认开启。
+    concept_graph_enabled: bool = True
     # IV.5–IV.6（M6）：0-LLM 确定性 rubric + review queue。rubric_version 是
     # 持久化契约的一部分；调整特征/权重时必须升版，不能覆盖旧评分快照。
-    item_evaluation_enabled: bool = False
+    item_evaluation_enabled: bool = True
     rubric_version: str = "v1"
     evaluation_extraction_threshold: float = 0.7
     evaluation_solution_threshold: float = 0.6

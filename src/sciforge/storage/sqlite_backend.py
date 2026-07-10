@@ -46,8 +46,8 @@ logger = structlog.get_logger()
 
 
 # ── SQL 常量（executemany 批量写入复用）──────────────────
-# schema v13：v11 字符级溯源 + M5 Concept Graph + M6 Knowledge Evaluation。
-_SCHEMA_VERSION = 13
+# schema v14：v11 字符级溯源 + M5/M6 + lossless ingestion governance。
+_SCHEMA_VERSION = 14
 
 # schema 增量迁移：{from_version: [该版本→下一版的 ALTER 语句]}。
 # 每条 ALTER 容忍 "duplicate column"（幂等，应对中断重跑）。
@@ -194,6 +194,42 @@ _MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_review_queue_work "
         "ON review_queue(tenant_id, status, priority, created_at)",
     ],
+    # v13→v14：提取可靠性成为结构化治理列，避免用正文前缀表达发布资格。
+    13: [
+        "ALTER TABLE knowledge_points ADD COLUMN ingestion_status TEXT NOT NULL "
+        "DEFAULT 'accepted' CHECK(ingestion_status IN "
+        "('accepted','uncertain','needs_patch','rejected'))",
+        "ALTER TABLE questions ADD COLUMN ingestion_status TEXT NOT NULL "
+        "DEFAULT 'accepted' CHECK(ingestion_status IN "
+        "('accepted','uncertain','needs_patch','rejected'))",
+        "CREATE INDEX IF NOT EXISTS idx_kp_ingestion_status "
+        "ON knowledge_points(ingestion_status, order_index)",
+        "CREATE INDEX IF NOT EXISTS idx_q_ingestion_status "
+        "ON questions(ingestion_status, order_index)",
+        # 题目去重必须在 tenant 作用域内；公共题库 tenant_id='' 仍保持全局去重。
+        "DROP INDEX IF EXISTS idx_q_hash_uniq",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_q_hash_tenant_uniq "
+        "ON questions(tenant_id, content_hash) WHERE content_hash != ''",
+        # accepted 校正会更新正文/taxonomy；补齐外部内容 FTS 的 UPDATE 同步。
+        """
+        CREATE TRIGGER IF NOT EXISTS kp_fts_update
+        AFTER UPDATE OF content, taxonomy_path ON knowledge_points BEGIN
+            INSERT INTO kp_fts(kp_fts, rowid, content, taxonomy_path)
+            VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+            INSERT INTO kp_fts(rowid, content, taxonomy_path)
+            VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS q_fts_update
+        AFTER UPDATE OF content, taxonomy_path ON questions BEGIN
+            INSERT INTO question_fts(question_fts, rowid, content, taxonomy_path)
+            VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+            INSERT INTO question_fts(rowid, content, taxonomy_path)
+            VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
+        END
+        """,
+    ],
 }
 
 # 用 INSERT OR IGNORE：content_hash 唯一索引命中（重复内容）或 id 冲突时静默跳过，
@@ -203,8 +239,9 @@ INSERT OR IGNORE INTO knowledge_points
     (id, discipline, kp_type, number, number_canonical,
      seq_chapter, seq_section, seq_index,
      content, proof_content, difficulty, subject, taxonomy_path, tags, source_file,
-     start_line, end_line, start_char, end_char, page, order_index, content_hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     start_line, end_line, start_char, end_char, page, order_index, content_hash,
+     ingestion_status)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _Q_INSERT_SQL = """
@@ -214,8 +251,34 @@ INSERT OR IGNORE INTO questions
      content, solution_content, options, correct_option, blanks,
      difficulty, subject, taxonomy_path, tags, source_file,
      start_line, end_line, start_char, end_char, page, order_index, content_hash,
+     ingestion_status,
      is_generated, generator_model, generated_at, generation_session_id, tenant_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+# 同一去重域内，只有经过验证的 accepted 新版本可以覆盖非 accepted 占位。
+# 稳定 id/content_hash/tenant_id 保持不变，从而不破坏既有关系边、评价与引用。
+_KP_PROMOTE_SQL = """
+UPDATE knowledge_points SET
+    discipline = ?, kp_type = ?, number = ?, number_canonical = ?,
+    seq_chapter = ?, seq_section = ?, seq_index = ?, content = ?, proof_content = ?,
+    difficulty = ?, subject = ?, taxonomy_path = ?, tags = ?, source_file = ?,
+    start_line = ?, end_line = ?, start_char = ?, end_char = ?, page = ?, order_index = ?,
+    ingestion_status = 'accepted'
+WHERE content_hash = ? AND ingestion_status != 'accepted'
+"""
+
+_Q_PROMOTE_SQL = """
+UPDATE questions SET
+    discipline = ?, question_type = ?, question_form = ?, number = ?,
+    number_canonical = ?, seq_chapter = ?, seq_section = ?, seq_index = ?,
+    content = ?, solution_content = ?, options = ?, correct_option = ?, blanks = ?,
+    difficulty = ?, subject = ?, taxonomy_path = ?, tags = ?, source_file = ?,
+    start_line = ?, end_line = ?, start_char = ?, end_char = ?, page = ?, order_index = ?,
+    ingestion_status = 'accepted', is_generated = ?, generator_model = ?,
+    generated_at = ?, generation_session_id = ?
+WHERE tenant_id = ? AND content_hash = ? AND ingestion_status != 'accepted'
 """
 
 
@@ -276,6 +339,7 @@ def _kp_to_tuple(kp: KnowledgePoint) -> tuple[Any, ...]:
         kp.page,
         kp.order_index,
         _content_hash(kp.content),
+        kp.ingestion_status,
     )
 
 
@@ -308,12 +372,23 @@ def _question_to_tuple(q: Question) -> tuple[Any, ...]:
         q.page,
         q.order_index,
         _content_hash(q.content),
+        q.ingestion_status,
         int(q.is_generated),
         q.generator_model,
         q.generated_at.isoformat() if q.generated_at else None,
         q.generation_session_id,
         q.tenant_id,
     )
+
+
+def _kp_promotion_tuple(kp: KnowledgePoint) -> tuple[Any, ...]:
+    values = _kp_to_tuple(kp)
+    return (*values[1:21], values[21])
+
+
+def _question_promotion_tuple(q: Question) -> tuple[Any, ...]:
+    values = _question_to_tuple(q)
+    return (*values[1:25], *values[27:31], values[31], values[25])
 
 
 class SQLiteStorageBackend:
@@ -338,14 +413,31 @@ class SQLiteStorageBackend:
 
     def _init_schema(self) -> None:
         cur_version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        has_kp_table = (
-            self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_points'"
-            ).fetchone()
-            is not None
-        )
+        core_tables = {
+            str(row[0])
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('knowledge_points','questions')"
+            ).fetchall()
+        }
+        if core_tables and core_tables != {"knowledge_points", "questions"}:
+            raise SchemaVersionMismatch(
+                "检测到不完整的核心 schema（knowledge_points/questions 必须同时存在）；"
+                "拒绝自动补写，请先备份并用 --restart 重建。"
+            )
+        has_core_tables = bool(core_tables)
+        if has_core_tables and cur_version > _SCHEMA_VERSION:
+            raise SchemaVersionMismatch(
+                f"检测到未来 DB schema v{cur_version}，当前代码仅支持 v{_SCHEMA_VERSION}；"
+                "拒绝降级写入，请使用匹配或更新版本的 SciForge。"
+            )
+        if has_core_tables and cur_version < 8:
+            raise SchemaVersionMismatch(
+                f"检测到非空 DB schema v{cur_version}，当前增量迁移仅支持 v8 起；"
+                "请先备份并使用 --restart 重建。"
+            )
         # 旧库：优先走增量迁移（ALTER）；仅在缺迁移路径时才要求删库重建
-        if has_kp_table and 0 < cur_version < _SCHEMA_VERSION:
+        if has_core_tables and cur_version < _SCHEMA_VERSION:
             self._migrate(cur_version)
 
         schema_path = Path(__file__).parent / "schema.sql"
@@ -411,7 +503,7 @@ class SQLiteStorageBackend:
         kps: list[KnowledgePoint],
         questions: list[Question],
     ) -> int:
-        """一次事务 + executemany 保存多个 KP + Question（INSERT OR IGNORE 幂等去重）。
+        """一次事务批量保存，并允许 accepted 校正晋升既有不确定占位。
 
         返回尝试条数（非真实新增——FTS AFTER INSERT 触发器会污染 total_changes）。
         REC-10：真实 persisted/deduped 由 Stage3 用 ``count_existing_content`` 批量预查得出。
@@ -419,12 +511,46 @@ class SQLiteStorageBackend:
         with self._write_lock, self.transaction():
             if kps:
                 self._conn.executemany(_KP_INSERT_SQL, [_kp_to_tuple(kp) for kp in kps])
+                accepted_kps = [kp for kp in kps if kp.ingestion_status == "accepted"]
+                if accepted_kps:
+                    self._conn.executemany(
+                        _KP_PROMOTE_SQL,
+                        [_kp_promotion_tuple(kp) for kp in accepted_kps],
+                    )
+                    self._conn.executemany(
+                        "UPDATE review_queue SET status = 'resolved', updated_at = datetime('now') "
+                        "WHERE reason = 'non_accepted_ingestion_status' "
+                        "AND item_id IN (SELECT id FROM knowledge_points WHERE content_hash = ? "
+                        "AND ingestion_status = 'accepted')",
+                        [(_content_hash(kp.content),) for kp in accepted_kps],
+                    )
             if questions:
                 self._conn.executemany(_Q_INSERT_SQL, [_question_to_tuple(q) for q in questions])
+                accepted_questions = [q for q in questions if q.ingestion_status == "accepted"]
+                if accepted_questions:
+                    self._conn.executemany(
+                        _Q_PROMOTE_SQL,
+                        [_question_promotion_tuple(q) for q in accepted_questions],
+                    )
+                    self._conn.executemany(
+                        "UPDATE review_queue SET status = 'resolved', updated_at = datetime('now') "
+                        "WHERE reason = 'non_accepted_ingestion_status' "
+                        "AND item_id IN (SELECT id FROM questions WHERE tenant_id = ? "
+                        "AND content_hash = ? AND ingestion_status = 'accepted')",
+                        [
+                            (q.tenant_id, _content_hash(q.content))
+                            for q in accepted_questions
+                        ],
+                    )
         logger.info("storage_batch_saved", kps=len(kps), questions=len(questions))
         return len(kps) + len(questions)
 
-    def count_existing_content(self, contents: list[str], scope: str) -> int:
+    def count_existing_content(
+        self,
+        contents: list[str],
+        scope: str,
+        tenant_id: str = "",
+    ) -> int:
         """REC-10：批量统计 ``contents`` 已存在于库的条数（一次 SELECT，替代逐条 find_duplicates）。
 
         scope: "knowledge" → knowledge_points；其余 → questions。用 content_hash IN 批量查；
@@ -435,12 +561,45 @@ class SQLiteStorageBackend:
         table = "knowledge_points" if scope == "knowledge" else "questions"
         hashes = list({_content_hash(c) for c in contents})
         placeholders = ",".join("?" for _ in hashes)
+        tenant_clause = " AND tenant_id = ?" if table == "questions" else ""
+        params: list[Any] = [*hashes]
+        if tenant_clause:
+            params.append(tenant_id)
         cur = self._conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE content_hash IN ({placeholders})",  # noqa: S608
-            hashes,
+            f"SELECT COUNT(*) FROM {table} "  # noqa: S608
+            f"WHERE content_hash IN ({placeholders}){tenant_clause}",
+            params,
         )
         row = cur.fetchone()
         return int(row[0]) if row else 0
+
+    def resolve_content_ids(
+        self,
+        contents: list[str],
+        scope: str,
+        tenant_id: str = "",
+    ) -> dict[str, str]:
+        """批量解析去重后的稳定 id，供 figures/调用方避免引用被忽略的新 UUID。"""
+        if not contents:
+            return {}
+        table = "knowledge_points" if scope == "knowledge" else "questions"
+        hashes = list({_content_hash(content) for content in contents})
+        placeholders = ",".join("?" for _ in hashes)
+        tenant_clause = " AND tenant_id = ?" if table == "questions" else ""
+        params: list[Any] = [*hashes]
+        if tenant_clause:
+            params.append(tenant_id)
+        rows = self._conn.execute(
+            f"SELECT id, content_hash FROM {table} "  # noqa: S608
+            f"WHERE content_hash IN ({placeholders}){tenant_clause}",
+            params,
+        ).fetchall()
+        by_hash = {str(row["content_hash"]): str(row["id"]) for row in rows}
+        return {
+            content: by_hash[_content_hash(content)]
+            for content in contents
+            if _content_hash(content) in by_hash
+        }
 
     def save_figures(self, figures: list[Figure]) -> int:
         """REC-18：批量写入图表元数据（INSERT OR IGNORE，UNIQUE(item_id,image_path) 幂等）。"""
@@ -480,11 +639,15 @@ class SQLiteStorageBackend:
 
     def save_knowledge_point(self, kp: KnowledgePoint) -> str:
         self.save_batch([kp], [])
-        return kp.id
+        return self.resolve_content_ids([kp.content], "knowledge").get(kp.content, kp.id)
 
     def save_question(self, question: Question) -> str:
         self.save_batch([], [question])
-        return question.id
+        return self.resolve_content_ids(
+            [question.content],
+            "question",
+            question.tenant_id,
+        ).get(question.content, question.id)
 
     # ── 读取 ──────────────────────────────────────────
 
@@ -655,6 +818,18 @@ class SQLiteStorageBackend:
         return {
             "kp_total": scalar("SELECT COUNT(*) FROM knowledge_points"),
             "q_total": q_total,
+            "kp_by_ingestion_status": dist(
+                "SELECT ingestion_status, COUNT(*) FROM knowledge_points "
+                "GROUP BY ingestion_status ORDER BY 2 DESC"
+            ),
+            "q_by_ingestion_status": dist(
+                "SELECT ingestion_status, COUNT(*) FROM questions "
+                "GROUP BY ingestion_status ORDER BY 2 DESC"
+            ),
+            "nonaccepted_total": scalar(
+                "SELECT COUNT(*) FROM knowledge_points WHERE ingestion_status != 'accepted'"
+            )
+            + scalar("SELECT COUNT(*) FROM questions WHERE ingestion_status != 'accepted'"),
             "kp_by_type": dist(
                 "SELECT kp_type, COUNT(*) FROM knowledge_points GROUP BY kp_type ORDER BY 2 DESC"
             ),
@@ -686,8 +861,15 @@ class SQLiteStorageBackend:
             "concept_relations_total": scalar("SELECT COUNT(*) FROM concept_relations"),
             "evaluations_total": scalar("SELECT COUNT(*) FROM item_evaluations"),
             "quality_gate_pass": scalar(
-                "SELECT COUNT(*) FROM item_evaluations WHERE source = 'pipeline_auto' "
-                "AND extraction_quality >= 0.7 AND solution_completeness >= 0.6"
+                "SELECT COUNT(*) FROM item_evaluations ie "
+                "WHERE ie.source = 'pipeline_auto' "
+                "AND ie.extraction_quality >= 0.7 AND ie.solution_completeness >= 0.6 "
+                "AND ((ie.item_kind = 'knowledge' AND EXISTS ("
+                "  SELECT 1 FROM knowledge_points kp WHERE kp.id = ie.item_id "
+                "  AND kp.ingestion_status = 'accepted')) OR "
+                "(ie.item_kind = 'question' AND EXISTS ("
+                "  SELECT 1 FROM questions q WHERE q.id = ie.item_id "
+                "  AND q.ingestion_status = 'accepted')))"
             ),
             "review_queue_open": scalar(
                 "SELECT COUNT(*) FROM review_queue WHERE status IN ('open','in_progress')"
@@ -879,7 +1061,7 @@ class SQLiteStorageBackend:
             ("questions", "question", "question_type"),
         ):
             params: list[Any] = list(sources)
-            condition = f"source_file IN ({placeholders})"
+            condition = f"source_file IN ({placeholders}) AND ingestion_status = 'accepted'"
             if discipline:
                 condition += " AND discipline = ?"
                 params.append(discipline)
@@ -1167,6 +1349,7 @@ class SQLiteStorageBackend:
                 f"SELECT base.id, base.{type_col} AS type, base.content, "
                 f"base.{reasoning_col} AS reasoning, base.difficulty, base.taxonomy_path, "
                 f"base.tags, base.start_line, base.end_line, base.start_char, base.end_char, "
+                f"base.ingestion_status, "
                 f"{question_fields}, "
                 "(SELECT COUNT(*) FROM figures f WHERE f.item_id = base.id) AS figure_count, "
                 "(SELECT COUNT(*) FROM item_concepts ic WHERE ic.item_id = base.id) "
@@ -1326,22 +1509,30 @@ class SQLiteStorageBackend:
         limit: int = 500,
     ) -> list[str]:
         """生成/讲义默认池的质量门禁查询。"""
+        if item_kind == "question":
+            base_table = "questions"
+        elif item_kind == "knowledge":
+            base_table = "knowledge_points"
+        else:
+            raise ValueError("item_kind must be 'knowledge' or 'question'")
         conditions = [
-            "item_kind = ?",
-            "rubric_version = ?",
-            "source = 'pipeline_auto'",
-            "extraction_quality >= ?",
-            "solution_completeness >= ?",
+            "ie.item_kind = ?",
+            "ie.rubric_version = ?",
+            "ie.source = 'pipeline_auto'",
+            "ie.extraction_quality >= ?",
+            "ie.solution_completeness >= ?",
+            "base.ingestion_status = 'accepted'",
         ]
         params: list[Any] = [item_kind, rubric_version, extraction_min, solution_min]
         if difficulty_range:
-            conditions.append("difficulty_overall BETWEEN ? AND ?")
+            conditions.append("ie.difficulty_overall BETWEEN ? AND ?")
             params.extend(difficulty_range)
         params.append(max(1, min(limit, 5000)))
         rows = self._conn.execute(
-            "SELECT item_id FROM item_evaluations WHERE "
+            f"SELECT ie.item_id FROM item_evaluations ie "  # noqa: S608 - allow-listed table
+            f"JOIN {base_table} base ON base.id = ie.item_id WHERE "
             + " AND ".join(conditions)
-            + " ORDER BY lecture_suitability DESC, confidence DESC LIMIT ?",
+            + " ORDER BY ie.lecture_suitability DESC, ie.confidence DESC LIMIT ?",
             params,
         ).fetchall()
         return [str(row["item_id"]) for row in rows]
@@ -1468,18 +1659,29 @@ class SQLiteStorageBackend:
     _ALLOWED_SEARCH_TABLES = {"knowledge_points", "questions"}
 
     @staticmethod
-    def _build_filter_clause(filters: dict[str, object]) -> tuple[list[str], list[object]]:
+    def _build_filter_clause(
+        filters: dict[str, object],
+        *,
+        expected_item_kind: str | None = None,
+    ) -> tuple[list[str], list[object]]:
         """把 filters 字典编译成 (conditions, params)，供 _search 与多租户子类复用。
 
         仅放行白名单字段，避免 SQL 注入（key 全部来自字面量）。
         """
-        return compile_search_filters(filters)
+        return compile_search_filters(
+            filters,
+            expected_item_kind=expected_item_kind,  # type: ignore[arg-type]
+        )
 
     def _search(self, table: str, filters: dict[str, object]) -> list[str]:
         """动态构建 WHERE 子句（table 必须是白名单内的表名）"""
         assert table in self._ALLOWED_SEARCH_TABLES
 
-        conditions, params = self._build_filter_clause(filters)
+        expected_kind = "knowledge" if table == "knowledge_points" else "question"
+        conditions, params = self._build_filter_clause(
+            filters,
+            expected_item_kind=expected_kind,
+        )
         where = " AND ".join(conditions) if conditions else "1=1"
         rows = self._conn.execute(
             f"SELECT id FROM {table} WHERE {where} ORDER BY order_index LIMIT 500",  # noqa: S608
@@ -1515,6 +1717,7 @@ class SQLiteStorageBackend:
             end_char=_row_value(row, "end_char", 0) or 0,
             page=_row_value(row, "page", None),
             order_index=row["order_index"] or 0,
+            ingestion_status=_row_value(row, "ingestion_status", "accepted") or "accepted",
         )
 
     @staticmethod
@@ -1549,6 +1752,7 @@ class SQLiteStorageBackend:
             end_char=_row_value(row, "end_char", 0) or 0,
             page=_row_value(row, "page", None),
             order_index=row["order_index"] or 0,
+            ingestion_status=_row_value(row, "ingestion_status", "accepted") or "accepted",
             is_generated=bool(row["is_generated"]),
             generator_model=row["generator_model"] or "",
             generated_at=(

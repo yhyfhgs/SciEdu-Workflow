@@ -168,7 +168,7 @@ class KPSource(BaseModel):
 
 
 class KnowledgePoint(BaseModel):
-    """知识点存储模型 — 与 DB schema v7 一一对应"""
+    """知识点存储模型 — 与 DB schema v14 一一对应。"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH
@@ -194,6 +194,10 @@ class KnowledgePoint(BaseModel):
     end_char: int = 0
     page: int | None = None  # 源 PDF 页码（MdBlockSource.page_start；文本格式为 None）
     order_index: int = 0
+    # schema v14：摄取可靠性与内容本身分离；非 accepted 条目保留但不进入默认生成池。
+    ingestion_status: Literal["accepted", "uncertain", "needs_patch", "rejected"] = (
+        "accepted"
+    )
 
     model_config = ConfigDict(validate_assignment=True)
 
@@ -245,7 +249,7 @@ class Figure(BaseModel):
 
 
 class Question(BaseModel):
-    """题目存储模型 — 与 DB schema v10 一一对应"""
+    """题目存储模型 — 与 DB schema v14 一一对应。"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH
@@ -282,6 +286,9 @@ class Question(BaseModel):
     end_char: int = 0
     page: int | None = None
     order_index: int = 0
+    ingestion_status: Literal["accepted", "uncertain", "needs_patch", "rejected"] = (
+        "accepted"
+    )
     # ── 生成元数据（v9）：区分生成题/手动题，支撑版权归属、计费与统计追溯 ──
     is_generated: bool = False
     generator_model: str = ""  # 生成所用模型 id（如 claude-opus-4-8）

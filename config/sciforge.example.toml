@@ -316,18 +316,18 @@ seed = 42
 # relation_inference_enabled = true        # 结构化关系边 corollary_of/tests/successor → item_relations（#6）
 # reconciliation_enabled = true            # 复核重复条目/类型误判，写 reconciliation_report.json 不改库（#7）
 
-# v11 渐进增强（默认关闭；可按里程碑独立启用）
-# format_profile_enabled = false            # M1：体裁/密度自适应画像
-# marker_ledger_enabled = false             # M1：标记台账与覆盖率审计
+# v11 安全默认值（确定性完整性/发布门禁默认开启；多轮 LLM 仍按需）
+# format_profile_enabled = true             # M1：体裁/密度自适应画像
+# marker_ledger_enabled = true              # M1：标记台账与覆盖率审计
 # extract_char_span_enabled = false         # M1：字符级溯源
-# extract_active_carry_enabled = false      # M2：跨窗四态 carry
-# segment_halo_lines = 0                    # M2：并行段重叠区（建议 60-120）
-# provisional_id_remap_enabled = false      # M3：补丁合并后统一分配 item id
-# patch_local_extraction_enabled = false    # M3：遗漏 span 局部补抽
-# extract_harness_enabled = false           # M4：窗口级 locate→extract→audit harness
+# extract_active_carry_enabled = true       # M2：跨窗四态 carry
+# segment_halo_lines = 80                   # M2：并行段重叠区（仅并行模式生效）
+# provisional_id_remap_enabled = true       # M3：补丁合并后统一分配 item id
+# patch_local_extraction_enabled = true     # M3：遗漏 span 局部补抽
+# extract_harness_enabled = true            # M4：窗口级 locate→extract→audit harness
 # extract_validator_enabled = false         # M4：仅高风险窗口触发 evaluator
-# concept_graph_enabled = false             # M5：taxonomy 权威概念图 + 持久别名
-# item_evaluation_enabled = false           # M6：确定性多维 rubric + review queue
+# concept_graph_enabled = true              # M5：taxonomy 权威概念图 + 持久别名
+# item_evaluation_enabled = true             # M6：确定性多维 rubric + review queue
 # rubric_version = "v1"                     # 量规变更时升版，保留历史评分
 # evaluation_extraction_threshold = 0.7     # 低于此值进入人工复核队列
 # evaluation_solution_threshold = 0.6       # 题答/证明完整性门槛

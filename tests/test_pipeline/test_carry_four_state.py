@@ -163,7 +163,7 @@ _WINDOW_LINES = [
 
 
 def test_flag_off_never_builds_carry() -> None:
-    stage = _stage1()
+    stage = _stage1(extract_active_carry_enabled=False)
     stage._update_carry_after_window(
         [], "incomplete_at_tail", _annotated(_WINDOW_LINES, 501), 501, 2, 3
     )

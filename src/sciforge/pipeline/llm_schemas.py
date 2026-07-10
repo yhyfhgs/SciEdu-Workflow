@@ -129,7 +129,7 @@ class SingleItemExtractLLM(BaseModel):
     resolved_start_char: int | None = None
     resolved_end_char: int | None = None
     # v11 I.3（M3，内部字段非 LLM 输出）：per-item 状态 + provisional id。
-    # provisional_id_remap_enabled=False（默认）时两者恒为默认值，不影响现状。
+    # provisional_id_remap_enabled=False（显式兼容模式）时两者恒为默认值，不影响现状。
     status: ItemStatus = "accepted"
     provisional_id: str = ""
 

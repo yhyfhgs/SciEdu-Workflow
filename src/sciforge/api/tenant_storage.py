@@ -26,7 +26,7 @@ from urllib.parse import quote
 if TYPE_CHECKING:
     from sciforge.core.models import KnowledgePoint, Question
 
-from sciforge.storage.query import compile_search_filters
+from sciforge.storage.query import compile_search_filters, require_scored_quality_gate
 
 
 class TenantStorageConfigurationError(RuntimeError):
@@ -102,6 +102,7 @@ class TenantScopedStorageView:
 
     def search_questions(self, filters: dict[str, object]) -> list[str]:
         """Search only public/current-tenant questions, filtering before LIMIT."""
+        filters = require_scored_quality_gate(filters)
         if self._reader is None:
             search = getattr(self._storage, "search_questions_for_tenant")
             result = search(
@@ -111,7 +112,7 @@ class TenantScopedStorageView:
             )
             return [str(item_id) for item_id in result]
 
-        conditions, params = compile_search_filters(filters)
+        conditions, params = compile_search_filters(filters, expected_item_kind="question")
         visibility, visibility_params = self._visibility_sql()
         conditions.append(visibility)
         params.extend(visibility_params)
@@ -208,6 +209,12 @@ class TenantScopedStorageView:
     def __getattr__(self, name: str) -> Any:
         # Fail closed for unwrapped question APIs.  Non-question capabilities
         # (for example concept graph reads) may still delegate transparently.
-        if "question" in name or name in {"search_fulltext", "find_duplicates"}:
+        if "question" in name or name in {
+            "search_fulltext",
+            "find_duplicates",
+            "quality_eligible_item_ids",
+            "count_existing_content",
+            "resolve_content_ids",
+        }:
             raise AttributeError(f"tenant-scoped question method is not exposed: {name}")
         return getattr(self._storage, name)

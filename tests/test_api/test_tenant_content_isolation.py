@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sciforge.agents import QGenAgent, SolveAgent
@@ -13,6 +14,7 @@ from sciforge.agents.qgen.agent import QGenOutput
 from sciforge.api.app import create_app
 from sciforge.api.tenant_storage import TenantScopedStorageView
 from sciforge.core.models import Discipline, Question
+from sciforge.pipeline.evaluation import evaluate_item_rows
 from sciforge.storage.saas import SaasStore
 from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
@@ -27,6 +29,11 @@ def _question(qid: str, content: str, tenant_id: str, order_index: int) -> Quest
         discipline=Discipline.MATH,
         content=content,
         difficulty=4,
+        solution_content="给出完整、可复核的标准解答。",
+        taxonomy_path="math.analysis.continuity",
+        tags=["math:数学", "analysis:分析"],
+        start_line=1,
+        end_line=2,
         tenant_id=tenant_id,
         order_index=order_index,
     )
@@ -42,6 +49,7 @@ def _seed_bank(db_path: Path, tenant_a: str, tenant_b: str) -> None:
                 _question("tenant-b", "租户 B 私有题目内容足够长。", tenant_b, 3),
             ],
         )
+        storage.save_evaluation_batch(evaluate_item_rows(storage.evaluation_rows("")))
 
 
 def test_sql_scope_filters_before_limit(tmp_path: Path) -> None:
@@ -59,6 +67,18 @@ def test_sql_scope_filters_before_limit(tmp_path: Path) -> None:
         )
         with TenantScopedStorageView(storage, "tenant-a") as scoped:
             assert scoped.search_questions({}) == ["public-after-limit", "own-after-limit"]
+
+
+def test_tenant_view_denies_unscoped_quality_and_dedup_helpers(tmp_path: Path) -> None:
+    with SQLiteStorageBackend(tmp_path / "bank.db") as storage:
+        with TenantScopedStorageView(storage, "tenant-a") as scoped:
+            for method_name in (
+                "quality_eligible_item_ids",
+                "count_existing_content",
+                "resolve_content_ids",
+            ):
+                with pytest.raises(AttributeError, match="not exposed"):
+                    getattr(scoped, method_name)
 
 
 def test_papers_include_public_and_owner_but_not_foreign(tmp_path: Path) -> None:

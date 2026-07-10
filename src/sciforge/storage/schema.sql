@@ -1,4 +1,8 @@
--- SciForge SQLite Schema v13
+-- SciForge SQLite Schema v14
+-- v14 变更（Lossless Ingestion Governance）：
+--   * knowledge_points/questions 新增 ingestion_status
+--   * 非 accepted 条目保留原文但在默认质量门禁前置排除
+--   * questions 改为 (tenant_id, content_hash) 作用域去重；校正更新同步 FTS
 -- v13 变更（Knowledge Evaluation / M6）：
 --   * item_evaluations：版本化 10 维难度 + 质量/教学价值量规
 --   * review_queue：低质量、答案不完整、pending concept 的人工治理队列
@@ -28,7 +32,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 13;
+PRAGMA user_version = 14;
 
 -- ── 知识点 ──
 
@@ -56,7 +60,9 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     end_char INTEGER NOT NULL DEFAULT 0,
     page INTEGER,
     order_index INTEGER NOT NULL DEFAULT 0,
-    content_hash TEXT DEFAULT ''
+    content_hash TEXT DEFAULT '',
+    ingestion_status TEXT NOT NULL DEFAULT 'accepted'
+        CHECK(ingestion_status IN ('accepted','uncertain','needs_patch','rejected'))
 );
 
 -- ── 题目（solution 直接嵌入）──
@@ -91,6 +97,8 @@ CREATE TABLE IF NOT EXISTS questions (
     page INTEGER,
     order_index INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT DEFAULT '',
+    ingestion_status TEXT NOT NULL DEFAULT 'accepted'
+        CHECK(ingestion_status IN ('accepted','uncertain','needs_patch','rejected')),
     -- 生成元数据（v9）
     is_generated INTEGER NOT NULL DEFAULT 0,
     generator_model TEXT NOT NULL DEFAULT '',
@@ -289,7 +297,12 @@ CREATE INDEX IF NOT EXISTS idx_q_source ON questions(source_file);
 CREATE INDEX IF NOT EXISTS idx_q_order ON questions(source_file, order_index);
 -- REC-16：order_index 单列索引
 CREATE INDEX IF NOT EXISTS idx_q_order_only ON questions(order_index);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_q_hash_uniq ON questions(content_hash)
+CREATE INDEX IF NOT EXISTS idx_kp_ingestion_status
+    ON knowledge_points(ingestion_status, order_index);
+CREATE INDEX IF NOT EXISTS idx_q_ingestion_status
+    ON questions(ingestion_status, order_index);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_q_hash_tenant_uniq
+    ON questions(tenant_id, content_hash)
     WHERE content_hash != '';
 -- 生成题 / 租户筛选（v9）
 CREATE INDEX IF NOT EXISTS idx_q_tenant ON questions(tenant_id);
@@ -311,6 +324,14 @@ CREATE TRIGGER IF NOT EXISTS kp_fts_delete AFTER DELETE ON knowledge_points BEGI
     VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
 END;
 
+CREATE TRIGGER IF NOT EXISTS kp_fts_update
+AFTER UPDATE OF content, taxonomy_path ON knowledge_points BEGIN
+    INSERT INTO kp_fts(kp_fts, rowid, content, taxonomy_path)
+    VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+    INSERT INTO kp_fts(rowid, content, taxonomy_path)
+    VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
+END;
+
 CREATE TRIGGER IF NOT EXISTS q_fts_insert AFTER INSERT ON questions BEGIN
     INSERT INTO question_fts(rowid, content, taxonomy_path)
     VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
@@ -319,4 +340,12 @@ END;
 CREATE TRIGGER IF NOT EXISTS q_fts_delete AFTER DELETE ON questions BEGIN
     INSERT INTO question_fts(question_fts, rowid, content, taxonomy_path)
     VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+END;
+
+CREATE TRIGGER IF NOT EXISTS q_fts_update
+AFTER UPDATE OF content, taxonomy_path ON questions BEGIN
+    INSERT INTO question_fts(question_fts, rowid, content, taxonomy_path)
+    VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+    INSERT INTO question_fts(rowid, content, taxonomy_path)
+    VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
 END;

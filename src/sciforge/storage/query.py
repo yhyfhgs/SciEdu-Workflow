@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 
@@ -42,11 +42,16 @@ _EXACT_FILTER_COLUMNS = frozenset(
         "subject",
         "source_file",
         "content_hash",
+        "ingestion_status",
     }
 )
 
 
-def compile_search_filters(filters: dict[str, object]) -> tuple[list[str], list[object]]:
+def compile_search_filters(
+    filters: dict[str, object],
+    *,
+    expected_item_kind: Literal["knowledge", "question"] | None = None,
+) -> tuple[list[str], list[object]]:
     """Compile the repository's allow-listed filters into SQL and parameters."""
     conditions: list[str] = []
     params: list[object] = []
@@ -72,6 +77,11 @@ def compile_search_filters(filters: dict[str, object]) -> tuple[list[str], list[
             )
             params.extend([needle] * 5)
         elif key == "quality_gate" and isinstance(value, QualityGateFilter):
+            if expected_item_kind is not None and value.item_kind != expected_item_kind:
+                raise ValueError(
+                    "quality gate item_kind does not match search table: "
+                    f"expected {expected_item_kind!r}, got {value.item_kind!r}"
+                )
             clause, clause_params = _quality_gate_clause(value)
             conditions.append(clause)
             params.extend(clause_params)
@@ -95,14 +105,37 @@ def _quality_gate_clause(policy: QualityGateFilter) -> tuple[str, list[object]]:
         policy.extraction_min,
         policy.solution_min,
     ]
+    accepted = "ingestion_status = 'accepted'"
     if not policy.allow_legacy_when_unscored:
-        return eligible, eligible_params
+        return f"({accepted} AND {eligible})", eligible_params
     no_evaluations = (
         "NOT EXISTS (SELECT 1 FROM item_evaluations AS population "
         "WHERE population.item_kind = ? AND population.rubric_version = ? "
         "AND population.source = ?)"
     )
-    return f"({no_evaluations} OR {eligible})", [*identity, *eligible_params]
+    return (
+        f"({accepted} AND ({no_evaluations} OR {eligible}))",
+        [*identity, *eligible_params],
+    )
 
 
-__all__ = ["QualityGateFilter", "compile_search_filters"]
+def require_scored_quality_gate(filters: dict[str, object]) -> dict[str, object]:
+    """Disable corpus-wide legacy fallback at tenant boundaries.
+
+    The legacy population check is intentionally global for offline single-corpus
+    migration. In a shared database that would let one tenant's evaluation state
+    change another tenant's availability, so hosted reads require explicit scores.
+    """
+    policy = filters.get("quality_gate")
+    if not isinstance(policy, QualityGateFilter) or not policy.allow_legacy_when_unscored:
+        return filters
+    scoped = dict(filters)
+    scoped["quality_gate"] = replace(policy, allow_legacy_when_unscored=False)
+    return scoped
+
+
+__all__ = [
+    "QualityGateFilter",
+    "compile_search_filters",
+    "require_scored_quality_gate",
+]

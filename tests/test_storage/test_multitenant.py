@@ -15,6 +15,7 @@ from sciforge.storage.multitenant import (
     open_multitenant_backend,
 )
 from sciforge.storage.protocol import MultiTenantStorageBackend
+from sciforge.storage.query import QualityGateFilter
 
 
 @pytest.fixture
@@ -46,6 +47,45 @@ def test_cross_tenant_isolation(backend: MultiTenantSQLiteBackend) -> None:
     assert "租户A私有题" not in b_contents  # ★ 越权一律拒
     assert "租户B私有题" in b_contents
     assert "租户B私有题" not in a_contents
+
+
+def test_same_content_is_deduplicated_per_tenant(backend: MultiTenantSQLiteBackend) -> None:
+    a = _q("两个租户都可拥有的同一道题", tenant_id="tenant-A")
+    b = _q("两个租户都可拥有的同一道题", tenant_id="tenant-B")
+
+    backend.save_batch([], [a, b])
+
+    assert backend.load_question(a.id).tenant_id == "tenant-A"
+    assert backend.load_question(b.id).tenant_id == "tenant-B"
+    assert backend.search_questions_for_tenant(
+        {}, tenant_id="tenant-A", include_public=False
+    ) == [a.id]
+    assert backend.search_questions_for_tenant(
+        {}, tenant_id="tenant-B", include_public=False
+    ) == [b.id]
+    assert backend.count_existing_content([a.content], "question", "tenant-A") == 1
+    assert backend.count_existing_content([a.content], "question", "tenant-B") == 1
+    assert backend.count_existing_content([a.content], "question") == 0
+
+
+def test_tenant_quality_gate_requires_explicit_score_and_matching_kind(
+    backend: MultiTenantSQLiteBackend,
+) -> None:
+    backend.save_question(_q("未评价私有题", tenant_id="tenant-A"))
+
+    assert (
+        backend.search_questions_for_tenant(
+            {"quality_gate": QualityGateFilter(item_kind="question")},
+            tenant_id="tenant-A",
+            include_public=False,
+        )
+        == []
+    )
+    with pytest.raises(ValueError, match="does not match search table"):
+        backend.search_questions_for_tenant(
+            {"quality_gate": QualityGateFilter(item_kind="knowledge")},
+            tenant_id="tenant-A",
+        )
 
 
 def test_public_questions_visible_to_all(backend: MultiTenantSQLiteBackend) -> None:

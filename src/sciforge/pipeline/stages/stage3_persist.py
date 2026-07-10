@@ -211,6 +211,7 @@ class Stage3Persist:
                 end_char=int(getattr(item, "resolved_end_char", 0) or 0),
                 page=msg.page_start,
                 order_index=msg.item_id,
+                ingestion_status=item.status,
             )
             return kp, None
 
@@ -247,6 +248,7 @@ class Stage3Persist:
             end_char=int(getattr(item, "resolved_end_char", 0) or 0),
             page=msg.page_start,
             order_index=msg.item_id,
+            ingestion_status=item.status,
         )
         return None, q
 
@@ -260,17 +262,14 @@ class Stage3Persist:
         qs: list[Question] = []
         kp_contents: list[str] = []
         q_contents: list[str] = []
-        figures: list[Figure] = []
         for msg in buffer:
             kp, q = self._build_persistable(msg)
             if kp is not None:
                 kps.append(kp)
                 kp_contents.append(msg.item.corrected_content)
-                figures.extend(_extract_figures(kp.content, kp.id, "knowledge", kp.source_file))
             if q is not None:
                 qs.append(q)
                 q_contents.append(msg.item.corrected_content)
-                figures.extend(_extract_figures(q.content, q.id, "question", q.source_file))
 
         # 批量去重计数（每类一次 SELECT，替代逐条 find_duplicates）
         existing = 0
@@ -285,6 +284,37 @@ class Stage3Persist:
 
         attempted = len(kps) + len(qs)
         await asyncio.to_thread(self.storage.save_batch, kps, qs)
+        # 去重/校正会保留既有稳定 id；图片必须绑定真正落库的 canonical id，不能
+        # 继续引用被 INSERT OR IGNORE 丢弃的新 UUID。
+        kp_ids = await asyncio.to_thread(
+            self.storage.resolve_content_ids,
+            [kp.content for kp in kps],
+            "knowledge",
+        )
+        q_ids = await asyncio.to_thread(
+            self.storage.resolve_content_ids,
+            [q.content for q in qs],
+            "question",
+        )
+        figures: list[Figure] = []
+        for kp in kps:
+            figures.extend(
+                _extract_figures(
+                    kp.content,
+                    kp_ids.get(kp.content, kp.id),
+                    "knowledge",
+                    kp.source_file,
+                )
+            )
+        for q in qs:
+            figures.extend(
+                _extract_figures(
+                    q.content,
+                    q_ids.get(q.content, q.id),
+                    "question",
+                    q.source_file,
+                )
+            )
         # REC-18：带图条目的图片元数据落库（content 仍保留 ![](path) 链接）
         if figures:
             await asyncio.to_thread(self.storage.save_figures, figures)

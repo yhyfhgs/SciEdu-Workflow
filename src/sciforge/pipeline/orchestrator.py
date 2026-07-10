@@ -150,9 +150,17 @@ class NoopStorageBackend:
         del content, item_type
         return []
 
-    def count_existing_content(self, contents: list[str], scope: str) -> int:
-        del contents, scope
+    def count_existing_content(
+        self, contents: list[str], scope: str, tenant_id: str = ""
+    ) -> int:
+        del contents, scope, tenant_id
         return 0
+
+    def resolve_content_ids(
+        self, contents: list[str], scope: str, tenant_id: str = ""
+    ) -> dict[str, str]:
+        del contents, scope, tenant_id
+        return {}
 
     def save_figures(self, figures: list[Figure]) -> int:
         return len(figures)

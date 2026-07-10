@@ -418,6 +418,83 @@ class Stage1Extract:
             logger.warning("stage1_carry_update_failed", error=str(exc))
             self._carry = None
 
+    def _build_uncertain_fallback(
+        self,
+        window: list[str],
+        window_start: int,
+        *,
+        reason: str,
+    ) -> BatchItemExtractPayloadLLM | None:
+        """Preserve unresolved source spans as explicit review-only items.
+
+        Strong deterministic markers split the window into bounded spans. If
+        no strong marker exists, the non-empty fragment is kept as one raw
+        uncertain span. This is a losslessness fallback, not semantic
+        extraction: deterministic evaluation must prevent these rows from the
+        default publication pool.
+        """
+
+        from sciforge.pipeline.boundary_patch import build_marker_ledger
+        from sciforge.pipeline.text_tools.markers import ITEM_KINDS
+
+        raw_lines = [self._strip_line_prefix(line) for line in window]
+        if not any(line.strip() for line in raw_lines):
+            return None
+        ledger = build_marker_ledger(raw_lines, line_base=window_start)
+        markers = [
+            marker
+            for marker in ledger.markers
+            if marker.kind in ITEM_KINDS and marker.strength == "strong"
+        ]
+        items: list[SingleItemExtractLLM] = []
+        if markers:
+            for index, marker in enumerate(markers):
+                start_offset = marker.global_line - window_start
+                next_line = (
+                    markers[index + 1].global_line
+                    if index + 1 < len(markers)
+                    else window_start + len(raw_lines)
+                )
+                end_offset = max(start_offset, next_line - window_start - 1)
+                content = "\n".join(raw_lines[start_offset : end_offset + 1]).strip()
+                if not content:
+                    content = marker.marker_text or f"[{marker.kind}]"
+                is_question = marker.kind in {"example", "exercise", "problem"}
+                items.append(
+                    SingleItemExtractLLM(
+                        category="question" if is_question else "knowledge",
+                        item_type=marker.kind,
+                        number=marker.number_hint,
+                        corrected_content=content,
+                        solution_status="no_solution_in_source",
+                        start_line=marker.global_line,
+                        end_line=window_start + end_offset,
+                        status="uncertain",
+                        provisional_id=f"fallback_{window_start}_{index:03d}",
+                    )
+                )
+        else:
+            content = "\n".join(raw_lines).strip()
+            items.append(
+                SingleItemExtractLLM(
+                    category="knowledge",
+                    item_type="uncertain_fragment",
+                    corrected_content=content,
+                    solution_status="no_solution_in_source",
+                    start_line=window_start,
+                    end_line=window_start + len(raw_lines) - 1,
+                    status="uncertain",
+                    provisional_id=f"fallback_{window_start}_000",
+                )
+            )
+
+        return BatchItemExtractPayloadLLM(
+            items=items,
+            stop_reason="all_complete",
+            last_consumed_line=items[-1].end_line,
+            issues=[reason],
+        )
+
     async def _apply_local_patches(
         self, window: list[str], window_start: int, consumed: int, payload: Any
     ) -> list[Any]:
@@ -812,20 +889,33 @@ class Stage1Extract:
                     await self._sync_state(state, force=True)
                     # 抛出异常让 orchestrator 终止整个文件的处理
                     raise
-                # 非 rate-limit：保留原行为，把 block 加入 failed_blocks
+                # 非 rate-limit：LLM/schema 已穷尽重试。保留疑似条目的原文占位，
+                # 让 review queue 接管，而不是滑走窗口造成不可恢复的内容缺口。
                 if (
                     current_block is not None
                     and current_block.block_index not in state.failed_blocks
                 ):
                     state.failed_blocks.append(current_block.block_index)
-                # 跳过本窗口内容
-                slide = min(self.base_window, window_len)
-                self.line_buffer = self.line_buffer[slide:]
-                self.line_offset += slide
-                self.current_window_size = self.base_window
-                self.consecutive_empty = 0
-                await self._sync_state(state, force=True)
-                break
+                fallback_payload = self._build_uncertain_fallback(
+                    window,
+                    window_start_int,
+                    reason=f"stage1_retry_exhausted: {str(exc.last_exc)[:180]}",
+                )
+                if fallback_payload is None:
+                    # 真空白窗口没有可保存证据，才允许推进。
+                    slide = min(self.base_window, window_len)
+                    self.line_buffer = self.line_buffer[slide:]
+                    self.line_offset += slide
+                    self.current_window_size = self.base_window
+                    self.consecutive_empty = 0
+                    await self._sync_state(state, force=True)
+                    break
+                payload = fallback_payload
+                logger.error(
+                    "stage1_retry_exhausted_preserved",
+                    line_range=f"{window_start_int}-{window_last_int}",
+                    placeholders=len(payload.items),
+                )
 
             # REC-12：文末/章末尾部 + regex 检测到条目标记但 LLM 返空 → 尽力强制再提取一次，
             # 避免试卷最后几题/章末习题因 near-tail guard 反复推迟而在 EOF 永久漏失。
@@ -848,6 +938,19 @@ class Stage1Extract:
                         count=len(forced.items),
                     )
                     payload = forced
+                else:
+                    fallback = self._build_uncertain_fallback(
+                        window,
+                        window_start_int,
+                        reason="terminal_tail_markers_unresolved",
+                    )
+                    if fallback is not None:
+                        payload = fallback
+                        logger.error(
+                            "stage1_terminal_tail_preserved_for_review",
+                            line_range=f"{window_start_int}-{window_last_int}",
+                            placeholders=len(fallback.items),
+                        )
 
             if not payload.items:
                 # 未提到条目 → 扩窗口或 force consume

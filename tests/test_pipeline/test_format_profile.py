@@ -112,7 +112,7 @@ def test_estimate_density_boundaries() -> None:
 
 def test_stage1_flag_off_keeps_rec14_behavior() -> None:
     """R2：flag 关 = v10 白名单路径；problem_set 文本不触发 fast-skip 关闭。"""
-    stage = _stage1()
+    stage = _stage1(format_profile_enabled=False)
     assert stage.profile_enabled is False
     stage._apply_genre_policy(_PROBLEM_SET_TEXT)
     assert stage._genre != "problem_set"  # 四值探测

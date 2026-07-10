@@ -113,6 +113,11 @@ def _difficulty_dimensions(row: dict[str, Any], text: str, reasoning: str) -> Di
 
 
 def _extraction_quality(row: dict[str, Any], text: str) -> tuple[float, list[str]]:
+    ingestion_status = str(row.get("ingestion_status") or "accepted")
+    if ingestion_status != "accepted":
+        # 摄取状态是比正文启发式更强的治理证据。即使占位片段恰好很长、数学符号
+        # 配平且带 taxonomy，也不能被后续确定性特征“加分”回默认生成池。
+        return 0.0, [f"ingestion_status:{ingestion_status}"]
     score = 1.0
     signals: list[str] = []
     if not text.strip():
@@ -229,7 +234,20 @@ def evaluate_item_rows(
         evaluations.append(evaluation)
 
         reasons: list[tuple[str, int, dict[str, Any]]] = []
-        if extraction < extraction_threshold:
+        ingestion_status = str(row.get("ingestion_status") or "accepted")
+        if ingestion_status != "accepted":
+            reasons.append(
+                (
+                    "non_accepted_ingestion_status",
+                    5,
+                    {
+                        "status": ingestion_status,
+                        "score": extraction,
+                        "signals": extraction_signals,
+                    },
+                )
+            )
+        elif extraction < extraction_threshold:
             reasons.append(
                 (
                     "low_extraction_quality",

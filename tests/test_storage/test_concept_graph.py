@@ -100,6 +100,23 @@ def test_persisted_alias_reuses_identity_for_later_source(
     assert backend.concept_count() == 3
 
 
+def test_nonaccepted_items_do_not_seed_published_concept_graph(
+    backend: SQLiteStorageBackend,
+) -> None:
+    backend.save_question(
+        Question(
+            id="uncertain-concept",
+            content="尚未可靠解析的量子拓扑题。",
+            taxonomy_path="math.quantum_topology.speculative",
+            tags=["math:数学", "quantum_topology:量子拓扑"],
+            source_file="uncertain.md",
+            ingestion_status="uncertain",
+        )
+    )
+
+    assert backend.concept_link_rows("uncertain.md", "math") == []
+
+
 def test_item_relation_evidence_is_promoted_to_concept_graph(
     backend: SQLiteStorageBackend,
 ) -> None:

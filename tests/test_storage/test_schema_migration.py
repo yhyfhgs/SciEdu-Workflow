@@ -1,4 +1,4 @@
-"""schema v9 生成元数据字段 + v8→v9 增量迁移测试
+"""schema v14 生成元数据、可追溯字段与增量迁移测试。
 
 验证：
 - 生成元数据字段（is_generated/generator_model/generated_at/generation_session_id/tenant_id）
@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from sciforge.core.models import Discipline, Question
+from sciforge.core.models import Discipline, KnowledgePoint, Question
+from sciforge.pipeline.evaluation import evaluate_item_rows
 from sciforge.storage.sqlite_backend import SchemaVersionMismatch, SQLiteStorageBackend
 
 # v8 questions 表定义（无生成元数据列），用于构造"旧库"
@@ -122,13 +123,13 @@ def test_defaults_for_non_generated(tmp_path: Path) -> None:
 
 
 def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
-    """旧 v8 库打开 → 自动链式升级到当前版本(v13)，不删库、保留旧数据"""
+    """旧 v8 库打开 → 自动链式升级到当前版本(v14)，不删库、保留旧数据。"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
 
     backend = SQLiteStorageBackend(db)
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 14
         # 旧数据保留，新列以默认值可读
         old = backend.load_question("q-old")
         assert old.content == "旧题内容"
@@ -141,6 +142,7 @@ def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
         assert old.start_char == 0
         assert old.end_char == 0
         assert old.page is None
+        assert old.ingestion_status == "accepted"
         # 迁移后能写入并读回带生成元数据的新题
         q = Question(
             discipline=Discipline.MATH,
@@ -155,13 +157,13 @@ def test_v8_to_v9_incremental_migration(tmp_path: Path) -> None:
 
 
 def test_migration_idempotent_rerun(tmp_path: Path) -> None:
-    """已迁移到当前版本的库再次打开不报错、版本仍为 v13"""
+    """已迁移到当前版本的库再次打开不报错、版本仍为 v14。"""
     db = tmp_path / "v8.db"
     _make_old_db(db, version=8)
     SQLiteStorageBackend(db).close()  # 首次迁移
     backend = SQLiteStorageBackend(db)  # 二次打开
     try:
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 14
     finally:
         backend.close()
 
@@ -211,7 +213,7 @@ def test_v11_to_v12_concept_graph_migration(tmp_path: Path) -> None:
         }
         assert "idx_concept_discipline_branch" in indexes
         assert "idx_item_concept_concept" in indexes
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 14
     finally:
         backend.close()
 
@@ -235,15 +237,50 @@ def test_v12_to_v13_evaluation_migration(tmp_path: Path) -> None:
         }
         assert "idx_eval_quality_gate" in indexes
         assert "idx_review_queue_work" in indexes
-        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 14
+    finally:
+        backend.close()
+
+
+def test_v13_to_v14_ingestion_status_migration(tmp_path: Path) -> None:
+    """v13 旧数据保留并默认 accepted，两个表与索引都完成升级。"""
+    from sciforge.storage.sqlite_backend import _MIGRATIONS
+
+    db = tmp_path / "v13.db"
+    _make_old_db(db, version=8)
+    conn = sqlite3.connect(str(db))
+    for version in range(8, 13):
+        for statement in _MIGRATIONS[version]:
+            conn.execute(statement)
+    conn.execute("PRAGMA user_version = 13")
+    conn.commit()
+    conn.close()
+
+    backend = SQLiteStorageBackend(db)
+    try:
+        assert backend._conn.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert backend.load_question("q-old").ingestion_status == "accepted"
+        kp_columns = {
+            row[1] for row in backend._conn.execute("PRAGMA table_info(knowledge_points)")
+        }
+        q_columns = {row[1] for row in backend._conn.execute("PRAGMA table_info(questions)")}
+        assert "ingestion_status" in kp_columns
+        assert "ingestion_status" in q_columns
+        indexes = {
+            row[0]
+            for row in backend._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        assert {"idx_kp_ingestion_status", "idx_q_ingestion_status"} <= indexes
+        assert "idx_q_hash_tenant_uniq" in indexes
+        assert "idx_q_hash_uniq" not in indexes
     finally:
         backend.close()
 
 
 def test_char_span_roundtrip(tmp_path: Path) -> None:
     """v11 字符级溯源字段 save → load 往返（KP 与 Question）"""
-    from sciforge.core.models import KnowledgePoint
-
     backend = SQLiteStorageBackend(tmp_path / "new.db")
     try:
         kp = KnowledgePoint(
@@ -272,6 +309,96 @@ def test_char_span_roundtrip(tmp_path: Path) -> None:
         assert (loaded_q.start_char, loaded_q.end_char, loaded_q.page) == (7, 40, 182)
     finally:
         backend.close()
+
+
+def test_ingestion_status_roundtrip(tmp_path: Path) -> None:
+    """v14 摄取状态在 KP/Question 中持久化且受数据库 CHECK 约束。"""
+    backend = SQLiteStorageBackend(tmp_path / "status.db")
+    try:
+        kp = KnowledgePoint(content="边界不完整的定理片段。", ingestion_status="needs_patch")
+        question = Question(content="待人工复核的题目片段。", ingestion_status="uncertain")
+        backend.save_batch([kp], [question])
+
+        assert backend.load_knowledge_point(kp.id).ingestion_status == "needs_patch"
+        assert backend.load_question(question.id).ingestion_status == "uncertain"
+        with pytest.raises(sqlite3.IntegrityError):
+            backend._conn.execute(
+                "UPDATE questions SET ingestion_status = 'invented' WHERE id = ?",
+                (question.id,),
+            )
+    finally:
+        backend.close()
+
+
+def test_accepted_correction_promotes_placeholder_without_changing_id(tmp_path: Path) -> None:
+    backend = SQLiteStorageBackend(tmp_path / "promotion.db")
+    try:
+        placeholder = Question(
+            id="stable-id",
+            content="证明函数在该区间上一致连续。",
+            solution_content=None,
+            ingestion_status="uncertain",
+            tenant_id="tenant-a",
+        )
+        backend.save_question(placeholder)
+        backend.save_evaluation_batch(
+            evaluate_item_rows(backend.evaluation_rows(placeholder.source_file or ""))
+        )
+        assert any(
+            item.reason == "non_accepted_ingestion_status"
+            for item in backend.load_review_queue(tenant_id="tenant-a")
+        )
+        correction = Question(
+            id="discarded-new-id",
+            content="证明函数在该区间上一致连续。",
+            solution_content="由紧致性取有限子覆盖，取最小半径即得。",
+            taxonomy_path="math.analysis.continuity.uniform_continuity",
+            tags=["math:数学", "analysis:分析"],
+            ingestion_status="accepted",
+            tenant_id="tenant-a",
+        )
+
+        canonical_id = backend.save_question(correction)
+
+        assert canonical_id == "stable-id"
+        assert backend.question_count() == 1
+        promoted = backend.load_question("stable-id")
+        assert promoted.ingestion_status == "accepted"
+        assert promoted.solution_content == correction.solution_content
+        assert promoted.taxonomy_path == correction.taxonomy_path
+        assert not any(
+            item.reason == "non_accepted_ingestion_status"
+            for item in backend.load_review_queue(tenant_id="tenant-a")
+        )
+        with pytest.raises(FileNotFoundError):
+            backend.load_question("discarded-new-id")
+    finally:
+        backend.close()
+
+
+def test_future_schema_is_rejected_without_downgrade(tmp_path: Path) -> None:
+    db = tmp_path / "future.db"
+    SQLiteStorageBackend(db).close()
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA user_version = 15")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaVersionMismatch, match="未来 DB schema v15"):
+        SQLiteStorageBackend(db)
+
+    conn = sqlite3.connect(str(db))
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 15
+    finally:
+        conn.close()
+
+
+def test_nonempty_v0_schema_is_rejected_clearly(tmp_path: Path) -> None:
+    db = tmp_path / "v0.db"
+    _make_old_db(db, version=0)
+    with pytest.raises(SchemaVersionMismatch, match="非空 DB schema v0"):
+        SQLiteStorageBackend(db)
 
 
 def test_pre_v8_still_requires_restart(tmp_path: Path) -> None:

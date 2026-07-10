@@ -61,7 +61,7 @@ _WINDOW = [
 
 @pytest.mark.asyncio
 async def test_flag_off_returns_empty() -> None:
-    stage = _stage1()
+    stage = _stage1(patch_local_extraction_enabled=False)
     result = await stage._apply_local_patches(
         _annotated(_WINDOW, 101), 101, 4, _Payload([_item("3.1", 101, 102)])
     )

@@ -52,7 +52,7 @@ def _payload(items: list[SingleItemExtractLLM]) -> SimpleNamespace:
 
 
 def test_flag_off_returns_none() -> None:
-    stage = _stage1()
+    stage = _stage1(marker_ledger_enabled=False)
     assert stage.ledger_enabled is False
     result = stage._audit_consumed_window(_annotated(_LINES), 1, 4, _payload([_item(1, 2)]), [10])
     assert result is None

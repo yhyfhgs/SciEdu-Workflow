@@ -130,7 +130,14 @@ def test_quality_gate_legacy_fallback_only_when_corpus_has_no_evaluations(
                 content="尚未迁移量规但仍应在纯旧库中可见。",
                 source_file="legacy.md",
                 order_index=1,
-            )
+            ),
+            Question(
+                id="legacy-uncertain",
+                content="无评价时也不得绕过摄取状态门禁。",
+                source_file="legacy.md",
+                order_index=2,
+                ingestion_status="uncertain",
+            ),
         ],
     )
     policy = QualityGateFilter(item_kind="question")
@@ -156,6 +163,58 @@ def test_quality_gate_legacy_fallback_only_when_corpus_has_no_evaluations(
     # 一旦该 kind/rubric/source 存在评价，兼容回退整体结束；逐条无证据不再
     # 等同于质量通过，且已评价但不达标的题也被排除。
     assert backend.search_questions({"quality_gate": policy}) == []
+
+
+def test_nonaccepted_ingestion_is_reviewed_and_never_quality_eligible(
+    backend: SQLiteStorageBackend,
+) -> None:
+    uncertain = Question(
+        id="q-uncertain",
+        discipline=Discipline.MATH,
+        question_type="proof",
+        content="证明闭区间连续函数一致连续，并给出有限覆盖论证。",
+        solution_content="由紧致性取有限子覆盖，再取有限个半径的最小值。",
+        difficulty=7,
+        taxonomy_path="math.analysis.continuity.uniform_continuity",
+        tags=["math:数学", "analysis:分析", "uniform_continuity:一致连续"],
+        source_file="uncertain.md",
+        start_line=1,
+        end_line=8,
+        ingestion_status="uncertain",
+    )
+    backend.save_question(uncertain)
+    batch = evaluate_item_rows(backend.evaluation_rows("uncertain.md", "math"))
+    backend.save_evaluation_batch(batch)
+
+    evaluation = backend.load_item_evaluation(uncertain.id)
+    assert evaluation.extraction_quality == 0.0
+    queued = backend.load_review_queue()
+    status_item = next(item for item in queued if item.item_id == uncertain.id)
+    assert status_item.reason == "non_accepted_ingestion_status"
+    assert status_item.details["status"] == "uncertain"
+
+    # 即使外部系统错误地把量规分数改成满分，结构化摄取门禁仍不可绕过。
+    backend._conn.execute(
+        "UPDATE item_evaluations SET extraction_quality = 1, solution_completeness = 1 "
+        "WHERE item_id = ?",
+        (uncertain.id,),
+    )
+    backend._conn.commit()
+    assert backend.quality_eligible_item_ids(item_kind="question") == []
+    assert backend.search_questions(
+        {"quality_gate": QualityGateFilter(item_kind="question")}
+    ) == []
+
+
+def test_quality_gate_rejects_item_kind_mismatch(backend: SQLiteStorageBackend) -> None:
+    with pytest.raises(ValueError, match="does not match search table"):
+        backend.search_questions(
+            {"quality_gate": QualityGateFilter(item_kind="knowledge")}
+        )
+    with pytest.raises(ValueError, match="does not match search table"):
+        backend.search_knowledge(
+            {"quality_gate": QualityGateFilter(item_kind="question")}
+        )
 
 
 def test_literal_text_query_filters_before_limit_and_escapes_wildcards(

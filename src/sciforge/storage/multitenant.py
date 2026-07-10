@@ -19,6 +19,7 @@ from typing import Any
 
 import structlog
 
+from sciforge.storage.query import require_scored_quality_gate
 from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 logger = structlog.get_logger()
@@ -71,7 +72,12 @@ class MultiTenantSQLiteBackend(SQLiteStorageBackend):
         self, table: str, filters: dict[str, object], tenant_id: str, include_public: bool
     ) -> list[str]:
         assert table in self._ALLOWED_SEARCH_TABLES
-        conditions, params = self._build_filter_clause(filters)
+        filters = require_scored_quality_gate(filters)
+        expected_kind = "knowledge" if table == "knowledge_points" else "question"
+        conditions, params = self._build_filter_clause(
+            filters,
+            expected_item_kind=expected_kind,
+        )
         tclause, tparams = self._tenant_clause(tenant_id, include_public)
         conditions.append(tclause)
         params.extend(tparams)
