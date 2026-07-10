@@ -31,6 +31,12 @@ def serve(
     port: int = typer.Option(8000, "--port", "-p", help="监听端口"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="题库 SQLite 路径"),
     saas_db: Path = typer.Option(Path("data/saas.db"), "--saas-db", help="SaaS 元数据 DB 路径"),
+    conversation_db: Path = typer.Option(
+        Path("data/conversations.db"), "--conversation-db", help="Chatbox 会话 DB 路径"
+    ),
+    runtime_db: Path = typer.Option(
+        Path("data/qgen_runtime.db"), "--runtime-db", help="可恢复 Agent run DB 路径"
+    ),
     open_mode: bool = typer.Option(False, "--open", help="开放模式：无鉴权/计费（仅本地调试）"),
     llm_config: Path | None = typer.Option(None, "--llm-config", help="LLM 配置文件"),
     cors_origin: list[str] = typer.Option(
@@ -45,16 +51,37 @@ def serve(
         raise typer.Exit(1) from exc
 
     from sciforge.agents import QGenAgent, SolveAgent
+    from sciforge.agents.runtime import SQLiteRunStore
     from sciforge.api.app import create_app
-    from sciforge.cli.generate import _build_llm_client, _resolve_llm_config
+    from sciforge.api.conversations import ConversationStore
+    from sciforge.cli.generate import _resolve_llm_config
     from sciforge.config.settings import AppConfig
+    from sciforge.llm.client import LLMClient
+    from sciforge.llm.config import LLMConfig
     from sciforge.storage.saas import SaasStore
     from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
     llm_config = _resolve_llm_config(llm_config)
-    app_cfg = AppConfig()
-    gen_llm = _build_llm_client("generate", llm_config, None, None)
-    solve_llm = _build_llm_client("solve", llm_config, None, None)
+    app_cfg = AppConfig(llm_config_file=llm_config)
+
+    def task_config(task: str, *, fallback: str) -> LLMConfig:
+        effective = task if task in app_cfg.task_llm else fallback
+        return LLMConfig.from_app_config(app_cfg, effective)
+
+    # Parse once, instantiate per Agent run.  LLMClient owns mutable usage
+    # counters, so sharing one instance across requests would cross-charge
+    # concurrent durable runs.
+    qgen_configs = {
+        "generate": task_config("generate", fallback="generate"),
+        "solve": task_config("solve", fallback="generate"),
+        "review": task_config("review", fallback="generate"),
+        "tag": task_config("tag", fallback="generate"),
+        "improve": task_config("improve", fallback="generate"),
+    }
+    solve_config = task_config("solve", fallback="generate")
+
+    def new_client(config: LLMConfig) -> LLMClient:
+        return LLMClient(config.model_copy(deep=True))
 
     db.parent.mkdir(parents=True, exist_ok=True)
     # 长生命周期检索库（QGen/Solve 读用，不随请求关闭）；WAL 支持并发读
@@ -62,20 +89,30 @@ def serve(
 
     def qgen_factory(discipline: Discipline) -> QGenAgent:
         return QGenAgent.from_config(
-            llm=gen_llm,
+            llm=new_client(qgen_configs["generate"]),
             storage=retrieval_storage,
             discipline=discipline,
             config=app_cfg,
+            solve_llm=new_client(qgen_configs["solve"]),
+            review_llm=new_client(qgen_configs["review"]),
+            tag_llm=new_client(qgen_configs["tag"]),
+            evolve_llm=new_client(qgen_configs["improve"]),
         )
 
     def solve_factory(discipline: Discipline) -> SolveAgent:
-        return SolveAgent(llm=solve_llm, storage=retrieval_storage, discipline=discipline)
+        return SolveAgent(
+            llm=new_client(solve_config),
+            storage=retrieval_storage,
+            discipline=discipline,
+        )
 
     # 组卷/推荐端点用完即关，须每次取新连接
     def storage_factory() -> SQLiteStorageBackend:
         return SQLiteStorageBackend(db)
 
     saas_store = None if open_mode else SaasStore(saas_db)
+    conversation_store = ConversationStore(conversation_db)
+    run_store = SQLiteRunStore(runtime_db)
     jwt_secret = os.environ.get("SCIFORGE_JWT_SECRET", "dev-secret-change-me")
     if not open_mode and jwt_secret == "dev-secret-change-me":
         console.print(
@@ -87,9 +124,18 @@ def serve(
         solve_factory,
         saas_store=saas_store,
         storage_factory=storage_factory,
+        conversation_store=conversation_store,
+        run_store=run_store,
         jwt_secret=jwt_secret,
         cors_origins=cors_origin or None,
     )
+
+    def close_service_resources() -> None:
+        retrieval_storage.close()
+        if saas_store is not None:
+            saas_store.close()
+
+    app.router.add_event_handler("shutdown", close_service_resources)
 
     mode = "开放（无鉴权）" if open_mode else "鉴权+计费"
     console.print(

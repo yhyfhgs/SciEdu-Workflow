@@ -1,6 +1,7 @@
 """Durable execution state for long-running SciForge Agents."""
 
 from sciforge.agents.runtime.models import (
+    TERMINAL_RUN_STATUSES,
     BudgetExceededError,
     CheckpointConflictError,
     CheckpointRecord,
@@ -20,6 +21,7 @@ from sciforge.agents.runtime.models import (
 from sciforge.agents.runtime.store import RunStore, SQLiteRunStore
 
 __all__ = [
+    "TERMINAL_RUN_STATUSES",
     "BudgetExceededError",
     "CheckpointConflictError",
     "CheckpointRecord",

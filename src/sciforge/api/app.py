@@ -10,6 +10,7 @@
 - POST /v1/generate  单题生成（调 QGenAgent；成功后按租户计费）
 - POST /v1/solve     求解（调 SolveAgent；支持 question_id 或 content）
 - GET  /v1/usage     当前租户用量与配额
+- /v1/conversations 对话、持久化 Agent run、SSE 事件与知识浏览
 
 注：JWT 用户登录 / 异步批量 / 组卷导出 / PG 后端为 P2 后续；当前 token 计费用 GenerationTrace 估算。
 """
@@ -64,6 +65,8 @@ from sciforge.storage.saas import SaasStore, UsageSummary
 
 if TYPE_CHECKING:
     from sciforge.agents import QGenAgent, SolveAgent
+    from sciforge.agents.runtime import SQLiteRunStore
+    from sciforge.api.conversations import ConversationStore
     from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 logger = structlog.get_logger()
@@ -77,14 +80,37 @@ SCOPE_SOLVE_WRITE = "solve:write"
 SCOPE_TASKS_READ = "tasks:read"
 SCOPE_USAGE_READ = "usage:read"
 SCOPE_PAPERS_WRITE = "papers:write"
+SCOPE_CONVERSATIONS_READ = "conversations:read"
+SCOPE_CONVERSATIONS_WRITE = "conversations:write"
+SCOPE_RUNS_READ = "runs:read"
+SCOPE_RUNS_WRITE = "runs:write"
+SCOPE_TEMPLATES_READ = "templates:read"
+SCOPE_KNOWLEDGE_READ = "knowledge:read"
+
+_CHAT_SCOPES = frozenset(
+    {
+        SCOPE_CONVERSATIONS_READ,
+        SCOPE_CONVERSATIONS_WRITE,
+        SCOPE_RUNS_READ,
+        SCOPE_RUNS_WRITE,
+        SCOPE_TEMPLATES_READ,
+        SCOPE_KNOWLEDGE_READ,
+    }
+)
 
 _LEGACY_SCOPE_ALIASES: dict[str, frozenset[str]] = {
     # Existing keys were issued with only generate/solve.  Expand those values
     # to the least-privilege capabilities needed by their existing workflows.
     "generate": frozenset(
-        {SCOPE_GENERATION_WRITE, SCOPE_TASKS_READ, SCOPE_USAGE_READ, SCOPE_PAPERS_WRITE}
+        {
+            SCOPE_GENERATION_WRITE,
+            SCOPE_TASKS_READ,
+            SCOPE_USAGE_READ,
+            SCOPE_PAPERS_WRITE,
+            *_CHAT_SCOPES,
+        }
     ),
-    "solve": frozenset({SCOPE_SOLVE_WRITE, SCOPE_USAGE_READ}),
+    "solve": frozenset({SCOPE_SOLVE_WRITE, SCOPE_USAGE_READ, *_CHAT_SCOPES}),
 }
 
 
@@ -290,6 +316,8 @@ def create_app(
     *,
     saas_store: SaasStore | None = None,
     storage_factory: StorageFactory | None = None,
+    conversation_store: ConversationStore | None = None,
+    run_store: SQLiteRunStore | None = None,
     jwt_secret: str = "dev-secret-change-me",
     cors_origins: list[str] | None = None,
     serve_console: bool = True,
@@ -300,6 +328,8 @@ def create_app(
       Web/App/小程序前端铺垫）。鉴权走 Authorization 头（非 Cookie），故
       ``allow_credentials=False`` 与 ``*`` 兼容。
     - ``serve_console``：是否挂载内置 SaaS 控制台静态页到 ``/app``（``/`` 重定向至此）。
+    - ``conversation_store`` / ``run_store``：分别保存产品消息与可恢复执行状态；
+      两者都提供时启用 Chatbox 长任务 API。
     """
     app = FastAPI(title="SciForge API", version="0.1.0")
 
@@ -686,6 +716,33 @@ def create_app(
             )
         text = render_markdown(title, item_dicts, include_solutions=req.include_solutions)
         return Response(content=text, media_type="text/markdown; charset=utf-8")
+
+    # ── 对话式 QGen / Solve / Evaluate + durable run / SSE ──
+    from sciforge.api.conversation_routes import install_conversation_routes
+
+    install_conversation_routes(
+        app,
+        qgen_factory=qgen_factory,
+        solve_factory=solve_factory,
+        conversation_store=conversation_store,
+        run_store=run_store,
+        storage_factory=storage_factory,
+        saas_store=saas_store,
+        authenticate_principal=authenticate_principal,
+        enforce_scope=enforce_scope,
+        enforce_quota=enforce_quota,
+        scope_agent_storage=_tenant_scoped_agent_storage,
+        scopes={
+            "generation_write": SCOPE_GENERATION_WRITE,
+            "solve_write": SCOPE_SOLVE_WRITE,
+            "conversations_read": SCOPE_CONVERSATIONS_READ,
+            "conversations_write": SCOPE_CONVERSATIONS_WRITE,
+            "runs_read": SCOPE_RUNS_READ,
+            "runs_write": SCOPE_RUNS_WRITE,
+            "templates_read": SCOPE_TEMPLATES_READ,
+            "knowledge_read": SCOPE_KNOWLEDGE_READ,
+        },
+    )
 
     # ── 内置 SaaS 控制台（静态 SPA，调 /v1/* API）──
     static_dir = Path(__file__).parent / "static"
