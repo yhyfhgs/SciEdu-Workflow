@@ -156,3 +156,22 @@ def test_quality_gate_legacy_fallback_only_when_corpus_has_no_evaluations(
     # 一旦该 kind/rubric/source 存在评价，兼容回退整体结束；逐条无证据不再
     # 等同于质量通过，且已评价但不达标的题也被排除。
     assert backend.search_questions({"quality_gate": policy}) == []
+
+
+def test_literal_text_query_filters_before_limit_and_escapes_wildcards(
+    backend: SQLiteStorageBackend,
+) -> None:
+    noise = [
+        Question(id=f"noise-{index:03d}", content=f"普通题目 {index}", order_index=index)
+        for index in range(500)
+    ]
+    target = Question(
+        id="target-after-limit",
+        content="研究 100%_uniform 这个含通配符外观的字面术语。",
+        order_index=501,
+    )
+    backend.save_batch([], [*noise, target])
+
+    ids = backend.search_questions({"text_query": "100%_uniform"})
+
+    assert ids == ["target-after-limit"]

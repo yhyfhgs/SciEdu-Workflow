@@ -63,11 +63,23 @@ def compile_search_filters(filters: dict[str, object]) -> tuple[list[str], list[
         elif key in _EXACT_FILTER_COLUMNS:
             conditions.append(f"{key} = ?")
             params.append(value)
+        elif key == "text_query" and isinstance(value, str) and value.strip():
+            needle = "%" + _escape_like(value.strip()) + "%"
+            conditions.append(
+                "(content LIKE ? ESCAPE '\\' OR number LIKE ? ESCAPE '\\' "
+                "OR subject LIKE ? ESCAPE '\\' OR taxonomy_path LIKE ? ESCAPE '\\' "
+                "OR tags LIKE ? ESCAPE '\\')"
+            )
+            params.extend([needle] * 5)
         elif key == "quality_gate" and isinstance(value, QualityGateFilter):
             clause, clause_params = _quality_gate_clause(value)
             conditions.append(clause)
             params.extend(clause_params)
     return conditions, params
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _quality_gate_clause(policy: QualityGateFilter) -> tuple[str, list[object]]:
