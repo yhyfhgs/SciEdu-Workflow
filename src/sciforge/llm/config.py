@@ -134,7 +134,7 @@ class LLMConfig(BaseModel):
     extra_body: dict[str, Any] | None = None
 
     # REC-13：高频 pipeline 任务的 thinking 默认值（仅 Anthropic 系生效，其余 provider 由
-    # 能力矩阵过滤）。提取/识别是"抄写"任务，关思考实测提速 ~3×（CLAUDE.md）；审核/打标是
+    # 能力矩阵过滤）。提取/识别是"抄写"任务，关思考实测提速 ~3×（AGENTS.md）；审核/打标是
     # 推理类，给小预算兼顾准确率与速度。task_cfg / CLI 可覆盖。
     _THINK_OFF: ClassVar[dict[str, Any]] = {"type": "disabled"}
     _THINK_SMALL: ClassVar[dict[str, Any]] = {"type": "enabled", "budget_tokens": 512}

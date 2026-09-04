@@ -187,7 +187,7 @@ src/sciforge/
 详细架构见 [`Docs/01_数据处理Pipeline.md`](Docs/01_数据处理Pipeline.md)、
 [`Docs/21_知识库构建标准与数据契约.md`](Docs/21_知识库构建标准与数据契约.md)、
 [`Docs/22_QGen_Harness_架构与验证协议.md`](Docs/22_QGen_Harness_架构与验证协议.md)、
-[`Docs/12_Web前端设计.md`](Docs/12_Web前端设计.md) 与 [`CLAUDE.md`](CLAUDE.md)。
+[`Docs/12_Web前端设计.md`](Docs/12_Web前端设计.md) 与 [`AGENTS.md`](AGENTS.md)。
 
 ## 技术栈
 

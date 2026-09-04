@@ -3,7 +3,7 @@
 > 版本: v8.2 | 日期: 2026-06-15
 > 架构: **5 阶段并发 Producer-Consumer**（Task0 + 5 Stage + 4 queue + asyncio.gather）
 >
-> **2026-06-15 优化批次（30 条 REC，详见 [PROGRESS.md](PROGRESS.md) §00；CLAUDE.md 为权威开关清单）**：
+> **2026-06-15 优化批次（30 条 REC，详见 [PROGRESS.md](PROGRESS.md) §00；AGENTS.md 为权威开关清单）**：
 > - Task0：文本型 PDF 探测文字层走 fitz（0 LLM，REC-01，`--force-vlm` 覆盖）；VLM 批内 Semaphore 并发+保序+截断检测（REC-02）
 > - Stage1Extract：首块 `detect_genre` 书本/试卷/讲义→试卷/讲义关 fast-skip 提召回（REC-14）；
 >   文末 `force_extract` 兜底防漏（REC-12）；确定性章节边界注入提取 prompt（REC-20）；窗口管理点 `_sync_state` 节流（REC-17）
@@ -494,7 +494,7 @@ class FileExtractionState(BaseModel):
 
 > 完整开关（含 `intra_doc_parallel_extract` 单文档并行、`answer_linking_enabled` /
 > `relation_inference_enabled` / `reconciliation_enabled` post-pass、`pipeline_prompt_cache_enabled`
-> 等）见 [CLAUDE.md](../CLAUDE.md) 的「Pipeline 优化开关」与 `src/sciforge/config/settings.py`。
+> 等）见 [AGENTS.md](../AGENTS.md) 的「Pipeline 优化开关」与 `src/sciforge/config/settings.py`。
 
 ---
 
