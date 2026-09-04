@@ -41,12 +41,14 @@ version = "1.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "packaging" },
     { name = "psutil" },
     { name = "pyyaml" },
     { name = "safetensors" },
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ca/14/787e5498cd062640f0f3d92ef4ae4063174f76f9afd29d13fc52a319daae/accelerate-1.13.0.tar.gz", hash = "sha256:d631b4e0f5b3de4aff2d7e9e6857d164810dfc3237d54d017f075122d057b236", size = 402835, upload-time = "2026-03-04T19:34:12.359Z" }
 wheels = [
@@ -209,7 +211,8 @@ name = "albucore"
 version = "0.0.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "opencv-python-headless" },
     { name = "simsimd" },
     { name = "stringzilla" },
@@ -225,7 +228,8 @@ version = "2.0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "albucore" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "opencv-python-headless" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -477,7 +481,7 @@ name = "blake3"
 version = "1.0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' and sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/75/aa/abcd75e9600987a0bc6cfe9b6b2ff3f0e2cb08c170addc6e76035b5c4cb3/blake3-1.0.8.tar.gz", hash = "sha256:513cc7f0f5a7c035812604c2c852a0c1468311345573de647e310aca4ab165ba", size = 117308, upload-time = "2025-10-14T06:47:48.83Z" }
 wheels = [
@@ -881,8 +885,8 @@ dependencies = [
     { name = "jsonschema" },
     { name = "kubernetes" },
     { name = "mmh3" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-ml' or extra != 'extra-8-sciforge-pdf-mineru'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or extra != 'extra-8-sciforge-pdf-mineru' or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "onnxruntime" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -967,10 +971,10 @@ name = "compressed-tensors"
 version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "frozendict" },
-    { name = "pydantic" },
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "transformers" },
+    { name = "frozendict", marker = "sys_platform != 'darwin'" },
+    { name = "pydantic", marker = "sys_platform != 'darwin'" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "transformers", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b8/99/3fdabfc95609d6efdf02fa7f1ed0245524cb1209d3d4a17109d3205d2eed/compressed_tensors-0.11.0.tar.gz", hash = "sha256:95ddf19699f775df6494dd864e5f52e8a24f8015496520190c1a22c6cfc44b1f", size = 187566, upload-time = "2025-08-19T18:59:31.854Z" }
 wheels = [
@@ -1041,7 +1045,7 @@ name = "cuda-bindings"
 version = "13.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder", marker = "sys_platform != 'darwin'" },
+    { name = "cuda-pathfinder", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e0/a9/3a8241c6e19483ac1f1dcf5c10238205dcb8a6e9d0d4d4709240dff28ff4/cuda_bindings-13.2.0-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:721104c603f059780d287969be3d194a18d0cc3b713ed9049065a1107706759d", size = 5730273, upload-time = "2026-03-11T00:12:37.18Z" },
@@ -1079,37 +1083,37 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cublas", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-runtime", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cufft", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cufile", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-cupti", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-curand", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusolver", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusparse", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-nvrtc", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvtx", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'win32' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 
 [[package]]
@@ -1137,27 +1141,27 @@ wheels = [
 
 [[package]]
 name = "datasets"
-version = "4.8.4"
+version = "5.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "dill" },
-    { name = "filelock" },
-    { name = "fsspec", version = "2026.2.0", source = { registry = "https://pypi.org/simple" }, extra = ["http"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "httpx" },
-    { name = "huggingface-hub" },
-    { name = "multiprocess" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "packaging" },
-    { name = "pandas" },
-    { name = "pyarrow" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "tqdm" },
-    { name = "xxhash" },
+    { name = "dill", marker = "sys_platform == 'darwin'" },
+    { name = "filelock", marker = "sys_platform == 'darwin'" },
+    { name = "fsspec", extra = ["http"], marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "httpx", marker = "sys_platform == 'darwin'" },
+    { name = "huggingface-hub", marker = "sys_platform == 'darwin'" },
+    { name = "multiprocess", marker = "sys_platform == 'darwin'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "packaging", marker = "sys_platform == 'darwin'" },
+    { name = "pandas", marker = "sys_platform == 'darwin'" },
+    { name = "pyarrow", marker = "sys_platform == 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform == 'darwin'" },
+    { name = "requests", marker = "sys_platform == 'darwin'" },
+    { name = "tqdm", marker = "sys_platform == 'darwin'" },
+    { name = "xxhash", marker = "sys_platform == 'darwin'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/22/73e46ac7a8c25e7ef0b3bd6f10da3465021d90219a32eb0b4d2afea4c56e/datasets-4.8.4.tar.gz", hash = "sha256:a1429ed853275ce7943a01c6d2e25475b4501eb758934362106a280470df3a52", size = 604382, upload-time = "2026-03-23T14:21:17.987Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/85/ce4f780c32f7e36d71257f1c27e8ba898ebe379cb54f211f5f2013f2c219/datasets-5.0.0.tar.gz", hash = "sha256:83dbbbdb07a33b82192b8c419deb18739b138ee2ce1a322d55ce6b100954ec1a", size = 631708, upload-time = "2026-06-05T13:18:26.124Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b0/e5/247d094108e42ac26363ab8dc57f168840cf7c05774b40ffeb0d78868fcc/datasets-4.8.4-py3-none-any.whl", hash = "sha256:cdc8bee4698e549d78bf1fed6aea2eebc760b22b084f07e6fc020c6577a6ce6d", size = 526991, upload-time = "2026-03-23T14:21:15.89Z" },
+    { url = "https://files.pythonhosted.org/packages/05/66/73034ad30b59f13439b75e620989dacba4c047256e358ba7c2e9ec98ea22/datasets-5.0.0-py3-none-any.whl", hash = "sha256:7dd34927a0fd7046e98aad5cb9430e699c373238a15befa7b9bf22b991a7fee6", size = 555084, upload-time = "2026-06-05T13:18:24.435Z" },
 ]
 
 [[package]]
@@ -1165,8 +1169,8 @@ name = "depyf"
 version = "0.19.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "astor" },
-    { name = "dill" },
+    { name = "astor", marker = "sys_platform != 'darwin'" },
+    { name = "dill", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/19/38/69157d711be575f1b9cf3177b64ef4ade44373fc02839f183fdd98ec2dd6/depyf-0.19.0.tar.gz", hash = "sha256:afed0916b32d141cc90fa6220df01885eda442ca43b297d5050eeb90b4a5cb44", size = 6171405, upload-time = "2025-04-20T08:07:41.224Z" }
 wheels = [
@@ -1241,8 +1245,8 @@ name = "email-validator"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "dnspython" },
-    { name = "idna" },
+    { name = "dnspython", marker = "sys_platform != 'darwin'" },
+    { name = "idna", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f5/22/900cb125c76b7aaa450ce02fd727f452243f2e91a61af068b40adba60ea9/email_validator-2.3.0.tar.gz", hash = "sha256:9fc05c37f2f6cf439ff414f8fc46d917929974a82244c20eb10231ba60c54426", size = 51238, upload-time = "2025-08-26T13:09:06.831Z" }
 wheels = [
@@ -1290,14 +1294,14 @@ wheels = [
 
 [package.optional-dependencies]
 standard = [
-    { name = "email-validator" },
-    { name = "fastapi-cli", extra = ["standard"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "httpx" },
-    { name = "jinja2" },
-    { name = "pydantic-extra-types" },
-    { name = "pydantic-settings" },
-    { name = "python-multipart" },
-    { name = "uvicorn", extra = ["standard"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
+    { name = "email-validator", marker = "sys_platform != 'darwin'" },
+    { name = "fastapi-cli", extra = ["standard"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "httpx", marker = "sys_platform != 'darwin'" },
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "pydantic-extra-types", marker = "sys_platform != 'darwin'" },
+    { name = "pydantic-settings", marker = "sys_platform != 'darwin'" },
+    { name = "python-multipart", marker = "sys_platform != 'darwin'" },
+    { name = "uvicorn", extra = ["standard"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 
 [[package]]
@@ -1305,9 +1309,9 @@ name = "fastapi-cli"
 version = "0.0.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "rich-toolkit" },
-    { name = "typer" },
-    { name = "uvicorn", extra = ["standard"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
+    { name = "rich-toolkit", marker = "sys_platform != 'darwin'" },
+    { name = "typer", marker = "sys_platform != 'darwin'" },
+    { name = "uvicorn", extra = ["standard"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6e/58/74797ae9e4610cfa0c6b34c8309096d3b20bb29be3b8b5fbf1004d10fa5f/fastapi_cli-0.0.24.tar.gz", hash = "sha256:1afc9c9e21d7ebc8a3ca5e31790cd8d837742be7e4f8b9236e99cb3451f0de00", size = 19043, upload-time = "2026-02-24T10:45:10.476Z" }
 wheels = [
@@ -1316,8 +1320,8 @@ wheels = [
 
 [package.optional-dependencies]
 standard = [
-    { name = "fastapi-cloud-cli" },
-    { name = "uvicorn", extra = ["standard"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
+    { name = "fastapi-cloud-cli", marker = "sys_platform != 'darwin'" },
+    { name = "uvicorn", extra = ["standard"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 
 [[package]]
@@ -1325,14 +1329,14 @@ name = "fastapi-cloud-cli"
 version = "0.16.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "fastar" },
-    { name = "httpx" },
-    { name = "pydantic", extra = ["email"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "rich-toolkit" },
-    { name = "rignore" },
-    { name = "sentry-sdk" },
-    { name = "typer" },
-    { name = "uvicorn", extra = ["standard"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
+    { name = "fastar", marker = "sys_platform != 'darwin'" },
+    { name = "httpx", marker = "sys_platform != 'darwin'" },
+    { name = "pydantic", extra = ["email"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "rich-toolkit", marker = "sys_platform != 'darwin'" },
+    { name = "rignore", marker = "sys_platform != 'darwin'" },
+    { name = "sentry-sdk", marker = "sys_platform != 'darwin'" },
+    { name = "typer", marker = "sys_platform != 'darwin'" },
+    { name = "uvicorn", extra = ["standard"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/70/ca14fae57a221610d3e2e3dfad2b6e97ee31fcafaa36f90a2158d57e9a73/fastapi_cloud_cli-0.16.1.tar.gz", hash = "sha256:33b552c4ad46cd33823ef53f93b8b7813db2306c80c1cbcfa4d72067c99b26ab", size = 46193, upload-time = "2026-04-08T09:12:54.151Z" }
 wheels = [
@@ -1528,7 +1532,7 @@ name = "fire"
 version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "termcolor" },
+    { name = "termcolor", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c0/00/f8d10588d2019d6d6452653def1ee807353b21983db48550318424b5ff18/fire-0.7.1.tar.gz", hash = "sha256:3b208f05c736de98fb343310d090dcc4d8c78b2a89ea4f32b837c586270a9cbf", size = 88720, upload-time = "2025-08-16T20:20:24.175Z" }
 wheels = [
@@ -1659,56 +1663,16 @@ wheels = [
 
 [[package]]
 name = "fsspec"
-version = "2026.2.0"
+version = "2026.3.0"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'darwin'",
-    "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version == '3.13.*' and sys_platform == 'darwin'",
-    "python_full_version == '3.13.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "(python_full_version == '3.13.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version == '3.12.*' and sys_platform == 'darwin'",
-    "python_full_version == '3.12.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "(python_full_version == '3.12.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version < '3.12' and sys_platform == 'darwin'",
-    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/51/7c/f60c259dcbf4f0c47cc4ddb8f7720d2dcdc8888c8e5ad84c73ea4531cc5b/fsspec-2026.2.0.tar.gz", hash = "sha256:6544e34b16869f5aacd5b90bdf1a71acb37792ea3ddf6125ee69a22a53fb8bff", size = 313441, upload-time = "2026-02-05T21:50:53.743Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e1/cf/b50ddf667c15276a9ab15a70ef5f257564de271957933ffea49d2cdbcdfb/fsspec-2026.3.0.tar.gz", hash = "sha256:1ee6a0e28677557f8c2f994e3eea77db6392b4de9cd1f5d7a9e87a0ae9d01b41", size = 313547, upload-time = "2026-03-27T19:11:14.892Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e6/ab/fb21f4c939bb440104cc2b396d3be1d9b7a9fd3c6c2a53d98c45b3d7c954/fsspec-2026.2.0-py3-none-any.whl", hash = "sha256:98de475b5cb3bd66bedd5c4679e87b4fdfe1a3bf4d707b151b3c07e58c9a2437", size = 202505, upload-time = "2026-02-05T21:50:51.819Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/1f/5f4a3cd9e4440e9d9bc78ad0a91a1c8d46b4d429d5239ebe6793c9fe5c41/fsspec-2026.3.0-py3-none-any.whl", hash = "sha256:d2ceafaad1b3457968ed14efa28798162f1638dbb5d2a6868a2db002a5ee39a4", size = 202595, upload-time = "2026-03-27T19:11:13.595Z" },
 ]
 
 [package.optional-dependencies]
 http = [
-    { name = "aiohttp" },
-]
-
-[[package]]
-name = "fsspec"
-version = "2026.3.0"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
-    "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
-    "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')",
-    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
-    "python_full_version == '3.13.*' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
-    "(python_full_version == '3.13.*' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')",
-    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
-    "python_full_version == '3.12.*' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
-    "(python_full_version == '3.12.*' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')",
-    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
-    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
-    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')",
-    "python_full_version >= '3.14' and extra != 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
-    "python_full_version == '3.13.*' and extra != 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
-    "python_full_version < '3.13' and extra != 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e1/cf/b50ddf667c15276a9ab15a70ef5f257564de271957933ffea49d2cdbcdfb/fsspec-2026.3.0.tar.gz", hash = "sha256:1ee6a0e28677557f8c2f994e3eea77db6392b4de9cd1f5d7a9e87a0ae9d01b41", size = 313547, upload-time = "2026-03-27T19:11:14.892Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/1f/5f4a3cd9e4440e9d9bc78ad0a91a1c8d46b4d429d5239ebe6793c9fe5c41/fsspec-2026.3.0-py3-none-any.whl", hash = "sha256:d2ceafaad1b3457968ed14efa28798162f1638dbb5d2a6868a2db002a5ee39a4", size = 202595, upload-time = "2026-03-27T19:11:13.595Z" },
+    { name = "aiohttp", marker = "sys_platform == 'darwin'" },
 ]
 
 [[package]]
@@ -1728,10 +1692,10 @@ name = "gguf"
 version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "tqdm" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform != 'darwin'" },
+    { name = "requests", marker = "sys_platform != 'darwin'" },
+    { name = "tqdm", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3f/26/7622a41c39db9d7090225a4bf8368550e59694dcf7313b44f9a82b501209/gguf-0.18.0.tar.gz", hash = "sha256:b4659093d5d0dccdb5902a904d54b327f4052879fe5e90946ad5fce9f8018c2e", size = 107170, upload-time = "2026-02-27T15:05:39.254Z" }
 wheels = [
@@ -1806,7 +1770,8 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "jinja2" },
     { name = "markupsafe" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "orjson" },
     { name = "packaging" },
     { name = "pandas" },
@@ -1834,7 +1799,7 @@ name = "gradio-client"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "fsspec", version = "2026.2.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "fsspec" },
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "packaging" },
@@ -2039,8 +2004,7 @@ version = "0.36.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
-    { name = "fsspec", version = "2026.2.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "fsspec", version = "2026.3.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-ml' or extra != 'extra-8-sciforge-pdf-mineru'" },
+    { name = "fsspec" },
     { name = "hf-xet", marker = "platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "packaging" },
     { name = "pyyaml" },
@@ -2076,7 +2040,8 @@ name = "imageio"
 version = "2.37.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b1/84/93bcd1300216ea50811cee96873b84a1bebf8d0489ffaf7f2a3756bab866/imageio-2.37.3.tar.gz", hash = "sha256:bbb37efbfc4c400fcd534b367b91fcd66d5da639aaa138034431a1c5e0a41451", size = 389673, upload-time = "2026-03-09T11:31:12.573Z" }
@@ -2436,10 +2401,10 @@ name = "lm-format-enforcer"
 version = "0.11.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "interegular" },
-    { name = "packaging" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
+    { name = "interegular", marker = "sys_platform != 'darwin'" },
+    { name = "packaging", marker = "sys_platform != 'darwin'" },
+    { name = "pydantic", marker = "sys_platform != 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/84/d5/41cd417ba7dfdbbcfe46cebf81fb3dfd7c591b89897560ad05bb410a465d/lm_format_enforcer-0.11.3.tar.gz", hash = "sha256:e68081c108719cce284a9bcc889709b26ffb085a1945b5eba3a12cfa96d528da", size = 40258, upload-time = "2025-08-24T19:37:47.527Z" }
 wheels = [
@@ -2451,39 +2416,39 @@ name = "lmdeploy"
 version = "0.11.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "accelerate" },
-    { name = "aiohttp" },
-    { name = "cloudpickle" },
-    { name = "einops" },
-    { name = "fastapi" },
-    { name = "fire" },
-    { name = "mmengine-lite" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cuda-runtime-cu12" },
-    { name = "nvidia-curand-cu12" },
-    { name = "nvidia-nccl-cu12" },
-    { name = "openai" },
-    { name = "openai-harmony" },
-    { name = "partial-json-parser" },
-    { name = "peft" },
-    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "prometheus-client" },
-    { name = "protobuf" },
-    { name = "pybase64" },
-    { name = "pydantic" },
-    { name = "pyzmq" },
-    { name = "ray" },
-    { name = "safetensors" },
-    { name = "sentencepiece" },
-    { name = "shortuuid" },
-    { name = "tiktoken" },
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "torchvision" },
-    { name = "transformers" },
-    { name = "triton", version = "3.4.0", source = { registry = "https://pypi.org/simple" }, marker = "'aarch64' not in platform_machine and 'arm' not in platform_machine and sys_platform == 'linux'" },
-    { name = "uvicorn" },
-    { name = "xgrammar" },
+    { name = "accelerate", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "aiohttp", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "cloudpickle", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "einops", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "fastapi", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "fire", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "mmengine-lite", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "nvidia-cublas-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "nvidia-cuda-runtime-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "nvidia-curand-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "nvidia-nccl-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "openai", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "openai-harmony", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "partial-json-parser", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "peft", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "prometheus-client", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "protobuf", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "pybase64", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "pydantic", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "pyzmq", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "ray", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "safetensors", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "sentencepiece", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "shortuuid", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "tiktoken", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "torchvision", version = "0.23.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "transformers", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "triton", version = "3.4.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and 'aarch64' not in platform_machine and 'arm' not in platform_machine and sys_platform == 'linux'" },
+    { name = "uvicorn", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "xgrammar", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/79/89/76954962e65f7e48fef4390bdc133f4f822a94e793733f70a07e6f3176d5/lmdeploy-0.11.1-cp311-cp311-manylinux2014_x86_64.whl", hash = "sha256:d1893b07f5a9ba1bd3cd7a51def5417fd89039dd3b3c263c4af518704d28562a", size = 87639879, upload-time = "2025-12-24T14:20:50.015Z" },
@@ -2805,7 +2770,8 @@ dependencies = [
     { name = "mammoth" },
     { name = "mineru-vl-utils" },
     { name = "modelscope" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "openai" },
     { name = "opencv-python" },
     { name = "openpyxl" },
@@ -2845,8 +2811,10 @@ all = [
     { name = "pyclipper" },
     { name = "pyyaml" },
     { name = "shapely" },
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "torchvision" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "torchvision", version = "0.23.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "torchvision", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "transformers" },
     { name = "vllm", marker = "sys_platform == 'linux'" },
 ]
@@ -2872,14 +2840,14 @@ name = "mistral-common"
 version = "1.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "jsonschema" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "pydantic" },
-    { name = "pydantic-extra-types", extra = ["pycountry"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "requests" },
-    { name = "tiktoken" },
-    { name = "typing-extensions" },
+    { name = "jsonschema", marker = "sys_platform != 'darwin'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "pydantic", marker = "sys_platform != 'darwin'" },
+    { name = "pydantic-extra-types", extra = ["pycountry"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "requests", marker = "sys_platform != 'darwin'" },
+    { name = "tiktoken", marker = "sys_platform != 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/97/753c85b5c0a19f4331ac99e0300ac8da06d4b29b629c9cb03064b38561bd/mistral_common-1.11.0.tar.gz", hash = "sha256:439b7fa38f9c3f020154af51bdf30eb81def507643017d8ce9f798384ec47ec3", size = 6355512, upload-time = "2026-04-01T13:54:12.36Z" }
 wheels = [
@@ -2888,11 +2856,11 @@ wheels = [
 
 [package.optional-dependencies]
 audio = [
-    { name = "soundfile" },
-    { name = "soxr" },
+    { name = "soundfile", marker = "sys_platform != 'darwin'" },
+    { name = "soxr", marker = "sys_platform != 'darwin'" },
 ]
 image = [
-    { name = "opencv-python-headless" },
+    { name = "opencv-python-headless", marker = "sys_platform != 'darwin'" },
 ]
 
 [[package]]
@@ -2930,13 +2898,13 @@ name = "mlx-lm"
 version = "0.29.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "jinja2" },
+    { name = "jinja2", marker = "sys_platform == 'darwin'" },
     { name = "mlx", marker = "sys_platform == 'darwin'" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "protobuf" },
-    { name = "pyyaml" },
-    { name = "sentencepiece" },
-    { name = "transformers" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "protobuf", marker = "sys_platform == 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform == 'darwin'" },
+    { name = "sentencepiece", marker = "sys_platform == 'darwin'" },
+    { name = "transformers", marker = "sys_platform == 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e3/62/f46e1355256a114808517947f8e83ad6be310c7288c551db0fa678f47923/mlx_lm-0.29.1.tar.gz", hash = "sha256:b99180d8f33d33a077b814e550bfb2d8a59ae003d668fd1f4b3fff62a381d34b", size = 232302, upload-time = "2025-12-16T16:58:27.959Z" }
 wheels = [
@@ -2958,18 +2926,18 @@ name = "mlx-vlm"
 version = "0.3.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "datasets" },
-    { name = "fastapi" },
-    { name = "mlx" },
-    { name = "mlx-lm" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "opencv-python" },
-    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "requests" },
-    { name = "soundfile" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "uvicorn" },
+    { name = "datasets", marker = "sys_platform == 'darwin'" },
+    { name = "fastapi", marker = "sys_platform == 'darwin'" },
+    { name = "mlx", marker = "sys_platform == 'darwin'" },
+    { name = "mlx-lm", marker = "sys_platform == 'darwin'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "opencv-python", marker = "sys_platform == 'darwin'" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "requests", marker = "sys_platform == 'darwin'" },
+    { name = "soundfile", marker = "sys_platform == 'darwin'" },
+    { name = "tqdm", marker = "sys_platform == 'darwin'" },
+    { name = "transformers", marker = "sys_platform == 'darwin'" },
+    { name = "uvicorn", marker = "sys_platform == 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1d/98/6b3c2d1317a317d0df544fe9ab0ef4f233ea85c1e4ac2fe6af7289ea1ee5/mlx_vlm-0.3.9.tar.gz", hash = "sha256:ae5050d0b1a051a29099c3a65efdbf6874bb497e8465734ac1992b6b179135b4", size = 303350, upload-time = "2025-12-03T21:48:24.199Z" }
 wheels = [
@@ -2981,13 +2949,13 @@ name = "mmengine-lite"
 version = "0.10.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "addict" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "pyyaml" },
+    { name = "addict", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "pyyaml", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
     { name = "regex", marker = "sys_platform == 'win32'" },
-    { name = "rich" },
-    { name = "termcolor" },
-    { name = "yapf" },
+    { name = "rich", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "termcolor", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "yapf", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/48/8d/c10e9acf3019b120cc449a009ef77c3523812ab04268515cdf96c0a1a7c2/mmengine-lite-0.10.7.tar.gz", hash = "sha256:27eb14fc3a908d0cbdc72d9752f425f2713943d9eff3652dafc11c0607e2934c", size = 378125, upload-time = "2025-03-04T12:23:07.988Z" }
 wheels = [
@@ -3100,8 +3068,8 @@ dependencies = [
     { name = "filelock" },
     { name = "packaging" },
     { name = "requests" },
-    { name = "setuptools", version = "79.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
-    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "setuptools", version = "79.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (python_full_version < '3.12' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-8-sciforge-pdf-mineru') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "tqdm" },
     { name = "urllib3" },
 ]
@@ -3342,7 +3310,7 @@ name = "multiprocess"
 version = "0.70.19"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "dill" },
+    { name = "dill", marker = "sys_platform == 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a2/f2/e783ac7f2aeeed14e9e12801f22529cc7e6b7ab80928d6dcce4e9f00922d/multiprocess-0.70.19.tar.gz", hash = "sha256:952021e0e6c55a4a9fe4cd787895b86e239a40e76802a789d6305398d3975897", size = 2079989, upload-time = "2026-01-19T06:47:39.744Z" }
 wheels = [
@@ -3465,8 +3433,8 @@ name = "numba"
 version = "0.61.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "llvmlite" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "llvmlite", marker = "sys_platform != 'darwin'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/a0/e21f57604304aa03ebb8e098429222722ad99176a4f979d34af1d1ee80da/numba-0.61.2.tar.gz", hash = "sha256:8750ee147940a6637b80ecf7f95062185ad8726c8c28a2295b8ec1160a196f7d", size = 2820615, upload-time = "2025-04-09T02:58:07.659Z" }
 wheels = [
@@ -3492,16 +3460,12 @@ name = "numpy"
 version = "2.2.6"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version == '3.13.*' and sys_platform == 'darwin'",
     "python_full_version == '3.13.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version == '3.13.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version == '3.12.*' and sys_platform == 'darwin'",
     "python_full_version == '3.12.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version == '3.12.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version < '3.12' and sys_platform == 'darwin'",
     "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
 ]
@@ -3566,6 +3530,10 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
     "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml'",
     "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
     "python_full_version >= '3.14' and extra != 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
     "python_full_version == '3.13.*' and extra != 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
     "python_full_version < '3.13' and extra != 'extra-8-sciforge-pdf-mineru' and extra != 'extra-8-sciforge-pdf-ml'",
@@ -3730,7 +3698,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.10.2.21"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fa/41/e79269ce215c857c935fd86bcfe91a451a584dfc27f1e068f568b9ad1ab7/nvidia_cudnn_cu12-9.10.2.21-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:c9132cc3f8958447b4910a1720036d9eff5928cc3179b0a51fb6d167c6cc87d8", size = 705026878, upload-time = "2025-06-06T21:52:51.348Z" },
@@ -3743,7 +3711,7 @@ name = "nvidia-cudnn-cu13"
 version = "9.19.0.56"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-cublas", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/84/26025437c1e6b61a707442184fa0c03d083b661adf3a3eecfd6d21677740/nvidia_cudnn_cu13-9.19.0.56-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:6ed29ffaee1176c612daf442e4dd6cfeb6a0caa43ddcbeb59da94953030b1be4", size = 433781201, upload-time = "2026-02-03T20:40:53.805Z" },
@@ -3756,7 +3724,7 @@ name = "nvidia-cufft"
 version = "12.0.0.61"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/ae/f417a75c0259e85c1d2f83ca4e960289a5f814ed0cea74d18c353d3e989d/nvidia_cufft-12.0.0.61-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2708c852ef8cd89d1d2068bdbece0aa188813a0c934db3779b9b1faa8442e5f5", size = 214053554, upload-time = "2025-09-04T08:31:38.196Z" },
@@ -3769,7 +3737,7 @@ name = "nvidia-cufft-cu12"
 version = "11.3.3.83"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/bc/7771846d3a0272026c416fbb7e5f4c1f146d6d80704534d0b187dd6f4800/nvidia_cufft_cu12-11.3.3.83-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:848ef7224d6305cdb2a4df928759dca7b1201874787083b6e7550dd6765ce69a", size = 193109211, upload-time = "2025-03-07T01:44:56.873Z" },
@@ -3820,9 +3788,9 @@ name = "nvidia-cusolver"
 version = "12.0.4.66"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "sys_platform != 'darwin'" },
-    { name = "nvidia-cusparse", marker = "sys_platform != 'darwin'" },
-    { name = "nvidia-nvjitlink", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-cublas", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "nvidia-cusparse", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/c3/b30c9e935fc01e3da443ec0116ed1b2a009bb867f5324d3f2d7e533e776b/nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:02c2457eaa9e39de20f880f4bd8820e6a1cfb9f9a34f820eb12a155aa5bc92d2", size = 223467760, upload-time = "2025-09-04T08:33:04.222Z" },
@@ -3835,9 +3803,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.7.3.90"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cusparse-cu12" },
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "nvidia-cusparse-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/32/f7cd6ce8a7690544d084ea21c26e910a97e077c9b7f07bf5de623ee19981/nvidia_cusolver_cu12-11.7.3.90-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:db9ed69dbef9715071232caa9b69c52ac7de3a95773c2db65bdba85916e4e5c0", size = 267229841, upload-time = "2025-03-07T01:46:54.356Z" },
@@ -3850,7 +3818,7 @@ name = "nvidia-cusparse"
 version = "12.6.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-nvjitlink", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/94/5c26f33738ae35276672f12615a64bd008ed5be6d1ebcb23579285d960a9/nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:80bcc4662f23f1054ee334a15c72b8940402975e0eab63178fc7e670aa59472c", size = 162155568, upload-time = "2025-09-04T08:33:42.864Z" },
@@ -3863,7 +3831,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.5.8.93"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bc/f7/cd777c4109681367721b00a106f491e0d0d15cfa1fd59672ce580ce42a97/nvidia_cusparse_cu12-12.5.8.93-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:9b6c161cb130be1a07a27ea6923df8141f3c295852f4b260c65f18f3e0a091dc", size = 288117129, upload-time = "2025-03-07T01:47:40.407Z" },
@@ -3986,8 +3954,8 @@ version = "1.24.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "flatbuffers" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-ml' or extra != 'extra-8-sciforge-pdf-mineru'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or extra != 'extra-8-sciforge-pdf-mineru' or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "packaging" },
     { name = "protobuf" },
     { name = "sympy" },
@@ -4043,7 +4011,7 @@ name = "openai-harmony"
 version = "0.0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pydantic" },
+    { name = "pydantic", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3e/92/2d038d096f29179c7c9571b431f9e739f87a487121901725e23fe338dd9d/openai_harmony-0.0.8.tar.gz", hash = "sha256:6e43f98e6c242fa2de6f8ea12eab24af63fa2ed3e89c06341fb9d92632c5cbdf", size = 284777, upload-time = "2025-11-05T19:07:06.727Z" }
 wheels = [
@@ -4066,7 +4034,8 @@ name = "opencv-python"
 version = "4.13.0.92"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fc/6f/5a28fef4c4a382be06afe3938c64cc168223016fa520c5abaf37e8862aa5/opencv_python-4.13.0.92-cp37-abi3-macosx_13_0_arm64.whl", hash = "sha256:caf60c071ec391ba51ed00a4a920f996d0b64e3e46068aac1f646b5de0326a19", size = 46247052, upload-time = "2026-02-05T07:01:25.046Z" },
@@ -4084,8 +4053,8 @@ name = "opencv-python-headless"
 version = "4.11.0.86"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-ml'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/36/2f/5b2b3ba52c864848885ba988f24b7f105052f68da9ab0e693cc7c25b0b30/opencv-python-headless-4.11.0.86.tar.gz", hash = "sha256:996eb282ca4b43ec6a3972414de0e2331f5d9cda2b41091a49739c19fb843798", size = 95177929, upload-time = "2025-01-16T13:53:40.22Z" }
 wheels = [
@@ -4314,7 +4283,8 @@ name = "pandas"
 version = "2.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "python-dateutil" },
     { name = "pytz" },
     { name = "tzdata" },
@@ -4414,16 +4384,16 @@ name = "peft"
 version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "accelerate" },
-    { name = "huggingface-hub" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "packaging" },
-    { name = "psutil" },
-    { name = "pyyaml" },
-    { name = "safetensors" },
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "tqdm" },
-    { name = "transformers" },
+    { name = "accelerate", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "huggingface-hub", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "packaging", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "psutil", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "pyyaml", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "safetensors", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "tqdm", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "transformers", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/21/33/fb0c31eaa8162c01e9250b21aa65d46a5339f17a818a97c68391db2ff44b/peft-0.14.0.tar.gz", hash = "sha256:546d69af7b42f5ef715a3d3261ed818bc917ae6055e5d7e187ed3f2c76ad72dc", size = 411902, upload-time = "2024-12-06T11:37:44.258Z" }
 wheels = [
@@ -4634,8 +4604,8 @@ name = "prometheus-fastapi-instrumentator"
 version = "7.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "prometheus-client" },
-    { name = "starlette" },
+    { name = "prometheus-client", marker = "sys_platform != 'darwin'" },
+    { name = "starlette", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/69/6d/24d53033cf93826aa7857699a4450c1c67e5b9c710e925b1ed2b320c04df/prometheus_fastapi_instrumentator-7.1.0.tar.gz", hash = "sha256:be7cd61eeea4e5912aeccb4261c6631b3f227d8924542d79eaf5af3f439cbe5e", size = 20220, upload-time = "2025-03-19T19:35:05.351Z" }
 wheels = [
@@ -5084,7 +5054,7 @@ wheels = [
 
 [package.optional-dependencies]
 email = [
-    { name = "email-validator" },
+    { name = "email-validator", marker = "sys_platform != 'darwin'" },
 ]
 
 [[package]]
@@ -5194,8 +5164,8 @@ name = "pydantic-extra-types"
 version = "2.11.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pydantic" },
-    { name = "typing-extensions" },
+    { name = "pydantic", marker = "sys_platform != 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/66/71/dba38ee2651f84f7842206adbd2233d8bbdb59fb85e9fa14232486a8c471/pydantic_extra_types-2.11.1.tar.gz", hash = "sha256:46792d2307383859e923d8fcefa82108b1a141f8a9c0198982b3832ab5ef1049", size = 172002, upload-time = "2026-03-16T08:08:03.92Z" }
 wheels = [
@@ -5204,7 +5174,7 @@ wheels = [
 
 [package.optional-dependencies]
 pycountry = [
-    { name = "pycountry" },
+    { name = "pycountry", marker = "sys_platform != 'darwin'" },
 ]
 
 [[package]]
@@ -5267,8 +5237,8 @@ version = "1.27.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "networkx" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-ml' or extra != 'extra-8-sciforge-pdf-mineru'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or extra != 'extra-8-sciforge-pdf-mineru' or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "onnxruntime" },
     { name = "pymupdf" },
     { name = "pyyaml" },
@@ -5520,7 +5490,7 @@ name = "pyzmq"
 version = "27.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "implementation_name == 'pypy'" },
+    { name = "cffi", marker = "implementation_name == 'pypy' and sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/04/0b/3c9baedbdf613ecaa7aa07027780b8867f57b6293b6ee50de316c9f3222b/pyzmq-27.1.0.tar.gz", hash = "sha256:ac0765e3d44455adb6ddbf4417dcce460fc40a05978c08efdf2948072f6db540", size = 281750, upload-time = "2025-09-08T23:10:18.157Z" }
 wheels = [
@@ -5672,14 +5642,14 @@ name = "ray"
 version = "2.55.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "filelock" },
-    { name = "jsonschema" },
-    { name = "msgpack" },
-    { name = "packaging" },
-    { name = "protobuf" },
-    { name = "pyyaml" },
-    { name = "requests" },
+    { name = "click", marker = "sys_platform != 'darwin'" },
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "jsonschema", marker = "sys_platform != 'darwin'" },
+    { name = "msgpack", marker = "sys_platform != 'darwin'" },
+    { name = "packaging", marker = "sys_platform != 'darwin'" },
+    { name = "protobuf", marker = "sys_platform != 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform != 'darwin'" },
+    { name = "requests", marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b1/27/a4f419818c5eea064b3b098a80225430cb596385f866cde2bfb1c4a0d798/ray-2.55.0-cp311-cp311-macosx_12_0_arm64.whl", hash = "sha256:2426e9c4513cb4842bfaf70aaedf4b9edc302fb01de5c1906f68b9b427a0c243", size = 65835237, upload-time = "2026-04-15T04:31:52.476Z" },
@@ -5829,9 +5799,9 @@ name = "rich-toolkit"
 version = "0.19.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "rich" },
-    { name = "typing-extensions" },
+    { name = "click", marker = "sys_platform != 'darwin'" },
+    { name = "rich", marker = "sys_platform != 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/ba/dae9e3096651042754da419a4042bc1c75e07d615f9b15066d738838e4df/rich_toolkit-0.19.7.tar.gz", hash = "sha256:133c0915872da91d4c25d85342d5ec1dfacc69b63448af1a08a0d4b4f23ef46e", size = 195877, upload-time = "2026-02-24T16:06:20.555Z" }
 wheels = [
@@ -6146,19 +6116,22 @@ dependencies = [
 all = [
     { name = "aiosqlite" },
     { name = "chromadb" },
+    { name = "fastapi" },
     { name = "google-genai" },
+    { name = "httpx" },
     { name = "mypy" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-ml' or extra != 'extra-8-sciforge-pdf-mineru'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or extra != 'extra-8-sciforge-pdf-mineru' or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "pymupdf4llm" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
     { name = "sympy" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 compute = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-ml' or extra != 'extra-8-sciforge-pdf-mineru'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin' or extra != 'extra-8-sciforge-pdf-mineru' or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "sympy" },
 ]
 db = [
@@ -6166,6 +6139,7 @@ db = [
     { name = "chromadb" },
 ]
 dev = [
+    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -6186,13 +6160,19 @@ pdf-mineru = [
 pdf-ml = [
     { name = "marker-pdf" },
 ]
+server = [
+    { name = "fastapi" },
+    { name = "uvicorn", extra = ["standard"] },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'db'", specifier = ">=0.20" },
     { name = "anthropic", specifier = ">=0.40" },
     { name = "chromadb", marker = "extra == 'db'", specifier = ">=0.5" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "marker-pdf", marker = "extra == 'pdf-ml'", specifier = ">=1.0" },
     { name = "mineru", extras = ["all"], marker = "extra == 'pdf-mineru'" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
@@ -6208,12 +6188,13 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
-    { name = "sciforge", extras = ["gemini", "pdf", "db", "compute", "dev"], marker = "extra == 'all'" },
+    { name = "sciforge", extras = ["gemini", "pdf", "db", "compute", "server", "dev"], marker = "extra == 'all'" },
     { name = "structlog", specifier = ">=24.0" },
     { name = "sympy", marker = "extra == 'compute'", specifier = ">=1.12" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.30" },
 ]
-provides-extras = ["pdf", "pdf-ml", "pdf-mineru", "docx", "gemini", "db", "compute", "dev", "all"]
+provides-extras = ["pdf", "pdf-ml", "pdf-mineru", "docx", "gemini", "db", "compute", "server", "dev", "all"]
 
 [[package]]
 name = "scikit-image"
@@ -6223,7 +6204,8 @@ dependencies = [
     { name = "imageio" },
     { name = "lazy-loader" },
     { name = "networkx" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "packaging" },
     { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" } },
     { name = "scipy" },
@@ -6337,8 +6319,8 @@ name = "scipy"
 version = "1.17.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-ml'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -6474,8 +6456,8 @@ name = "sentry-sdk"
 version = "2.58.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "certifi" },
-    { name = "urllib3" },
+    { name = "certifi", marker = "sys_platform != 'darwin'" },
+    { name = "urllib3", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/26/b3/fb8291170d0e844173164709fc0fa0c221ed75a5da740c8746f2a83b4eb1/sentry_sdk-2.58.0.tar.gz", hash = "sha256:c1144d947352d54e5b7daa63596d9f848adf684989c06c4f5a659f0c85a18f6f", size = 438764, upload-time = "2026-04-13T17:23:26.265Z" }
 wheels = [
@@ -6558,13 +6540,10 @@ name = "setuptools"
 version = "79.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version == '3.13.*' and sys_platform == 'darwin'",
     "python_full_version == '3.13.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version == '3.13.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version == '3.12.*' and sys_platform == 'darwin'",
     "python_full_version == '3.12.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version == '3.12.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
 ]
@@ -6601,7 +6580,8 @@ name = "shapely"
 version = "2.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/4d/bc/0989043118a27cccb4e906a46b7565ce36ca7b57f5a18b78f4f1b0f72d9d/shapely-2.1.2.tar.gz", hash = "sha256:2ed4ecb28320a433db18a5bf029986aa8afcfd740745e78847e330d5d94922a9", size = 315489, upload-time = "2025-09-24T13:51:41.432Z" }
 wheels = [
@@ -6759,7 +6739,8 @@ version = "0.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cffi" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e1/41/9b873a8c055582859b239be17902a85339bec6a30ad162f98c9b0288a2cc/soundfile-0.13.1.tar.gz", hash = "sha256:b2c68dab1e30297317080a5b43df57e302584c49e2942defdde0acccc53f0e5b", size = 46156, upload-time = "2025-01-25T09:17:04.831Z" }
 wheels = [
@@ -6786,7 +6767,7 @@ name = "soxr"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/7e/f4b461944662ad75036df65277d6130f9411002bfb79e9df7dff40a31db9/soxr-1.0.0.tar.gz", hash = "sha256:e07ee6c1d659bc6957034f4800c60cb8b98de798823e34d2a2bba1caa85a4509", size = 171415, upload-time = "2025-09-07T13:22:21.317Z" }
 wheels = [
@@ -6813,7 +6794,7 @@ version = "0.52.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c4/68/79977123bb7be889ad680d79a40f339082c1978b5cfcf62c2d8d196873ac/starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933", size = 2653702, upload-time = "2026-01-18T13:34:11.062Z" }
 wheels = [
@@ -6967,7 +6948,8 @@ resolution-markers = [
     "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (python_full_version >= '3.12' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (python_full_version >= '3.12' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c5/cb/2f6d79c7576e22c116352a801f4c3c8ace5957e9aced862012430b62e14f/tifffile-2026.3.3.tar.gz", hash = "sha256:d9a1266bed6f2ee1dd0abde2018a38b4f8b2935cb843df381d70ac4eac5458b7", size = 388745, upload-time = "2026-03-03T19:14:38.134Z" }
 wheels = [
@@ -6990,7 +6972,8 @@ resolution-markers = [
     "(python_full_version == '3.12.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (python_full_version < '3.12' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (python_full_version < '3.12' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d7/4a/e687f5957fead200faad58dbf9c9431a2bbb118040e96f5fb8a55f7ebc50/tifffile-2026.4.11.tar.gz", hash = "sha256:17758ff0c0d4db385792a083ad3ca51fcb0f4d942642f4d8f8bc1287fdcf17bc", size = 394956, upload-time = "2026-04-12T01:57:28.793Z" }
 wheels = [
@@ -7002,8 +6985,8 @@ name = "tiktoken"
 version = "0.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "regex" },
-    { name = "requests" },
+    { name = "regex", marker = "sys_platform != 'darwin'" },
+    { name = "requests", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7d/ab/4d017d0f76ec3171d469d80fc03dfbb4e48a4bcaddaa831b31d526f05edc/tiktoken-0.12.0.tar.gz", hash = "sha256:b18ba7ee2b093863978fcb14f74b3707cdc8d4d4d3836853ce7ec60772139931", size = 37806, upload-time = "2025-10-06T20:22:45.419Z" }
 wheels = [
@@ -7091,24 +7074,20 @@ name = "torch"
 version = "2.8.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'darwin'",
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version == '3.13.*' and sys_platform == 'darwin'",
     "python_full_version == '3.13.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version == '3.13.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version == '3.12.*' and sys_platform == 'darwin'",
     "python_full_version == '3.12.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version == '3.12.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
-    "python_full_version < '3.12' and sys_platform == 'darwin'",
     "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
 ]
 dependencies = [
-    { name = "filelock" },
-    { name = "fsspec", version = "2026.2.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "jinja2" },
-    { name = "networkx" },
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "fsspec", marker = "sys_platform != 'darwin'" },
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "networkx", marker = "sys_platform != 'darwin'" },
     { name = "nvidia-cublas-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nvidia-cuda-cupti-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -7123,10 +7102,10 @@ dependencies = [
     { name = "nvidia-nccl-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nvidia-nvjitlink-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nvidia-nvtx-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "setuptools", version = "79.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "sympy" },
+    { name = "setuptools", version = "79.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' and sys_platform != 'darwin'" },
+    { name = "sympy", marker = "sys_platform != 'darwin'" },
     { name = "triton", version = "3.4.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8f/c4/3e7a3887eba14e815e614db70b3b529112d1513d9dae6f4d43e373360b7f/torch-2.8.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:220a06fd7af8b653c35d359dfe1aaf32f65aa85befa342629f716acb134b9710", size = 102073391, upload-time = "2025-08-06T14:53:20.937Z" },
@@ -7166,20 +7145,20 @@ resolution-markers = [
     "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
 ]
 dependencies = [
-    { name = "cuda-bindings", marker = "sys_platform == 'linux'" },
+    { name = "cuda-bindings", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
-    { name = "filelock" },
-    { name = "fsspec", version = "2026.3.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "jinja2" },
-    { name = "networkx" },
-    { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-cusparselt-cu13", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-nccl-cu13", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-nvshmem-cu13", marker = "sys_platform == 'linux'" },
-    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "sympy" },
-    { name = "triton", version = "3.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "fsspec", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "jinja2", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "networkx", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "nvidia-cudnn-cu13", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "nvidia-cusparselt-cu13", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "nvidia-nccl-cu13", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "nvidia-nvshmem-cu13", marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "sympy", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "triton", version = "3.6.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-ml') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "typing-extensions", marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ae/0d/98b410492609e34a155fa8b121b55c7dca229f39636851c3a9ec20edea21/torch-2.11.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7b6a60d48062809f58595509c524b88e6ddec3ebe25833d6462eeab81e5f2ce4", size = 80529712, upload-time = "2026-03-23T18:12:02.608Z" },
@@ -7213,7 +7192,7 @@ name = "torchaudio"
 version = "2.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dd/bf/6b01ef3defb8d0a772c863588711e9b2b011c27d6b37c1b9d15a359c8442/torchaudio-2.8.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:c9276857d241c6de257af765c0f51fc011af38cb725401495121b280913007cf", size = 1859094, upload-time = "2025-08-06T14:58:35.078Z" },
@@ -7238,10 +7217,20 @@ wheels = [
 name = "torchvision"
 version = "0.23.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'linux')",
+    "python_full_version == '3.13.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "(python_full_version == '3.13.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
+    "python_full_version == '3.12.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "(python_full_version == '3.12.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
+    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
+]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f0/d7/15d3d7bd8d0239211b21673d1bac7bc345a4ad904a8e25bb3fd8a9cf1fbc/torchvision-0.23.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:49aa20e21f0c2bd458c71d7b449776cbd5f16693dd5807195a820612b8a229b7", size = 1856884, upload-time = "2025-08-06T14:58:00.237Z" },
@@ -7263,6 +7252,48 @@ wheels = [
 ]
 
 [[package]]
+name = "torchvision"
+version = "0.26.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform == 'darwin'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin'",
+    "python_full_version < '3.12' and sys_platform == 'darwin'",
+]
+dependencies = [
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b4/bd/d552a2521bade3295b2c6e7a4a0d1022261cab7ca7011f4e2a330dbb3caa/torchvision-0.26.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:55bd6ad4ae77be01ba67a410b05b51f53b0d0ee45f146eb6a0dfb9007e70ab3c", size = 1863499, upload-time = "2026-03-23T18:12:58.696Z" },
+    { url = "https://files.pythonhosted.org/packages/33/bf/21b899792b08cae7a298551c68398a79e333697479ed311b3b067aab4bdc/torchvision-0.26.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:1c55dc8affbcc0eb2060fbabbe996ae9e5839b24bb6419777f17848945a411b1", size = 7767527, upload-time = "2026-03-23T18:12:44.348Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/45/57bbf9e216850d065e66dd31a50f57424b607f1d878ab8956e56a1f4e36b/torchvision-0.26.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:fd10b5f994c210f4f6d6761cf686f82d748554adf486cb0979770c3252868c8f", size = 7519925, upload-time = "2026-03-23T18:12:53.283Z" },
+    { url = "https://files.pythonhosted.org/packages/10/58/ed8f7754299f3e91d6414b6dc09f62b3fa7c6e5d63dfe48d69ab81498a37/torchvision-0.26.0-cp311-cp311-win_amd64.whl", hash = "sha256:de6424b12887ad884f39a0ee446994ae3cd3b6a00a9cafe1bead85a031132af0", size = 3983834, upload-time = "2026-03-23T18:13:00.224Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/e7/56b47cc3b132aea90ccce22bcb8975dec688b002150012acc842846039d0/torchvision-0.26.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:c409e1c3fdebec7a3834465086dbda8bf7680eff79abf7fd2f10c6b59520a7a4", size = 1863502, upload-time = "2026-03-23T18:12:57.326Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/ec/5c31c92c08b65662fe9604a4067ae8232582805949f11ddc042cebe818ed/torchvision-0.26.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:406557718e62fdf10f5706e88d8a5ec000f872da913bf629aab9297622585547", size = 7767944, upload-time = "2026-03-23T18:12:42.805Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/d8/cb6ccda1a1f35a6597645818641701207b3e8e13553e75fce5d86bac74b2/torchvision-0.26.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:d61a5abb6b42a0c0c311996c2ac4b83a94418a97182c83b055a2a4ae985e05aa", size = 7522205, upload-time = "2026-03-23T18:12:54.654Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/a9/c272623a0f735c35f0f6cd6dc74784d4f970e800cf063bb76687895a2ab9/torchvision-0.26.0-cp312-cp312-win_amd64.whl", hash = "sha256:7993c01648e7c61d191b018e84d38fe0825c8fcb2720cd0f37caf7ba14404aa1", size = 4255155, upload-time = "2026-03-23T18:12:32.652Z" },
+    { url = "https://files.pythonhosted.org/packages/da/80/0762f77f53605d10c9477be39bb47722cc8e383bbbc2531471ce0e396c07/torchvision-0.26.0-cp313-cp313-macosx_12_0_arm64.whl", hash = "sha256:5d63dd43162691258b1b3529b9041bac7d54caa37eae0925f997108268cbf7c4", size = 1860809, upload-time = "2026-03-23T18:12:47.629Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/81/0b3e58d1478c660a5af4268713486b2df7203f35abd9195fea87348a5178/torchvision-0.26.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:a39c7a26538c41fda453f9a9692b5ff9b35a5437db1d94f3027f6f509c160eac", size = 7727494, upload-time = "2026-03-23T18:12:46.062Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/dc/d9ab5d29115aa05e12e30f1397a3eeae1d88a511241dc3bce48dc4342675/torchvision-0.26.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:b7e6213620bbf97742e5f79832f9e9d769e6cf0f744c5b53dad80b76db633691", size = 7521747, upload-time = "2026-03-23T18:12:36.815Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/1b/f1bc86a918c5f6feab1eeff11982e2060f4704332e96185463d27855bdf5/torchvision-0.26.0-cp313-cp313-win_amd64.whl", hash = "sha256:4280c35ec8cba1fcc8294fb87e136924708726864c379e4c54494797d86bc474", size = 4319880, upload-time = "2026-03-23T18:12:38.168Z" },
+    { url = "https://files.pythonhosted.org/packages/66/28/b4ad0a723ed95b003454caffcc41894b34bd8379df340848cae2c33871de/torchvision-0.26.0-cp313-cp313t-macosx_12_0_arm64.whl", hash = "sha256:358fc4726d0c08615b6d83b3149854f11efb2a564ed1acb6fce882e151412d23", size = 1951973, upload-time = "2026-03-23T18:12:48.781Z" },
+    { url = "https://files.pythonhosted.org/packages/71/e2/7a89096e6cf2f3336353b5338ba925e0addf9d8601920340e6bdf47e8eb3/torchvision-0.26.0-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:3daf9cc149cf3cdcbd4df9c59dae69ffca86c6823250442c3bbfd63fc2e26c61", size = 7728679, upload-time = "2026-03-23T18:12:26.196Z" },
+    { url = "https://files.pythonhosted.org/packages/69/1d/4e1eebc17d18ce080a11dcf3df3f8f717f0efdfa00983f06e8ba79259f61/torchvision-0.26.0-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:82c3965eca27e86a316e31e4c3e5a16d353e0bcbe0ef8efa2e66502c54493c4b", size = 7609138, upload-time = "2026-03-23T18:12:35.327Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/a4/f1155e943ae5b32400d7000adc81c79bb0392b16ceb33bcf13e02e48cced/torchvision-0.26.0-cp313-cp313t-win_amd64.whl", hash = "sha256:ebc043cc5a4f0bf22e7680806dbba37ffb19e70f6953bbb44ed1a90aeb5c9bea", size = 4248202, upload-time = "2026-03-23T18:12:41.423Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/c8/9bffa9c7f7bdf95b2a0a2dc535c290b9f1cc580c3fb3033ab1246ffffdeb/torchvision-0.26.0-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:eb61804eb9dbe88c5a2a6c4da8dec1d80d2d0a6f18c999c524e32266cb1ebcd3", size = 1860813, upload-time = "2026-03-23T18:12:39.636Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/ac/48f28ffd227991f2e14f4392dde7e8dc14352bb9428c1ef4a4bbf5f7ed85/torchvision-0.26.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:9a904f2131cbfadab4df828088a9f66291ad33f49ff853872aed1f86848ef776", size = 7727777, upload-time = "2026-03-23T18:12:22.549Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/21/a2266f7f1b0e58e624ff15fd6f01041f59182c49551ece0db9a183071329/torchvision-0.26.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:0f3e572efe62ad645017ea847e0b5e4f2f638d4e39f05bc011d1eb9ac68d4806", size = 7522174, upload-time = "2026-03-23T18:12:29.565Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/ba/1666f90bc0bdd77aaa11dcc42bb9f621a9c3668819c32430452e3d404730/torchvision-0.26.0-cp314-cp314-win_amd64.whl", hash = "sha256:114bec0c0e98aa4ba446f63e2fe7a2cbca37b39ac933987ee4804f65de121800", size = 4348469, upload-time = "2026-03-23T18:12:24.44Z" },
+    { url = "https://files.pythonhosted.org/packages/45/8f/1f0402ac55c2ae15651ff831957d083fe70b2d12282e72612a30ba601512/torchvision-0.26.0-cp314-cp314t-macosx_12_0_arm64.whl", hash = "sha256:b7d3e295624a28b3b1769228ce1345d94cf4d390dd31136766f76f2d20f718da", size = 1860826, upload-time = "2026-03-23T18:12:34.1Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/6a/18a582fe3c5ee26f49b5c9fb21ad8016b4d1c06d10178894a58653946fda/torchvision-0.26.0-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:7058c5878262937e876f20c25867b33724586aa4499e2853b2d52b99a5e51953", size = 7729089, upload-time = "2026-03-23T18:12:31.394Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/9b/f7e119b59499edc00c55c03adc9ec3bd96144d9b81c46852c431f9c64a9a/torchvision-0.26.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:8008474855623c6ba52876589dc52df0aa66e518c25eca841445348e5f79844c", size = 7522704, upload-time = "2026-03-23T18:12:20.301Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/6a/09f3844c10643f6c0de5d95abc863420cfaf194c88c7dffd0ac523e2015f/torchvision-0.26.0-cp314-cp314t-win_amd64.whl", hash = "sha256:e9d0e022c19a78552fb055d0414d47fecb4a649309b9968573daea160ba6869c", size = 4454275, upload-time = "2026-03-23T18:12:27.487Z" },
+]
+
+[[package]]
 name = "tqdm"
 version = "4.67.3"
 source = { registry = "https://pypi.org/simple" }
@@ -7281,8 +7312,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
     { name = "huggingface-hub" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-8-sciforge-pdf-ml'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra != 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
     { name = "packaging" },
     { name = "pyyaml" },
     { name = "regex" },
@@ -7307,8 +7338,8 @@ resolution-markers = [
     "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux')",
 ]
 dependencies = [
-    { name = "setuptools", version = "79.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
-    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "setuptools", version = "79.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-mineru') or (python_full_version < '3.12' and platform_machine != 'aarch64' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-8-sciforge-pdf-mineru') or (python_full_version < '3.12' and sys_platform != 'linux' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-mineru') or (python_full_version >= '3.12' and platform_machine != 'aarch64' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-8-sciforge-pdf-mineru') or (python_full_version >= '3.12' and sys_platform != 'linux' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml') or (sys_platform == 'darwin' and extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/39/43325b3b651d50187e591eefa22e236b2981afcebaefd4f2fc0ea99df191/triton-3.4.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7b70f5e6a41e52e48cfc087436c8a28c17ff98db369447bcaff3b887a3ab4467", size = 155531138, upload-time = "2025-07-30T19:58:29.908Z" },
@@ -7482,61 +7513,61 @@ name = "vllm"
 version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "aiohttp" },
-    { name = "blake3" },
-    { name = "cachetools" },
-    { name = "cbor2" },
-    { name = "cloudpickle" },
-    { name = "compressed-tensors" },
-    { name = "depyf" },
-    { name = "diskcache" },
-    { name = "einops" },
-    { name = "fastapi", extra = ["standard"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "filelock" },
-    { name = "gguf" },
-    { name = "lark" },
-    { name = "llguidance", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
-    { name = "lm-format-enforcer" },
-    { name = "mistral-common", extra = ["audio", "image"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "msgspec" },
-    { name = "ninja" },
-    { name = "numba" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "openai" },
-    { name = "openai-harmony" },
-    { name = "opencv-python-headless" },
-    { name = "outlines-core" },
-    { name = "partial-json-parser" },
-    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "prometheus-client" },
-    { name = "prometheus-fastapi-instrumentator" },
-    { name = "protobuf" },
-    { name = "psutil" },
-    { name = "py-cpuinfo" },
-    { name = "pybase64" },
-    { name = "pydantic" },
-    { name = "python-json-logger" },
-    { name = "pyyaml" },
-    { name = "pyzmq" },
-    { name = "ray", extra = ["cgraph"], marker = "extra == 'extra-8-sciforge-pdf-mineru'" },
-    { name = "regex" },
-    { name = "requests" },
-    { name = "scipy" },
-    { name = "sentencepiece" },
-    { name = "setproctitle" },
-    { name = "setuptools", version = "79.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "six", marker = "python_full_version >= '3.12'" },
-    { name = "tiktoken" },
-    { name = "tokenizers" },
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "torchaudio" },
-    { name = "torchvision" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "typing-extensions" },
-    { name = "watchfiles" },
+    { name = "aiohttp", marker = "sys_platform != 'darwin'" },
+    { name = "blake3", marker = "sys_platform != 'darwin'" },
+    { name = "cachetools", marker = "sys_platform != 'darwin'" },
+    { name = "cbor2", marker = "sys_platform != 'darwin'" },
+    { name = "cloudpickle", marker = "sys_platform != 'darwin'" },
+    { name = "compressed-tensors", marker = "sys_platform != 'darwin'" },
+    { name = "depyf", marker = "sys_platform != 'darwin'" },
+    { name = "diskcache", marker = "sys_platform != 'darwin'" },
+    { name = "einops", marker = "sys_platform != 'darwin'" },
+    { name = "fastapi", extra = ["standard"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "gguf", marker = "sys_platform != 'darwin'" },
+    { name = "lark", marker = "sys_platform != 'darwin'" },
+    { name = "llguidance", marker = "(platform_machine == 'aarch64' and sys_platform != 'darwin') or (platform_machine == 'arm64' and sys_platform != 'darwin') or (platform_machine == 'x86_64' and sys_platform != 'darwin')" },
+    { name = "lm-format-enforcer", marker = "sys_platform != 'darwin'" },
+    { name = "mistral-common", extra = ["audio", "image"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "msgspec", marker = "sys_platform != 'darwin'" },
+    { name = "ninja", marker = "sys_platform != 'darwin'" },
+    { name = "numba", marker = "sys_platform != 'darwin'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "openai", marker = "sys_platform != 'darwin'" },
+    { name = "openai-harmony", marker = "sys_platform != 'darwin'" },
+    { name = "opencv-python-headless", marker = "sys_platform != 'darwin'" },
+    { name = "outlines-core", marker = "sys_platform != 'darwin'" },
+    { name = "partial-json-parser", marker = "sys_platform != 'darwin'" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "prometheus-client", marker = "sys_platform != 'darwin'" },
+    { name = "prometheus-fastapi-instrumentator", marker = "sys_platform != 'darwin'" },
+    { name = "protobuf", marker = "sys_platform != 'darwin'" },
+    { name = "psutil", marker = "sys_platform != 'darwin'" },
+    { name = "py-cpuinfo", marker = "sys_platform != 'darwin'" },
+    { name = "pybase64", marker = "sys_platform != 'darwin'" },
+    { name = "pydantic", marker = "sys_platform != 'darwin'" },
+    { name = "python-json-logger", marker = "sys_platform != 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform != 'darwin'" },
+    { name = "pyzmq", marker = "sys_platform != 'darwin'" },
+    { name = "ray", extra = ["cgraph"], marker = "(sys_platform != 'darwin' and extra == 'extra-8-sciforge-pdf-mineru') or (extra == 'extra-8-sciforge-pdf-mineru' and extra == 'extra-8-sciforge-pdf-ml')" },
+    { name = "regex", marker = "sys_platform != 'darwin'" },
+    { name = "requests", marker = "sys_platform != 'darwin'" },
+    { name = "scipy", marker = "sys_platform != 'darwin'" },
+    { name = "sentencepiece", marker = "sys_platform != 'darwin'" },
+    { name = "setproctitle", marker = "sys_platform != 'darwin'" },
+    { name = "setuptools", version = "79.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' and sys_platform != 'darwin'" },
+    { name = "six", marker = "python_full_version >= '3.12' and sys_platform != 'darwin'" },
+    { name = "tiktoken", marker = "sys_platform != 'darwin'" },
+    { name = "tokenizers", marker = "sys_platform != 'darwin'" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "torchaudio", marker = "sys_platform != 'darwin'" },
+    { name = "torchvision", version = "0.23.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "tqdm", marker = "sys_platform != 'darwin'" },
+    { name = "transformers", marker = "sys_platform != 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
+    { name = "watchfiles", marker = "sys_platform != 'darwin'" },
     { name = "xformers", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
+    { name = "xgrammar", marker = "(platform_machine == 'aarch64' and sys_platform != 'darwin') or (platform_machine == 'arm64' and sys_platform != 'darwin') or (platform_machine == 'x86_64' and sys_platform != 'darwin')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/82/5a/36d2351206f4d8d871b10780f874d03957985e08298d430cc837723e07af/vllm-0.11.0.tar.gz", hash = "sha256:f435a64c24e9c4178d657a76f8edd8548ddc444012f7d06a9f79ac3a6392bfae", size = 10822208, upload-time = "2025-10-04T01:39:57.798Z" }
 wheels = [
@@ -7722,8 +7753,8 @@ name = "xformers"
 version = "0.0.32.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6f/33/3b9c4d3d5b2da453d27de891df4ad653ac5795324961aa3a5c15b0353fe6/xformers-0.0.32.post1.tar.gz", hash = "sha256:1de84a45c497c8d92326986508d81f4b0a8c6be4d3d62a29b8ad6048a6ab51e1", size = 12106196, upload-time = "2025-08-14T18:07:45.486Z" }
 wheels = [
@@ -7736,14 +7767,13 @@ name = "xgrammar"
 version = "0.1.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-    { name = "ninja" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
-    { name = "pydantic" },
-    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "transformers" },
+    { name = "ninja", marker = "sys_platform != 'darwin'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "pydantic", marker = "sys_platform != 'darwin'" },
+    { name = "torch", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "transformers", marker = "sys_platform != 'darwin'" },
     { name = "triton", version = "3.4.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f2/a9/dc3c63cf7f082d183711e46ef34d10d8a135c2319dc581905d79449f52ea/xgrammar-0.1.25.tar.gz", hash = "sha256:70ce16b27e8082f20808ed759b0733304316facc421656f0f30cfce514b5b77a", size = 2297187, upload-time = "2025-09-21T05:58:58.942Z" }
 wheels = [
@@ -7879,7 +7909,7 @@ name = "yapf"
 version = "0.43.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "platformdirs" },
+    { name = "platformdirs", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/23/97/b6f296d1e9cc1ec25c7604178b48532fa5901f721bcf1b8d8148b13e5588/yapf-0.43.0.tar.gz", hash = "sha256:00d3aa24bfedff9420b2e0d5d9f5ab6d9d4268e72afbf59bb3fa542781d5218e", size = 254907, upload-time = "2024-11-14T00:11:41.584Z" }
 wheels = [

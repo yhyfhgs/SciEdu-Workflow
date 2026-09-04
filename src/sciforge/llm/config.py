@@ -19,7 +19,7 @@ import os
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
@@ -49,6 +49,8 @@ def _resolve_env_api_key(ptype: LLMProvider) -> str | None:
 class ProviderConfig(BaseModel):
     """命名的 LLM 连接配置（TOML [providers.<name>] 的一条）"""
 
+    model_config = ConfigDict(extra="forbid")
+
     type: LLMProvider
     api_key: str | None = None
     base_url: str | None = None
@@ -69,6 +71,8 @@ class TaskLLMConfig(BaseModel):
 
     `provider_ref` 指向 AppConfig.providers 的 key；未指定则使用 default_provider_ref。
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     provider_ref: str | None = None
     model: str | None = None
@@ -109,6 +113,10 @@ class LLMConfig(BaseModel):
     timeout: int = 120
     max_retries: int = 3
     supports_prompt_cache: bool = False  # REC-08：见 ProviderConfig.supports_prompt_cache
+    # v11 §G.3（M4，opt-in）：generate_json 传 schema_model 时，按 provider 下发
+    # 严格 JSON Schema（Anthropic output_config.format / OpenAI response_format
+    # strict）而非笼统的 json_object。默认 False：现状不变（json_object）。
+    output_config_json_schema_enabled: bool = False
 
     # 扩展参数（所有 Optional，None 表示不传给 SDK）
     top_p: float | None = None
@@ -126,7 +134,7 @@ class LLMConfig(BaseModel):
     extra_body: dict[str, Any] | None = None
 
     # REC-13：高频 pipeline 任务的 thinking 默认值（仅 Anthropic 系生效，其余 provider 由
-    # 能力矩阵过滤）。提取/识别是"抄写"任务，关思考实测提速 ~3×（CLAUDE.md）；审核/打标是
+    # 能力矩阵过滤）。提取/识别是"抄写"任务，关思考实测提速 ~3×（AGENTS.md）；审核/打标是
     # 推理类，给小预算兼顾准确率与速度。task_cfg / CLI 可覆盖。
     _THINK_OFF: ClassVar[dict[str, Any]] = {"type": "disabled"}
     _THINK_SMALL: ClassVar[dict[str, Any]] = {"type": "enabled", "budget_tokens": 512}

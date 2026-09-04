@@ -25,6 +25,7 @@ from sciforge.core.models import (
     KnowledgePoint,
     Question,
 )
+from sciforge.storage.query import QualityGateFilter
 
 if TYPE_CHECKING:
     from sciforge.storage.sqlite_backend import SQLiteStorageBackend
@@ -47,6 +48,11 @@ class ContextRetriever:
         max_kps: int | None = None,
         max_refs: int | None = None,
         max_negatives: int | None = None,
+        quality_gate_enabled: bool = True,
+        quality_rubric_version: str = "v1",
+        quality_extraction_min: float = 0.7,
+        quality_solution_min: float = 0.6,
+        quality_allow_legacy_unscored: bool = True,
     ) -> None:
         self.storage = storage
         self.MAX_KPS = int(max_kps) if max_kps is not None else self.DEFAULT_MAX_KPS
@@ -54,6 +60,34 @@ class ContextRetriever:
         self.MAX_NEGATIVES = (
             int(max_negatives) if max_negatives is not None else self.DEFAULT_MAX_NEGATIVES
         )
+        self.quality_gate_enabled = quality_gate_enabled
+        self.quality_rubric_version = quality_rubric_version
+        self.quality_extraction_min = quality_extraction_min
+        self.quality_solution_min = quality_solution_min
+        self.quality_allow_legacy_unscored = quality_allow_legacy_unscored
+
+    def _apply_quality_gate(self, filters: dict[str, object], item_kind: str) -> None:
+        if not self.quality_gate_enabled:
+            return
+        if item_kind not in {"knowledge", "question"}:
+            raise ValueError(f"unsupported quality-gate item kind: {item_kind}")
+        filters["quality_gate"] = QualityGateFilter(
+            item_kind=item_kind,  # type: ignore[arg-type]
+            rubric_version=self.quality_rubric_version,
+            extraction_min=self.quality_extraction_min,
+            solution_min=self.quality_solution_min,
+            allow_legacy_when_unscored=self.quality_allow_legacy_unscored,
+        )
+
+    @staticmethod
+    def _apply_question_contract(
+        filters: dict[str, object],
+        request: GenerationRequest,
+    ) -> None:
+        """将请求的题型契约应用到参考题、锚点与负样本查询。"""
+        filters["question_type"] = request.question_type
+        if request.question_form:
+            filters["question_form"] = request.question_form
 
     def build_context(
         self,
@@ -117,12 +151,31 @@ class ContextRetriever:
         }
         if req.subject:
             filters["subject"] = req.subject
+        self._apply_quality_gate(filters, "knowledge")
+
+        pinned_ids = list(dict.fromkeys(req.knowledge_ids))
+        pin_filters: dict[str, object] = {
+            "include_ids": pinned_ids,
+            "discipline": discipline.value,
+        }
+        self._apply_quality_gate(pin_filters, "knowledge")
+        eligible_pinned_ids = set(self.storage.search_knowledge(pin_filters))
+        pinned_by_id = {kp.id: kp for kp in self.storage.load_knowledge_by_ids(pinned_ids)}
+        pinned = [
+            pinned_by_id[kp_id]
+            for kp_id in pinned_ids
+            if kp_id in eligible_pinned_ids
+            and kp_id in pinned_by_id
+            and pinned_by_id[kp_id].discipline == discipline
+        ]
 
         ids = self.storage.search_knowledge(filters)
         kps = self.storage.load_knowledge_by_ids(ids)
 
         # 混合排序：标签重叠度为主 + TF-IDF 内容语义相似度为辅
-        return self._hybrid_sort(kps, self._query_text(req), req.topics)
+        ranked = self._hybrid_sort(kps, self._query_text(req), req.topics)
+        pinned_id_set = {kp.id for kp in pinned}
+        return pinned + [kp for kp in ranked if kp.id not in pinned_id_set]
 
     def _match_questions(
         self,
@@ -141,6 +194,8 @@ class ContextRetriever:
             filters["subject"] = req.subject
         if req.exclusion_ids:
             filters["exclude_ids"] = list(req.exclusion_ids)
+        self._apply_question_contract(filters, req)
+        self._apply_quality_gate(filters, "question")
 
         ids = self.storage.search_questions(filters)
         questions = self.storage.load_questions_by_ids(ids)
@@ -162,6 +217,8 @@ class ContextRetriever:
         }
         if req.subject:
             easy_filter["subject"] = req.subject
+        self._apply_question_contract(easy_filter, req)
+        self._apply_quality_gate(easy_filter, "question")
         easy_ids = self.storage.search_questions(easy_filter)
         if easy_ids:
             easy_qs = self.storage.load_questions_by_ids(easy_ids[:1])
@@ -173,6 +230,8 @@ class ContextRetriever:
         }
         if req.subject:
             hard_filter["subject"] = req.subject
+        self._apply_question_contract(hard_filter, req)
+        self._apply_quality_gate(hard_filter, "question")
         hard_ids = self.storage.search_questions(hard_filter)
         if hard_ids:
             hard_qs = self.storage.load_questions_by_ids(hard_ids[:1])
@@ -191,9 +250,10 @@ class ContextRetriever:
 
         filters: dict[str, object] = {
             "discipline": discipline.value,
-            "question_type": req.source_question.question_type,
             "exclude_ids": {req.source_question.id},
         }
+        self._apply_question_contract(filters, req)
+        self._apply_quality_gate(filters, "question")
         ids = self.storage.search_questions(filters)
         if not ids:
             return []

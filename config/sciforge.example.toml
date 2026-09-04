@@ -297,10 +297,64 @@ seed = 42
 # 默认 true；设 false 退回"全部塞 user message"的合并路径。
 # pipeline_prompt_cache_enabled = true
 
+# 通用格式适配：CSV/TSV/XLSX/HTML/EPUB/JSON/JSONL/TXT/RST 先在本地转为
+# 可追溯 Markdown block（0 次 LLM）；PNG/JPEG/WebP/GIF 才调用 vlm_convert。
+# enabled_input_formats = ["tex", "md", "markdown", "pdf", "docx", "pptx",
+#   "csv", "tsv", "xlsx", "html", "htm", "epub", "json", "jsonl", "ndjson",
+#   "txt", "rst", "png", "jpg", "jpeg", "webp", "gif"]
+# adapter_rows_per_block = 250
+# adapter_max_input_bytes = 67108864       # 原文件/压缩包最大 64 MiB
+# adapter_max_archive_bytes = 268435456    # ZIP 总解压体积最大 256 MiB
+# adapter_max_archive_entries = 10000
+# adapter_max_compression_ratio = 500.0    # 单条目压缩比门禁（ZIP bomb）
+# adapter_max_columns = 200
+# adapter_max_json_depth = 10
+# vlm_image_max_tokens = 8192             # 单图转写回复上限，避免沿用多页 16k
+
 # 入库后确定性 post-pass（无 LLM，可独立开关）
 # answer_linking_enabled = true            # 跨章节题答回填：章末/附录答案并回题干（#3）
 # relation_inference_enabled = true        # 结构化关系边 corollary_of/tests/successor → item_relations（#6）
 # reconciliation_enabled = true            # 复核重复条目/类型误判，写 reconciliation_report.json 不改库（#7）
+
+# v11 安全默认值（确定性完整性/发布门禁默认开启；多轮 LLM 仍按需）
+# format_profile_enabled = true             # M1：体裁/密度自适应画像
+# marker_ledger_enabled = true              # M1：标记台账与覆盖率审计
+# extract_char_span_enabled = false         # M1：字符级溯源
+# extract_active_carry_enabled = true       # M2：跨窗四态 carry
+# segment_halo_lines = 80                   # M2：并行段重叠区（仅并行模式生效）
+# provisional_id_remap_enabled = true       # M3：补丁合并后统一分配 item id
+# patch_local_extraction_enabled = true     # M3：遗漏 span 局部补抽
+# extract_harness_enabled = true            # M4：窗口级 locate→extract→audit harness
+# extract_validator_enabled = false         # M4：仅高风险窗口触发 evaluator
+# concept_graph_enabled = true              # M5：taxonomy 权威概念图 + 持久别名
+# item_evaluation_enabled = true             # M6：确定性多维 rubric + review queue
+# rubric_version = "v1"                     # 量规变更时升版，保留历史评分
+# evaluation_extraction_threshold = 0.7     # 低于此值进入人工复核队列
+# evaluation_solution_threshold = 0.6       # 题答/证明完整性门槛
+
+# QGen 验证 Harness（默认不增加验证 LLM 调用；按模式/题型显式开启）
+# enable_numerical_verification = false
+# qgen_deep_solve_enabled = false           # 高难模式：多轮求解+工具，普通生成保持低延迟
+# qgen_population_selection_enabled = false # 评估当轮全部通过候选后多目标择优
+# require_numerical_verification = false
+# enable_lean_verification = false
+# require_lean_verification = false
+# sandbox_trust_policy = "container_required"  # LLM 代码禁止默认本机执行
+# sandbox_container_runtime = "auto"           # auto/docker/podman
+# sandbox_python_image = "python:3.11-slim"
+# sandbox_lean_image = "leanprover/lean4:latest"
+# sandbox_timeout = 10
+# sandbox_memory_mb = 512
+# sandbox_cpus = 1.0
+# sandbox_pids_limit = 64
+# sandbox_tmpfs_mb = 64
+# sandbox_max_output_bytes = 65536
+# sandbox_trusted_local_lean_command = []       # 例 ["lake", "env", "lean"]；仍需 trusted_local
+# qgen_runtime_db_path = "data/qgen_runtime.db"
+# qgen_run_max_steps = 400
+# qgen_run_max_llm_calls = 100
+# qgen_run_max_tokens = 500000
+# qgen_run_max_wall_time_seconds = 3600.0
 
 # 单文档内并行提取（#1，opt-in）：按 section 分段 + 段级并发提取 + 段序保序重排
 # intra_doc_parallel_extract = false

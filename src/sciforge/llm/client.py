@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import structlog
+from pydantic import BaseModel
 
 from sciforge.core.exceptions import LLMVisionError, ToolCallError
 from sciforge.core.models import ConversationMessage, ToolCall, ToolResult
@@ -39,6 +41,7 @@ class LLMClient:
         self._backend = self._create_backend(config)
         # Pipeline logging
         self._call_count: int = 0
+        self._total_tokens: int = 0
         self._log_interval: int = 10
         self._log_dir: str | None = None
         # 全局 semaphore（跨 model 的总并发上限）+ per-model semaphore（按 model id 限流）
@@ -54,6 +57,16 @@ class LLMClient:
         替代 ``chars//4`` 估算（中文严重偏差），并验证 prompt cache 命中。
         """
         return getattr(self._backend, "last_usage", {})
+
+    @property
+    def call_count(self) -> int:
+        """当前 client 实例已完成的模型调用数。"""
+        return int(getattr(self, "_call_count", 0))
+
+    @property
+    def total_tokens(self) -> int:
+        """当前 client 实例累计 token；provider 无 usage 时用字符数保守估算。"""
+        return int(getattr(self, "_total_tokens", 0))
 
     def set_request_semaphore(self, semaphore: asyncio.Semaphore | None) -> None:
         """绑定跨 model 全局并发闸门（对应 AppConfig.max_concurrent_llm_calls）"""
@@ -225,26 +238,75 @@ class LLMClient:
         self._log_exchange(prompt, result, elapsed)
         return result
 
-    def _default_json_mode(self, kwargs: dict[str, Any]) -> None:
+    def _default_json_mode(
+        self, kwargs: dict[str, Any], schema_model: type[BaseModel] | None = None
+    ) -> None:
         """REC-07：JSON 调用默认启用原生 JSON 模式，降低非法 JSON → 减少重试。
 
         只在调用方与 config 都未显式设置 response_format 时注入。能力矩阵会按 provider 过滤：
         OpenAI / Gemini / OpenAI 兼容保留生效；Anthropic / anthropic 兼容不支持 → 静默丢弃
         （故对生产兼容网关零影响，依旧靠 prompt + thinking 控制）。
+
+        v11 §G.3（C1/C5，opt-in ``config.output_config_json_schema_enabled``）：
+        提供 ``schema_model`` 且开关打开时，按 provider 下发**严格** JSON Schema
+        而非笼统的 ``json_object``——Anthropic 走 GA 的 ``output_config.format``
+        （非 ``response_format``，能力矩阵已放行）；OpenAI/OpenAI 兼容走
+        ``response_format.json_schema`` + ``strict:true``。schema 经
+        ``to_strict_json_schema`` 转换（全字段 required + additionalProperties:
+        false，避开 min/maxLength）。默认关闭时行为与现状完全一致。
         """
         cfg_has = getattr(self.config, "response_format", None) is not None
-        if "response_format" not in kwargs and not cfg_has:
+        if "response_format" in kwargs or cfg_has:
+            return
+
+        use_strict_schema = schema_model is not None and bool(
+            getattr(self.config, "output_config_json_schema_enabled", False)
+        )
+        if use_strict_schema:
+            assert schema_model is not None  # for mypy；use_strict_schema 已保证
+            from sciforge.llm.structured_output import to_strict_json_schema
+
+            schema = to_strict_json_schema(schema_model)
+            if self.config.provider in (LLMProvider.ANTHROPIC, LLMProvider.ANTHROPIC_COMPATIBLE):
+                if "output_config" not in kwargs:
+                    kwargs["output_config"] = {
+                        "format": {
+                            "type": "json_schema",
+                            "schema": schema,
+                            "name": schema_model.__name__,
+                        }
+                    }
+                return
+            if self.config.provider in (LLMProvider.OPENAI, LLMProvider.OPENAI_COMPATIBLE):
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema_model.__name__,
+                        "strict": True,
+                        "schema": schema,
+                    },
+                }
+                return
+
+        if "response_format" not in kwargs:
             kwargs["response_format"] = {"type": "json_object"}
 
     async def generate_json(
         self,
         prompt: str,
         system: str | None = None,
+        *,
+        schema_model: type[BaseModel] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """异步生成并解析 JSON"""
+        """异步生成并解析 JSON
+
+        ``schema_model``：可选 Pydantic model，配合
+        ``config.output_config_json_schema_enabled`` 下发严格 schema（§G.3）；
+        不传或开关关闭时行为与现状一致。
+        """
         system = system or JSON_SYSTEM
-        self._default_json_mode(kwargs)
+        self._default_json_mode(kwargs, schema_model)
         raw = await self.generate(prompt, system=system, **kwargs)
         return parse_llm_json(raw)
 
@@ -252,11 +314,13 @@ class LLMClient:
         self,
         prompt: str,
         system: str | None = None,
+        *,
+        schema_model: type[BaseModel] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """同步生成并解析 JSON"""
+        """同步生成并解析 JSON（``schema_model`` 语义同 :meth:`generate_json`）"""
         system = system or JSON_SYSTEM
-        self._default_json_mode(kwargs)
+        self._default_json_mode(kwargs, schema_model)
         raw = self.generate_sync(prompt, system=system, **kwargs)
         return parse_llm_json(raw)
 
@@ -487,7 +551,9 @@ class LLMClient:
     ) -> dict[str, Any]:
         """异步 tool calling 单轮调用"""
         if not self.supports_tools:
-            raise ToolCallError(f"后端 {self.config.provider} 不支持 tool calling")
+            reason = getattr(self._backend, "tool_calling_unavailable_reason", "")
+            detail = f"：{reason}" if reason else ""
+            raise ToolCallError(f"后端 {self.config.provider.value} 不支持 tool calling{detail}")
 
         system = system or DEFAULT_SYSTEM
         start = time.monotonic()
@@ -511,6 +577,13 @@ class LLMClient:
             stop_reason=result.get("stop_reason"),
             latency_ms=elapsed,
         )
+        import json as _json
+
+        self._log_exchange(
+            _json.dumps(messages, ensure_ascii=False, default=str),
+            _json.dumps(result, ensure_ascii=False, default=str),
+            elapsed,
+        )
         return result
 
     def generate_with_tools_sync(
@@ -522,7 +595,9 @@ class LLMClient:
     ) -> dict[str, Any]:
         """同步 tool calling 单轮调用"""
         if not self.supports_tools:
-            raise ToolCallError(f"后端 {self.config.provider} 不支持 tool calling")
+            reason = getattr(self._backend, "tool_calling_unavailable_reason", "")
+            detail = f"：{reason}" if reason else ""
+            raise ToolCallError(f"后端 {self.config.provider.value} 不支持 tool calling{detail}")
 
         system = system or DEFAULT_SYSTEM
         start = time.monotonic()
@@ -544,16 +619,187 @@ class LLMClient:
             stop_reason=result.get("stop_reason"),
             latency_ms=elapsed,
         )
+        import json as _json
+
+        self._log_exchange(
+            _json.dumps(messages, ensure_ascii=False, default=str),
+            _json.dumps(result, ensure_ascii=False, default=str),
+            elapsed,
+        )
         return result
 
     # ── Multi-turn with Tool Execution ───────────────────
+
+    @staticmethod
+    def _declared_tool_names(tools: list[dict[str, Any]]) -> set[str]:
+        """兼容仓库中性格式与已包装的 OpenAI function 格式。"""
+        names: set[str] = set()
+        for tool in tools:
+            name = tool.get("name")
+            if isinstance(name, str) and name:
+                names.add(name)
+                continue
+            function = tool.get("function")
+            if isinstance(function, dict):
+                wrapped_name = function.get("name")
+                if isinstance(wrapped_name, str) and wrapped_name:
+                    names.add(wrapped_name)
+        return names
+
+    @staticmethod
+    def _decode_tool_calls(
+        response: dict[str, Any],
+        declared_names: set[str],
+    ) -> list[tuple[ToolCall, ToolResult | None]]:
+        """把统一 backend 响应变成可审计调用，并预判不可安全执行的请求。"""
+        raw_calls = response.get("tool_calls", [])
+        if not isinstance(raw_calls, list):
+            raise ToolCallError("后端返回的 tool_calls 必须是列表")
+
+        decoded: list[tuple[ToolCall, ToolResult | None]] = []
+        for index, raw_call in enumerate(raw_calls):
+            if not isinstance(raw_call, dict):
+                raise ToolCallError(f"第 {index + 1} 个工具调用必须是对象")
+
+            call_id = raw_call.get("id")
+            if not isinstance(call_id, str) or not call_id:
+                # 没有 call id 就无法构造任何 provider 可接受的配对结果。
+                raise ToolCallError(f"第 {index + 1} 个工具调用缺少有效 id")
+
+            raw_name = raw_call.get("name")
+            name = raw_name if isinstance(raw_name, str) and raw_name else "<invalid-tool>"
+            raw_arguments = raw_call.get("arguments", {})
+            arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+            call = ToolCall(
+                tool_name=name,
+                arguments=cast(dict[str, object], arguments),
+                call_id=call_id,
+            )
+
+            error: ToolResult | None = None
+            arguments_error = raw_call.get("arguments_error")
+            if name == "<invalid-tool>":
+                error = ToolResult(
+                    call_id=call_id,
+                    output="工具调用无效：缺少有效工具名",
+                    is_error=True,
+                )
+            elif name not in declared_names:
+                error = ToolResult(
+                    call_id=call_id,
+                    output=f"未知工具：{name}",
+                    is_error=True,
+                )
+            elif arguments_error:
+                error = ToolResult(
+                    call_id=call_id,
+                    output=f"工具参数无效：{arguments_error}",
+                    is_error=True,
+                )
+            elif not isinstance(raw_arguments, dict):
+                error = ToolResult(
+                    call_id=call_id,
+                    output=(
+                        "工具参数无效：arguments 必须是 JSON object，"
+                        f"实际为 {type(raw_arguments).__name__}"
+                    ),
+                    is_error=True,
+                )
+            decoded.append((call, error))
+        return decoded
+
+    @staticmethod
+    async def _execute_tool_async(
+        call: ToolCall,
+        preflight_error: ToolResult | None,
+        executor: Callable[[ToolCall], ToolResult | Awaitable[ToolResult]] | None,
+    ) -> ToolResult:
+        if preflight_error is not None:
+            return preflight_error
+        if executor is None:
+            return ToolResult(
+                call_id=call.call_id,
+                output="工具执行器未配置",
+                is_error=True,
+            )
+
+        try:
+            # 同步 sandbox / 数值工具不能阻塞 pipeline 的 event loop。多个独立
+            # tool_calls 由外层 gather 并发等待，同时保留原调用顺序。
+            result = await asyncio.to_thread(executor, call)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:  # noqa: BLE001 — 错误需回传给模型自修正
+            return ToolResult(
+                call_id=call.call_id,
+                output=f"工具执行失败：{type(exc).__name__}: {exc}",
+                is_error=True,
+            )
+
+        if not isinstance(result, ToolResult):
+            return ToolResult(
+                call_id=call.call_id,
+                output=(f"工具执行器返回类型无效：应为 ToolResult，实际为 {type(result).__name__}"),
+                is_error=True,
+            )
+        if result.call_id != call.call_id:
+            # provider 只认模型给出的 id；执行器的业务输出保留，但不能让错误 id
+            # 破坏整轮协议。
+            result = result.model_copy(update={"call_id": call.call_id})
+        return result
+
+    @staticmethod
+    def _execute_tool_sync(
+        call: ToolCall,
+        preflight_error: ToolResult | None,
+        executor: Callable[[ToolCall], ToolResult] | None,
+    ) -> ToolResult:
+        if preflight_error is not None:
+            return preflight_error
+        if executor is None:
+            return ToolResult(
+                call_id=call.call_id,
+                output="工具执行器未配置",
+                is_error=True,
+            )
+        try:
+            result = executor(call)
+        except Exception as exc:  # noqa: BLE001 — 错误需回传给模型自修正
+            return ToolResult(
+                call_id=call.call_id,
+                output=f"工具执行失败：{type(exc).__name__}: {exc}",
+                is_error=True,
+            )
+        if not isinstance(result, ToolResult):
+            return ToolResult(
+                call_id=call.call_id,
+                output=(f"工具执行器返回类型无效：应为 ToolResult，实际为 {type(result).__name__}"),
+                is_error=True,
+            )
+        if result.call_id != call.call_id:
+            result = result.model_copy(update={"call_id": call.call_id})
+        return result
+
+    def _append_provider_tool_round(
+        self,
+        current_messages: list[dict[str, Any]],
+        response: dict[str, Any],
+        tool_results: list[ToolResult],
+    ) -> None:
+        backend = cast(ToolCallingBackend, self._backend)
+        round_messages = backend.build_tool_result_messages(response, tool_results)
+        if not isinstance(round_messages, list) or not all(
+            isinstance(message, dict) for message in round_messages
+        ):
+            raise ToolCallError("后端生成的工具结果消息必须是对象列表")
+        current_messages.extend(round_messages)
 
     async def generate_multiturn(
         self,
         messages: list[dict[str, Any]],
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
-        tool_executor: Callable[[ToolCall], ToolResult] | None = None,
+        tool_executor: Callable[[ToolCall], ToolResult | Awaitable[ToolResult]] | None = None,
         max_turns: int = 5,
         **kwargs: Any,
     ) -> list[ConversationMessage]:
@@ -568,76 +814,61 @@ class LLMClient:
         system = system or DEFAULT_SYSTEM
         history: list[ConversationMessage] = []
         current_messages: list[dict[str, Any]] = list(messages)
+        tool_specs = tools or []
+        declared_names = self._declared_tool_names(tool_specs)
 
         for turn in range(max_turns):
             result = await self.generate_with_tools(
                 messages=current_messages,
                 system=system,
-                tools=tools,
+                tools=tool_specs,
                 **kwargs,
             )
+
+            decoded_calls = self._decode_tool_calls(result, declared_names)
+            content = result.get("content")
+            assistant_content = content if isinstance(content, str) else ""
 
             # 记录 assistant 消息
             assistant_msg = ConversationMessage(
                 role="assistant",
-                content=result.get("content", ""),
-                tool_calls=[
-                    ToolCall(
-                        tool_name=tc["name"],
-                        arguments=tc.get("arguments", {}),
-                        call_id=tc.get("id", ""),
-                    )
-                    for tc in result.get("tool_calls", [])
-                ],
+                content=assistant_content,
+                tool_calls=[call for call, _ in decoded_calls],
             )
             history.append(assistant_msg)
 
             # 无工具调用，结束
-            if not result.get("tool_calls"):
+            if not decoded_calls:
                 break
 
-            # 执行工具并收集结果
-            tool_results: list[ToolResult] = []
-            for tc in result["tool_calls"]:
-                if tool_executor:
-                    call = ToolCall(
-                        tool_name=tc["name"],
-                        arguments=tc.get("arguments", {}),
-                        call_id=tc.get("id", ""),
+            tool_results = list(
+                await asyncio.gather(
+                    *(
+                        self._execute_tool_async(call, preflight_error, tool_executor)
+                        for call, preflight_error in decoded_calls
                     )
-                    tr = tool_executor(call)
-                else:
-                    tr = ToolResult(
-                        call_id=tc.get("id", ""),
-                        output="工具执行器未配置",
-                        is_error=True,
-                    )
-                tool_results.append(tr)
+                )
+            )
 
             # 记录 tool 消息
             tool_msg = ConversationMessage(role="tool", tool_results=tool_results)
             history.append(tool_msg)
 
-            # 构建下一轮消息（附加 assistant + tool results）
-            current_messages.append({"role": "assistant", "content": result.get("content", "")})
-            # Anthropic 格式: tool results 作为 user 消息
-            tool_content: list[dict[str, Any]] = []
-            for tr in tool_results:
-                tool_content.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tr.call_id,
-                        "content": tr.output,
-                        "is_error": tr.is_error,
-                    }
-                )
-            current_messages.append({"role": "user", "content": tool_content})
+            # backend 负责保留原始 assistant 工具块并编码对应的结果消息。
+            self._append_provider_tool_round(current_messages, result, tool_results)
 
             logger.info(
                 "multiturn_round",
                 turn=turn + 1,
-                tool_calls=len(result["tool_calls"]),
+                tool_calls=len(decoded_calls),
             )
+
+            if turn + 1 == max_turns:
+                logger.warning(
+                    "multiturn_max_turns_reached",
+                    max_turns=max_turns,
+                    pending_tool_calls=len(decoded_calls),
+                )
 
         return history
 
@@ -654,70 +885,53 @@ class LLMClient:
         system = system or DEFAULT_SYSTEM
         history: list[ConversationMessage] = []
         current_messages: list[dict[str, Any]] = list(messages)
+        tool_specs = tools or []
+        declared_names = self._declared_tool_names(tool_specs)
 
         for turn in range(max_turns):
             result = self.generate_with_tools_sync(
                 messages=current_messages,
                 system=system,
-                tools=tools,
+                tools=tool_specs,
                 **kwargs,
             )
 
+            decoded_calls = self._decode_tool_calls(result, declared_names)
+            content = result.get("content")
+            assistant_content = content if isinstance(content, str) else ""
+
             assistant_msg = ConversationMessage(
                 role="assistant",
-                content=result.get("content", ""),
-                tool_calls=[
-                    ToolCall(
-                        tool_name=tc["name"],
-                        arguments=tc.get("arguments", {}),
-                        call_id=tc.get("id", ""),
-                    )
-                    for tc in result.get("tool_calls", [])
-                ],
+                content=assistant_content,
+                tool_calls=[call for call, _ in decoded_calls],
             )
             history.append(assistant_msg)
 
-            if not result.get("tool_calls"):
+            if not decoded_calls:
                 break
 
-            tool_results: list[ToolResult] = []
-            for tc in result["tool_calls"]:
-                if tool_executor:
-                    call = ToolCall(
-                        tool_name=tc["name"],
-                        arguments=tc.get("arguments", {}),
-                        call_id=tc.get("id", ""),
-                    )
-                    tr = tool_executor(call)
-                else:
-                    tr = ToolResult(
-                        call_id=tc.get("id", ""),
-                        output="工具执行器未配置",
-                        is_error=True,
-                    )
-                tool_results.append(tr)
+            tool_results = [
+                self._execute_tool_sync(call, preflight_error, tool_executor)
+                for call, preflight_error in decoded_calls
+            ]
 
             tool_msg = ConversationMessage(role="tool", tool_results=tool_results)
             history.append(tool_msg)
 
-            current_messages.append({"role": "assistant", "content": result.get("content", "")})
-            tool_content: list[dict[str, Any]] = []
-            for tr in tool_results:
-                tool_content.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tr.call_id,
-                        "content": tr.output,
-                        "is_error": tr.is_error,
-                    }
-                )
-            current_messages.append({"role": "user", "content": tool_content})
+            self._append_provider_tool_round(current_messages, result, tool_results)
 
             logger.info(
                 "multiturn_round",
                 turn=turn + 1,
-                tool_calls=len(result["tool_calls"]),
+                tool_calls=len(decoded_calls),
             )
+
+            if turn + 1 == max_turns:
+                logger.warning(
+                    "multiturn_max_turns_reached",
+                    max_turns=max_turns,
+                    pending_tool_calls=len(decoded_calls),
+                )
 
         return history
 
@@ -734,10 +948,26 @@ class LLMClient:
         from datetime import datetime
         from pathlib import Path
 
-        self._call_count += 1
+        self._call_count = int(getattr(self, "_call_count", 0)) + 1
+        usage = self.last_usage
+        measured_total = int(usage.get("total_tokens", 0))
+        if measured_total <= 0:
+            measured_total = sum(
+                int(usage.get(key, 0))
+                for key in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                )
+            )
+        if measured_total <= 0:
+            measured_total = max(1, (len(prompt) + len(response) + 3) // 4)
+        self._total_tokens = int(getattr(self, "_total_tokens", 0)) + measured_total
 
         # 定期记录完整 prompt/response 到 DEBUG
-        if self._call_count % self._log_interval == 0:
+        log_interval = max(1, int(getattr(self, "_log_interval", 10)))
+        if self._call_count % log_interval == 0:
             logger.debug(
                 "llm_full_exchange",
                 call_count=self._call_count,
@@ -746,8 +976,9 @@ class LLMClient:
             )
 
         # 写 JSONL 文件
-        if self._log_dir:
-            log_path = Path(self._log_dir)
+        log_dir = getattr(self, "_log_dir", None)
+        if log_dir:
+            log_path = Path(log_dir)
             log_path.mkdir(parents=True, exist_ok=True)
 
             # REC-27：截断 prompt/response（保留完整长度字段），避免 VLM 大 prompt 把

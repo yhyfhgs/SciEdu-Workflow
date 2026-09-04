@@ -95,6 +95,22 @@ def check_novelty(content: str, negative_examples: list[Question]) -> tuple[bool
     return True, ""
 
 
+def check_question_form(candidate: Question) -> tuple[bool, str]:
+    """Validate structured form fields without an LLM call."""
+
+    form = candidate.question_form
+    if form in {"choice", "multiple_choice"}:
+        if len(candidate.options) < 2:
+            return False, f"{form}_requires_at_least_two_options"
+        if not (candidate.correct_option or "").strip():
+            return False, f"{form}_requires_correct_option"
+    elif form == "fill_blank" and (candidate.blanks is None or candidate.blanks < 1):
+        return False, "fill_blank_requires_positive_blanks"
+    elif form == "true_false" and not (candidate.correct_option or "").strip():
+        return False, "true_false_requires_correct_option"
+    return True, ""
+
+
 def prefilter_candidate(candidate: Question, negative_examples: list[Question]) -> tuple[bool, str]:
     """对候选做全部 zero-cost 检查。
 
@@ -108,6 +124,11 @@ def prefilter_candidate(candidate: Question, negative_examples: list[Question]) 
     ok, reason = check_structural_validity(content)
     if not ok:
         logger.info("qgen_prefilter_reject", reason=reason, stage="structural")
+        return False, reason
+
+    ok, reason = check_question_form(candidate)
+    if not ok:
+        logger.info("qgen_prefilter_reject", reason=reason, stage="question_form")
         return False, reason
 
     ok, reason = check_novelty(content, negative_examples)

@@ -93,6 +93,33 @@ class TaxonomyValidator:
     def empty(self) -> bool:
         return not self._valid_paths
 
+    def normalize_path(self, raw_path: str) -> str:
+        """公开的确定性路径规范化接口，供 concept linker 复用。"""
+        return self._normalize(raw_path)
+
+    def has_path(self, raw_path: str) -> bool:
+        """判断路径是否为受控 taxonomy 中的精确结点。"""
+        return self._normalize(raw_path) in self._valid_paths
+
+    def label_for_path(self, raw_path: str) -> str:
+        """返回 taxonomy 结点中文标签；叶结点无显式标签时返回空串。"""
+        return self._path_labels.get(self._normalize(raw_path), "")
+
+    def ancestor_paths(self, raw_path: str, *, include_root: bool = False) -> list[str]:
+        """返回一个合法路径从学科分支到自身的受控祖先链。
+
+        未命中的片段不会被伪造为 active concept；调用方可把原始 tag 另行放入
+        ``pending`` 治理队列。
+        """
+        normalized = self._normalize(raw_path)
+        parts = normalized.split(".") if normalized else []
+        start = 1 if include_root else 2
+        return [
+            ".".join(parts[:idx])
+            for idx in range(start, len(parts) + 1)
+            if ".".join(parts[:idx]) in self._valid_paths
+        ]
+
     def validate(self, raw_path: str, discipline: str | None = None) -> tuple[str, bool]:
         """校验并修正 taxonomy_path。
 

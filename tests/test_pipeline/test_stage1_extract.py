@@ -316,6 +316,85 @@ class TestTerminalTailForceExtract:
         assert len(emitted) == 1, "force-extract 应恢复文末条目"
         assert llm.call_count == 2, f"正常 1 次 + force 1 次，实际 {llm.call_count}"
 
+    def test_unresolved_terminal_marker_is_preserved_for_review(self, tmp_path: Path) -> None:
+        config = _make_config(window=500, max_window=1000)
+        llm = _ScriptedLLM([_no_items(), _no_items()])
+        state = _make_state()
+
+        async def run() -> list[object]:
+            stage = Stage1Extract(
+                llm_client=llm,  # type: ignore[arg-type]
+                config=config,
+                checkpoint_root=tmp_path,
+                discipline=Discipline.MATH,
+            )
+            q_md: asyncio.Queue[object] = asyncio.Queue()
+            q_raw: asyncio.Queue[object] = asyncio.Queue()
+            await q_md.put(
+                MdBlockSource(
+                    file_path="t.md",
+                    page_start=1,
+                    page_end=1,
+                    md_path=str(tmp_path / "p.md"),
+                    md_text="习题 5 求极限\n条件保持在下一行。\n",
+                    block_index=0,
+                )
+            )
+            await q_md.put(SENTINEL)
+            await stage.run(q_md, q_raw, state)
+            results: list[object] = []
+            while not q_raw.empty():
+                results.append(q_raw.get_nowait())
+            return results
+
+        emitted = [item for item in asyncio.run(run()) if isinstance(item, ExtractedBatch)]
+        assert len(emitted) == 1
+        assert emitted[0].items[0].status in {"uncertain", "needs_patch"}
+        assert "习题 5 求极限" in emitted[0].items[0].corrected_content
+        assert emitted[0].items[0].start_line == 1
+        assert emitted[0].items[0].end_line == 2
+
+
+class TestLosslessRetryFallback:
+    def test_schema_retry_exhaustion_preserves_nonempty_fragment(self, tmp_path: Path) -> None:
+        config = _make_config(window=3, max_window=3)
+        config.stage1_extract_max_retries = 1
+        llm = _ScriptedLLM([{"not": "valid"}])
+        state = _make_state()
+
+        async def run() -> list[object]:
+            stage = Stage1Extract(
+                llm_client=llm,  # type: ignore[arg-type]
+                config=config,
+                checkpoint_root=tmp_path,
+                discipline=Discipline.MATH,
+            )
+            q_md: asyncio.Queue[object] = asyncio.Queue()
+            q_raw: asyncio.Queue[object] = asyncio.Queue()
+            await q_md.put(
+                MdBlockSource(
+                    file_path="t.md",
+                    page_start=1,
+                    page_end=1,
+                    md_path=str(tmp_path / "p.md"),
+                    md_text="unmarked premise\nunmarked conclusion\nsource note\n",
+                    block_index=0,
+                )
+            )
+            await q_md.put(SENTINEL)
+            await stage.run(q_md, q_raw, state)
+            results: list[object] = []
+            while not q_raw.empty():
+                results.append(q_raw.get_nowait())
+            return results
+
+        emitted = [item for item in asyncio.run(run()) if isinstance(item, ExtractedBatch)]
+        assert state.failed_blocks == [0]
+        assert len(emitted) == 1
+        assert emitted[0].items[0].item_type == "uncertain_fragment"
+        assert emitted[0].items[0].status == "uncertain"
+        assert "unmarked conclusion" in emitted[0].items[0].corrected_content
+
 
 class TestResumeMirrorWindow:
     """REC-11 — _mirror_batch 落盘 window_lines + stop_reason，供 resume 复原 Stage1Review。"""

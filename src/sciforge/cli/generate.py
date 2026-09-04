@@ -1,13 +1,15 @@
 """CLI generate 命令组 — 题目/讲义/解答生成
 
 已实现：
-- `generate free` — 自由模式生成题目（QGenAgent 5 阶段闭环）
+- `generate free` — 自由模式生成题目（QGen 状态图 Harness 低延迟路径）
 - `generate solve` — 为已有题目生成详细解答（SolveAgent）
 - `generate batch` — 批量 free 模式
 - `generate lecture` — 生成 markdown 讲义（DocAssemblyAgent lite）
 - `generate variant` — 基于源题的 A1-A6/B1-B2 变式生成
 - `generate evolve` — 进化模式（失败后 improve_* 定向改进迭代）
 - `generate solve-deep` — 深度求解（多轮推理 + sandbox 工具调用）
+- `generate durable` — 创建可恢复、带硬预算的长时出题任务
+- `generate resume` / `cancel` — 恢复或取消持久化任务
 """
 
 from __future__ import annotations
@@ -26,12 +28,14 @@ from sciforge.core.models import (
 )
 
 if TYPE_CHECKING:
+    from sciforge.core.models import GeneratedQuestion, Question
     from sciforge.llm.client import LLMClient
     from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 generate_app = typer.Typer(name="generate", help="AI 题目/讲义/解答生成")
 
 _DEFAULT_LLM_CONFIG = Path("config/sciforge.toml")
+_DEFAULT_QGEN_RUNTIME_DB = Path("data/qgen_runtime.db")
 
 
 def _resolve_llm_config(p: Path | None) -> Path | None:
@@ -64,6 +68,33 @@ def _parse_strategy(value: str) -> VariantStrategy:
             return s
     allowed = ", ".join(s.value for s in VariantStrategy)
     raise typer.BadParameter(f"未知变式策略 {value!r}；允许值: {allowed}")
+
+
+def _resolve_question_contract(
+    discipline: Discipline,
+    question_type: str,
+    question_form: str,
+) -> tuple[str, str]:
+    """Resolve per-discipline defaults and reject drift before LLM setup."""
+
+    from sciforge.disciplines import DISCIPLINE_REGISTRY
+
+    spec = DISCIPLINE_REGISTRY.get(discipline)
+    resolved_type = question_type.strip() or spec.allowed_question_types[0]
+    resolved_form = question_form.strip()
+    if resolved_type not in spec.allowed_question_types:
+        raise typer.BadParameter(
+            f"学科 {discipline.value} 不支持题型 {resolved_type!r}；"
+            f"允许值: {', '.join(spec.allowed_question_types)}",
+            param_hint="--type",
+        )
+    if resolved_form and resolved_form not in spec.allowed_question_forms:
+        raise typer.BadParameter(
+            f"学科 {discipline.value} 不支持题面形式 {resolved_form!r}；"
+            f"允许值: {', '.join(spec.allowed_question_forms)}",
+            param_hint="--form",
+        )
+    return resolved_type, resolved_form
 
 
 def _resolve_provider_override(llm_provider: str | None) -> dict[str, str]:
@@ -117,9 +148,17 @@ def _open_storage(db: Path) -> SQLiteStorageBackend:
     return SQLiteStorageBackend(db)
 
 
-def _not_implemented(cmd: str, reason: str) -> None:
-    error(f"`generate {cmd}` {reason}")
-    raise typer.Exit(code=2)
+def _save_generated_question(
+    storage: SQLiteStorageBackend,
+    generated: GeneratedQuestion,
+) -> Question:
+    """Persist the reusable question and its public step-by-step solution together."""
+
+    solution_text = (generated.solution.solution_latex or generated.solution.solution_plain).strip()
+    question = generated.question.model_copy(update={"solution_content": solution_text or None})
+    storage.save_batch([], [question])
+    generated.question = question
+    return question
 
 
 # ── generate free ─────────────────────────────────────
@@ -130,7 +169,10 @@ def generate_free(
     subject: str = typer.Option("", "-s", "--subject", help="科目 (如 real_analysis:实分析)"),
     topic: str = typer.Option(..., "-t", "--topic", help="专题标签（逗号分隔）"),
     difficulty: int = typer.Option(5, "-d", "--difficulty", min=1, max=10),
-    question_type: str = typer.Option("proof", "--type", help="题型 (proof/calculation/...)"),
+    question_type: str = typer.Option("", "--type", help="认知题型；留空使用该学科默认值"),
+    question_form: str = typer.Option(
+        "", "--form", help="题面形式 (choice/fill_blank/subjective/...)"
+    ),
     count: int = typer.Option(1, "-n", "--count", help="生成数量"),
     discipline: str = typer.Option("math", "--discipline", "-D", help="学科 (math/physics/...)"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="SQLite 数据库路径"),
@@ -143,10 +185,13 @@ def generate_free(
         help="LLM TOML 配置文件路径（未指定时默认读 config/sciforge.toml）",
     ),
 ) -> None:
-    """自由模式生成新题目（QGenAgent 5 阶段闭环）"""
+    """自由模式生成新题目（QGen 状态图 Harness 低延迟路径）。"""
     from sciforge.agents import QGenAgent, QGenInput
 
     discipline_enum = _parse_discipline(discipline)
+    question_type, question_form = _resolve_question_contract(
+        discipline_enum, question_type, question_form
+    )
     topics = [t.strip() for t in topic.split(",") if t.strip()]
     if not topics:
         error("至少提供一个 topic")
@@ -160,17 +205,11 @@ def generate_free(
         from sciforge.config.settings import AppConfig
 
         app_cfg = AppConfig()
-        agent = QGenAgent(
+        agent = QGenAgent.from_config(
             llm=llm,
             storage=storage,
             discipline=discipline_enum,
-            max_rounds=app_cfg.generation_max_rounds,
-            candidates_per_round=app_cfg.generation_candidates_per_round,
-            retriever_max_kps=app_cfg.qgen_retriever_max_kps,
-            retriever_max_refs=app_cfg.qgen_retriever_max_refs,
-            retriever_max_negatives=app_cfg.qgen_retriever_max_negatives,
-            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
-            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+            config=app_cfg,
         )
 
         async def run_once() -> None:
@@ -180,6 +219,7 @@ def generate_free(
                 topics=topics,
                 difficulty_target=difficulty,
                 question_type=question_type,
+                question_form=question_form,
                 strategy=VariantStrategy.TOPIC_GENERATION,
             )
 
@@ -192,8 +232,8 @@ def generate_free(
                 gq = result.generated
                 _print_generated(gq)
                 if save:
-                    storage.save_batch([], [gq.question])
-                    success(f"  ✓ 已保存题目 id={gq.question.id[:8]}")
+                    saved = _save_generated_question(storage, gq)
+                    success(f"  ✓ 已保存题目 id={saved.id[:8]}")
 
         asyncio.run(run_once())
     finally:
@@ -268,7 +308,8 @@ def generate_batch(
     topic: str = typer.Option(..., "-t", "--topic"),
     difficulty: int = typer.Option(5, "-d", "--difficulty", min=1, max=10),
     count: int = typer.Option(5, "-n", "--count"),
-    question_type: str = typer.Option("proof", "--type"),
+    question_type: str = typer.Option("", "--type"),
+    question_form: str = typer.Option("", "--form"),
     discipline: str = typer.Option("math", "--discipline", "-D"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db"),
     save: bool = typer.Option(True, "--save/--no-save"),
@@ -287,6 +328,7 @@ def generate_batch(
         topic=topic,
         difficulty=difficulty,
         question_type=question_type,
+        question_form=question_form,
         count=count,
         discipline=discipline,
         db=db,
@@ -358,7 +400,7 @@ def generate_lecture(
         storage.close()
 
 
-# ── Post-MVP 占位 ─────────────────────────────────────
+# ── 变式 / 进化 / 长时运行 ─────────────────────────────
 
 
 @generate_app.command("variant")
@@ -366,6 +408,7 @@ def generate_variant(
     source_id: str = typer.Argument(..., help="源题 ID"),
     strategy: str = typer.Option("A1", "--strategy", help="变式策略 A1-A6/B1-B2（或全名）"),
     difficulty: int | None = typer.Option(None, "-d", "--difficulty", min=1, max=10),
+    question_form: str = typer.Option("", "--form", help="覆盖源题题面形式；留空保持源题形式"),
     discipline: str = typer.Option("math", "--discipline", "-D"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db"),
     save: bool = typer.Option(True, "--save/--no-save"),
@@ -381,8 +424,6 @@ def generate_variant(
 
     discipline_enum = _parse_discipline(discipline)
     strat = _parse_strategy(strategy)
-    llm_config = _resolve_llm_config(llm_config)
-    llm = _build_llm_client("generate", llm_config, llm_provider, llm_model)
     storage = _open_storage(db)
 
     try:
@@ -391,16 +432,26 @@ def generate_variant(
         except FileNotFoundError:
             error(f"源题不存在: {source_id}")
             raise typer.Exit(1) from None
+        if source_q.discipline is not discipline_enum:
+            raise typer.BadParameter(
+                f"源题学科为 {source_q.discipline.value}，与 --discipline "
+                f"{discipline_enum.value} 不一致",
+                param_hint="--discipline",
+            )
+        resolved_type, resolved_form = _resolve_question_contract(
+            discipline_enum,
+            source_q.question_type,
+            question_form or source_q.question_form,
+        )
+        llm_config = _resolve_llm_config(llm_config)
+        llm = _build_llm_client("generate", llm_config, llm_provider, llm_model)
 
         app_cfg = AppConfig()
-        agent = QGenAgent(
+        agent = QGenAgent.from_config(
             llm=llm,
             storage=storage,
             discipline=discipline_enum,
-            max_rounds=app_cfg.generation_max_rounds,
-            candidates_per_round=app_cfg.generation_candidates_per_round,
-            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
-            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+            config=app_cfg,
         )
 
         async def run_once() -> None:
@@ -409,7 +460,8 @@ def generate_variant(
                 subject=source_q.subject,
                 topics=list(source_q.tags),
                 difficulty_target=difficulty or source_q.difficulty,
-                question_type=source_q.question_type,
+                question_type=resolved_type,
+                question_form=resolved_form,
                 strategy=strat,
                 source_question=source_q,
             )
@@ -420,8 +472,8 @@ def generate_variant(
                 raise typer.Exit(1)
             _print_generated(result.generated)
             if save:
-                storage.save_batch([], [result.generated.question])
-                success(f"  ✓ 已保存变式题 id={result.generated.question.id[:8]}")
+                saved = _save_generated_question(storage, result.generated)
+                success(f"  ✓ 已保存变式题 id={saved.id[:8]}")
 
         asyncio.run(run_once())
     finally:
@@ -433,7 +485,8 @@ def generate_evolve(
     subject: str = typer.Option("", "-s", "--subject"),
     topic: str = typer.Option(..., "-t", "--topic"),
     difficulty: int = typer.Option(5, "-d", "--difficulty", min=1, max=10),
-    question_type: str = typer.Option("proof", "--type"),
+    question_type: str = typer.Option("", "--type"),
+    question_form: str = typer.Option("", "--form"),
     max_improve: int = typer.Option(2, "--max-improve", help="每候选最多进化改进轮数"),
     discipline: str = typer.Option("math", "--discipline", "-D"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db"),
@@ -449,6 +502,9 @@ def generate_evolve(
     from sciforge.config.settings import AppConfig
 
     discipline_enum = _parse_discipline(discipline)
+    question_type, question_form = _resolve_question_contract(
+        discipline_enum, question_type, question_form
+    )
     topics = [t.strip() for t in topic.split(",") if t.strip()]
     if not topics:
         error("至少提供一个 topic")
@@ -460,16 +516,14 @@ def generate_evolve(
 
     try:
         app_cfg = AppConfig()
-        agent = QGenAgent(
+        agent = QGenAgent.from_config(
             llm=llm,
             storage=storage,
             discipline=discipline_enum,
-            max_rounds=app_cfg.generation_max_rounds,
-            candidates_per_round=app_cfg.generation_candidates_per_round,
-            lightweight_prefilter=app_cfg.qgen_lightweight_prefilter,
-            merge_difficulty_into_verify=app_cfg.qgen_merge_difficulty_into_verify,
+            config=app_cfg,
             enable_evolution=True,
             max_improvement_rounds=max_improve,
+            population_selection_enabled=True,
         )
 
         async def run_once() -> None:
@@ -479,6 +533,7 @@ def generate_evolve(
                 topics=topics,
                 difficulty_target=difficulty,
                 question_type=question_type,
+                question_form=question_form,
                 strategy=VariantStrategy.TOPIC_GENERATION,
                 enable_evolution=True,
                 max_improvement_rounds=max_improve,
@@ -492,12 +547,244 @@ def generate_evolve(
             if result.trace is not None:
                 console.print(f"[dim]进化改进轮数: {result.trace.improve_rounds_used}[/]")
             if save:
-                storage.save_batch([], [result.generated.question])
-                success(f"  ✓ 已保存题目 id={result.generated.question.id[:8]}")
+                saved = _save_generated_question(storage, result.generated)
+                success(f"  ✓ 已保存题目 id={saved.id[:8]}")
 
         asyncio.run(run_once())
     finally:
         storage.close()
+
+
+@generate_app.command("durable")
+def generate_durable(
+    topic: str = typer.Option(..., "-t", "--topic", help="专题标签（逗号分隔）"),
+    subject: str = typer.Option("", "-s", "--subject"),
+    difficulty: int = typer.Option(5, "-d", "--difficulty", min=1, max=10),
+    question_type: str = typer.Option("", "--type"),
+    question_form: str = typer.Option("", "--form"),
+    discipline: str = typer.Option("math", "--discipline", "-D"),
+    evolve: bool = typer.Option(False, "--evolve/--no-evolve", help="启用进化候选池"),
+    deep_solve: bool = typer.Option(False, "--deep-solve/--standard-solve"),
+    max_improve: int = typer.Option(2, "--max-improve", min=0),
+    run_id: str | None = typer.Option(None, "--run-id", help="可选稳定任务 ID"),
+    runtime_db: Path = typer.Option(
+        _DEFAULT_QGEN_RUNTIME_DB,
+        "--runtime-db",
+        help="长任务状态库（默认 data/qgen_runtime.db）",
+    ),
+    db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="知识库 SQLite"),
+    save: bool = typer.Option(True, "--save/--no-save"),
+    max_steps: int = typer.Option(200, "--max-steps", min=1),
+    max_llm_calls: int = typer.Option(64, "--max-llm-calls", min=1),
+    max_tokens: int = typer.Option(500_000, "--max-tokens", min=1),
+    max_wall_seconds: float = typer.Option(1800.0, "--max-wall-seconds", min=1.0),
+    llm_provider: str | None = typer.Option(None, "--llm-provider"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
+    llm_config: Path | None = typer.Option(None, "--llm-config"),
+) -> None:
+    """创建可从 graph 节点边界恢复的 QGen 长时任务。
+
+    默认状态库：data/qgen_runtime.db。
+    """
+    import uuid
+
+    from sciforge.agents import QGenAgent, QGenInput
+    from sciforge.agents.qgen.durable_harness import DurableQGenHarness
+    from sciforge.agents.runtime import BudgetExceededError, RunBudget, SQLiteRunStore
+    from sciforge.config.settings import AppConfig
+
+    discipline_enum = _parse_discipline(discipline)
+    question_type, question_form = _resolve_question_contract(
+        discipline_enum, question_type, question_form
+    )
+    topics = [value.strip() for value in topic.split(",") if value.strip()]
+    if not topics:
+        error("至少提供一个 topic")
+        raise typer.Exit(1)
+    llm_config = _resolve_llm_config(llm_config)
+    llm = _build_llm_client("generate", llm_config, llm_provider, llm_model)
+    storage = _open_storage(db)
+    effective_run_id = run_id or str(uuid.uuid4())
+    try:
+        agent = QGenAgent.from_config(
+            llm=llm,
+            storage=storage,
+            discipline=discipline_enum,
+            config=AppConfig(),
+            enable_evolution=evolve,
+            max_improvement_rounds=max_improve,
+            population_selection_enabled=evolve,
+            deep_solve_enabled=deep_solve,
+        )
+        request = GenerationRequest(
+            discipline=discipline_enum,
+            subject=subject,
+            topics=topics,
+            difficulty_target=difficulty,
+            question_type=question_type,
+            question_form=question_form,
+            strategy=VariantStrategy.TOPIC_GENERATION,
+            enable_evolution=evolve,
+            max_improvement_rounds=max_improve,
+        )
+        store = SQLiteRunStore(runtime_db)
+        harness = DurableQGenHarness(agent, store)
+
+        async def run_once() -> None:
+            try:
+                _, output = await harness.run(
+                    QGenInput(request=request),
+                    run_id=effective_run_id,
+                    budget=RunBudget(
+                        max_steps=max_steps,
+                        max_llm_calls=max_llm_calls,
+                        max_tokens=max_tokens,
+                        max_wall_time_seconds=max_wall_seconds,
+                    ),
+                    metadata={
+                        "source": "cli",
+                        "evolution": evolve,
+                        "deep_solve": deep_solve,
+                    },
+                )
+            except BudgetExceededError as exc:
+                error(f"任务因预算暂停 ({exc.dimension})；run_id={effective_run_id}")
+                raise typer.Exit(2) from exc
+            console.print(f"[bold cyan]run_id:[/] {effective_run_id}")
+            if output.generated is None:
+                error(output.reason or "未生成合格题目")
+                return
+            _print_generated(output.generated)
+            if save:
+                saved = _save_generated_question(storage, output.generated)
+                success(f"已保存题目 id={saved.id[:8]}")
+
+        asyncio.run(run_once())
+    finally:
+        storage.close()
+
+
+@generate_app.command("resume")
+def resume_durable(
+    run_id: str = typer.Argument(..., help="要恢复的持久化任务 ID"),
+    runtime_db: Path = typer.Option(
+        _DEFAULT_QGEN_RUNTIME_DB,
+        "--runtime-db",
+        help="长任务状态库（默认 data/qgen_runtime.db）",
+    ),
+    db: Path = typer.Option(Path("data/sciforge.db"), "--db"),
+    save: bool = typer.Option(True, "--save/--no-save"),
+    max_steps: int | None = typer.Option(None, "--max-steps", min=1),
+    max_llm_calls: int | None = typer.Option(None, "--max-llm-calls", min=1),
+    max_tokens: int | None = typer.Option(None, "--max-tokens", min=1),
+    max_wall_seconds: float | None = typer.Option(None, "--max-wall-seconds", min=1.0),
+    llm_provider: str | None = typer.Option(None, "--llm-provider"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
+    llm_config: Path | None = typer.Option(None, "--llm-config"),
+) -> None:
+    """从最后一个已提交节点恢复 QGen 任务，可同时提高硬预算。
+
+    默认状态库：data/qgen_runtime.db。
+    """
+    from sciforge.agents import QGenAgent, QGenInput
+    from sciforge.agents.qgen.durable_harness import DurableQGenHarness
+    from sciforge.agents.runtime import (
+        BudgetExceededError,
+        RunBudget,
+        RunNotFoundError,
+        SQLiteRunStore,
+    )
+    from sciforge.config.settings import AppConfig
+
+    store = SQLiteRunStore(runtime_db)
+    try:
+        record = store.require_run(run_id)
+    except RunNotFoundError as exc:
+        error(f"任务不存在: {run_id}")
+        raise typer.Exit(1) from exc
+    if record.run_kind != "qgen":
+        error(f"任务 {run_id} 不是 QGen graph run（kind={record.run_kind}）")
+        raise typer.Exit(1)
+    request = GenerationRequest.model_validate(record.input_payload)
+    if any(value is not None for value in (max_steps, max_llm_calls, max_tokens, max_wall_seconds)):
+        store.update_budget(
+            run_id,
+            RunBudget(
+                max_steps=max_steps if max_steps is not None else record.budget.max_steps,
+                max_llm_calls=(
+                    max_llm_calls if max_llm_calls is not None else record.budget.max_llm_calls
+                ),
+                max_tokens=max_tokens if max_tokens is not None else record.budget.max_tokens,
+                max_wall_time_seconds=(
+                    max_wall_seconds
+                    if max_wall_seconds is not None
+                    else record.budget.max_wall_time_seconds
+                ),
+            ),
+        )
+    llm_config = _resolve_llm_config(llm_config)
+    llm = _build_llm_client("generate", llm_config, llm_provider, llm_model)
+    storage = _open_storage(db)
+    evolution = bool(record.metadata.get("evolution", request.enable_evolution))
+    deep_solve = bool(record.metadata.get("deep_solve", False))
+    try:
+        agent = QGenAgent.from_config(
+            llm=llm,
+            storage=storage,
+            discipline=request.discipline,
+            config=AppConfig(),
+            enable_evolution=evolution,
+            max_improvement_rounds=request.max_improvement_rounds,
+            population_selection_enabled=evolution,
+            deep_solve_enabled=deep_solve,
+        )
+        harness = DurableQGenHarness(agent, store)
+
+        async def run_once() -> None:
+            try:
+                _, output = await harness.run(
+                    QGenInput(request=request),
+                    run_id=run_id,
+                    resume=True,
+                )
+            except BudgetExceededError as exc:
+                error(f"任务仍受预算限制 ({exc.dimension})；run_id={run_id}")
+                raise typer.Exit(2) from exc
+            if output.generated is None:
+                error(output.reason or "未生成合格题目")
+                return
+            _print_generated(output.generated)
+            if save:
+                saved = _save_generated_question(storage, output.generated)
+                success(f"已保存题目 id={saved.id[:8]}")
+
+        asyncio.run(run_once())
+    finally:
+        storage.close()
+
+
+@generate_app.command("cancel")
+def cancel_durable(
+    run_id: str = typer.Argument(..., help="要取消的持久化任务 ID"),
+    runtime_db: Path = typer.Option(
+        _DEFAULT_QGEN_RUNTIME_DB,
+        "--runtime-db",
+        help="长任务状态库（默认 data/qgen_runtime.db）",
+    ),
+) -> None:
+    """请求取消运行中任务；无人持有的 pending/paused 任务立即终止。
+
+    默认状态库：data/qgen_runtime.db。
+    """
+    from sciforge.agents.runtime import RunNotFoundError, SQLiteRunStore
+
+    store = SQLiteRunStore(runtime_db)
+    try:
+        record = store.request_cancel(run_id, reason="cancelled from CLI")
+    except RunNotFoundError as exc:
+        error(f"任务不存在: {run_id}")
+        raise typer.Exit(1) from exc
+    success(f"取消请求已记录: run_id={run_id}, status={record.status.value}")
 
 
 @generate_app.command("solve-deep")
@@ -516,6 +803,7 @@ def generate_solve_deep(
 ) -> None:
     """深度求解：多轮推理 + sandbox 工具调用（execute_python 交叉验证中间结果）"""
     from sciforge.agents.qgen.deep_solver import DeepSolveEngine
+    from sciforge.agents.qgen.verification_sandbox import build_verification_sandbox
     from sciforge.config.settings import AppConfig
 
     discipline_enum = _parse_discipline(discipline)
@@ -536,6 +824,8 @@ def generate_solve_deep(
             discipline_enum,
             sandbox_timeout=app_cfg.sandbox_timeout,
             max_turns=app_cfg.solver_max_turns,
+            sandbox=build_verification_sandbox(app_cfg),
+            sandbox_trust_policy=app_cfg.sandbox_trust_policy,
         )
 
         async def run_once() -> None:

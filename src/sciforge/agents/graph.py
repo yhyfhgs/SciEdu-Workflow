@@ -67,6 +67,13 @@ CheckpointHook = Callable[[dict[str, Any], int], None]
 `step` 为 1-based 的已执行步数，便于持久化进度并在恢复时定位。
 """
 
+TransitionHook = Callable[[str, str, dict[str, Any], int], None]
+"""可恢复转移钩子：(node, next_node, latest_state, completed_steps) -> None。
+
+与旧 ``on_checkpoint(state, step)`` 相比，它显式暴露下一节点，因此持久化
+harness 能在节点边界恢复，不会重放已完成的 LLM 调用。
+"""
+
 END = "__END__"
 """终止节点哨兵"""
 
@@ -146,6 +153,9 @@ class CompiledGraph:
         on_node_enter: NodeEnterHook | None = None,
         on_node_exit: NodeExitHook | None = None,
         on_checkpoint: CheckpointHook | None = None,
+        on_transition: TransitionHook | None = None,
+        start_at: str | None = None,
+        completed_steps: int = 0,
     ) -> dict[str, Any]:
         """从入口节点开始异步执行状态图，直到到达 END 或 max_steps 超限
 
@@ -156,11 +166,19 @@ class CompiledGraph:
             on_node_exit: 可选 trace 钩子，每个节点执行后调用 (node, state, updates)；
                 节点 retry 成功时仅在最终成功后调用一次。
             on_checkpoint: 可选 checkpoint 钩子，每步状态更新后调用 (state, step)
+            on_transition: 可选持久化钩子，路由确定后调用
+                (node, next_node, state, completed_steps)。
+            start_at: 从某个已注册节点恢复；None 使用 entry point。
+            completed_steps: 恢复前已完成步数；与 max_steps 共用总预算。
         Returns:
             最终状态字典
         """
-        current = self._g._entry
-        steps = 0
+        if completed_steps < 0:
+            raise ValueError("completed_steps 不能为负")
+        current = start_at or self._g._entry
+        if current != END and current not in self._g._nodes:
+            raise ValueError(f"未知恢复节点 {current!r}")
+        steps = completed_steps
 
         while current != END:
             if steps >= max_steps:
@@ -191,6 +209,9 @@ class CompiledGraph:
                 next_node = mapping.get(key, END)
             else:
                 next_node = self._g._edges.get(current, END)
+
+            if on_transition is not None:
+                on_transition(current, next_node, state, steps)
 
             logger.debug("graph_node_exit", node=current, step=steps, next=next_node)
             current = next_node

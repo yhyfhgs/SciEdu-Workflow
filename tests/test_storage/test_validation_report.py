@@ -130,3 +130,17 @@ def test_validation_report_relations(tmp_path: Path) -> None:
     db.close()
     assert rep["relations_total"] == 1
     assert rep["relations_by_type"]["corollary_of"] == 1
+
+
+def test_validation_report_exposes_ingestion_governance(tmp_path: Path) -> None:
+    db = SQLiteStorageBackend(tmp_path / "ingestion.db")
+    db.save_batch(
+        [KnowledgePoint(content="可发布知识点", ingestion_status="accepted")],
+        [Question(content="待修复题目", ingestion_status="needs_patch")],
+    )
+    rep = db.validation_report()
+    db.close()
+
+    assert rep["kp_by_ingestion_status"] == {"accepted": 1}
+    assert rep["q_by_ingestion_status"] == {"needs_patch": 1}
+    assert rep["nonaccepted_total"] == 1

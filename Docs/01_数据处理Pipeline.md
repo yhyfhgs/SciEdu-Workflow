@@ -3,7 +3,7 @@
 > 版本: v8.2 | 日期: 2026-06-15
 > 架构: **5 阶段并发 Producer-Consumer**（Task0 + 5 Stage + 4 queue + asyncio.gather）
 >
-> **2026-06-15 优化批次（30 条 REC，详见 [PROGRESS.md](PROGRESS.md) §00；CLAUDE.md 为权威开关清单）**：
+> **2026-06-15 优化批次（30 条 REC，详见 [PROGRESS.md](PROGRESS.md) §00；AGENTS.md 为权威开关清单）**：
 > - Task0：文本型 PDF 探测文字层走 fitz（0 LLM，REC-01，`--force-vlm` 覆盖）；VLM 批内 Semaphore 并发+保序+截断检测（REC-02）
 > - Stage1Extract：首块 `detect_genre` 书本/试卷/讲义→试卷/讲义关 fast-skip 提召回（REC-14）；
 >   文末 `force_extract` 兜底防漏（REC-12）；确定性章节边界注入提取 prompt（REC-20）；窗口管理点 `_sync_state` 节流（REC-17）
@@ -43,7 +43,11 @@
 
 ### 1.2 通用数据
 
-任意 PDF / DOCX / MD / TeX / PPTX / EPUB / CSV 教材、讲义、试卷。多卷文件（`*_part_1_3.pdf` 命名约定）会被自动按页码合并为单个 logical_document。
+支持 PDF / DOCX / PPTX / MD / TeX / CSV / TSV / XLSX / HTML / EPUB / JSON /
+JSONL / TXT / RST / PNG / JPEG / WebP / GIF。CSV、表格、HTML、EPUB、JSON 与纯文本
+先由确定性 adapter 转换为带 source locator 的 Markdown block（0 LLM）；单图片和
+无可用文字层的扫描文档才走 VLM。多卷文件（`*_part_1_3.pdf` 命名约定）
+会自动合并为单个 logical_document。
 
 ---
 
@@ -67,14 +71,15 @@
 ```
 logical_document (单文件 or *_part_N_M 多分卷)
        │
-       ▼  Task0 Producer (vlm / pymupdf / markdown)
-            每 5 页一批 → page_NNN-NNN.md (1-based)
+       ▼  Task0 Producer (adapter / vlm / pymupdf / markdown)
+            每 5 页或每结构块一批 → page_NNN-NNN.md (1-based)
             失败 batch → state.failed_batches；不推入 queue
        │
        ▼  q_md (maxsize=pipeline_queue_size，FIFO)
        │
        ▼  Stage1Extract (LLM 调用 1)
-            行缓冲 + 500 行窗口；0 条则扩 500 → 上限 3000；达 max 后连续 N 次空 → force consume
+            行缓冲 + 500 行窗口；0 条则扩 500 → 上限 3000；达 max 后连续 N 次空 →
+            终端无损兜底（非空/强 marker span 写 uncertain，占位后消费）
             每次输出 BatchItemExtractPayloadLLM：items[] + stop_reason + last_consumed_line
             为 items 连续分配 item_ids，滑窗到 last_consumed_line+1
             mirror → items/stage1/item_<id>.json
@@ -158,9 +163,11 @@ class BatchResult:
 
 | 类 | 适用格式 | 特点 |
 |---|---|---|
-| `VlmRecognizer` | PDF / DOCX | 多模态视觉识别（最高精度），保留 LaTeX 公式与图片裁剪 |
+| `VlmRecognizer` | 扫描 PDF / DOCX / PPTX | 多模态视觉识别，保留 LaTeX 公式与图片裁剪 |
 | `PyMuPdfRecognizer` | PDF | 纯文本提取，无 LLM，速度最快 |
 | `MarkdownRecognizer` | MD / TeX | 整文件单 batch |
+| `AdapterRecognizer` | CSV/TSV/XLSX/HTML/EPUB/JSON/JSONL/TXT/RST | 确定性结构转换，0 LLM |
+| `ImageRecognizer` | PNG/JPEG/WebP/GIF | 单图一次受限 VLM 转写，checkpoint 命中时 0 调用 |
 
 ### 3.3 落盘约定
 
@@ -456,7 +463,7 @@ class FileExtractionState(BaseModel):
 | `extract_window_lines` | 500 | Stage1Extract 初始窗口 |
 | `extract_max_window_lines` | 3000 | 扩窗口上限 |
 | `extract_window_expand_step` | 500 | 每次扩窗口步长 |
-| `extract_empty_force_limit` | 2 | 达 max 后连续 N 次空 → force consume |
+| `extract_empty_force_limit` | 2 | 达 max 后连续 N 次空 → 构造 uncertain 无损兜底后消费 |
 | `stage1_extract_max_retries` | 3 | Stage1Extract LLM retry |
 | `stage1_review_enabled` | True | Stage1Review 是否启用 |
 | `stage1_review_max_retries` | 2 | Stage1Review LLM retry |
@@ -487,7 +494,7 @@ class FileExtractionState(BaseModel):
 
 > 完整开关（含 `intra_doc_parallel_extract` 单文档并行、`answer_linking_enabled` /
 > `relation_inference_enabled` / `reconciliation_enabled` post-pass、`pipeline_prompt_cache_enabled`
-> 等）见 [CLAUDE.md](../CLAUDE.md) 的「Pipeline 优化开关」与 `src/sciforge/config/settings.py`。
+> 等）见 [AGENTS.md](../AGENTS.md) 的「Pipeline 优化开关」与 `src/sciforge/config/settings.py`。
 
 ---
 
@@ -528,7 +535,7 @@ uv run sciforge parse run <path> [options]
 | `--extract-expand-step` | 500 | 每次扩窗口步长 |
 | `--max-retries` | 3 | LLM/VLM 重试次数 |
 | `--max-files, -j` | 4 | 目录模式并发 |
-| `--restart` | False | 忽略 checkpoint 从头开始（DB schema < v7 时必需） |
+| `--restart` | False | 忽略 checkpoint 从头开始（DB schema < v8 或 checkpoint 不兼容时必需） |
 | `--dry-run` | False | 不写 DB |
 | `--skip-llm` | False | 跳过 LLM 调用（仅识别，整条 pipeline drain） |
 | `--llm-config` | `config/sciforge.toml` | TOML 配置 |
@@ -539,7 +546,10 @@ uv run sciforge parse run <path> [options]
 
 ## 14. 数据模型
 
-### 14.1 KnowledgePoint / Question（DB schema v10，详见 Docs/05 顶部 v10 变更）
+### 14.1 KnowledgePoint / Question（DB schema v14）
+
+条目完整性、分学科/题型规则、concept graph、评价门禁与存储性能契约详见
+[`Docs/21_知识库构建标准与数据契约.md`](21_知识库构建标准与数据契约.md)。
 
 ```python
 class KnowledgePoint(BaseModel):
@@ -557,8 +567,11 @@ class KnowledgePoint(BaseModel):
     source_file: str                   # 源 logical_document 文件路径（用于追溯）
     start_line: int
     end_line: int
+    start_char: int
+    end_char: int
+    page: int | None
     order_index: int                   # = item_id（跨文件全局递增）
-    # 相对 v5 删除：source_chapter
+    ingestion_status: Literal["accepted", "uncertain", "needs_patch", "rejected"]
 
 class Question(BaseModel):
     # 类似 KP，但有 question_type / solution_content
@@ -598,9 +611,9 @@ ls data/checkpoint/<file_hash>/recognize/file_000_*/
 # 3. DB 统计
 uv run sciforge parse db-stats data/sciforge.db
 
-# 4. order_index 单调递增 + schema v10 确认
-sqlite3 data/sciforge.db "PRAGMA user_version"  # 应为 8
-sqlite3 data/sciforge.db ".schema knowledge_points"  # 含 number_canonical/seq_*/content_hash
+# 4. order_index 单调递增 + schema v14 确认
+sqlite3 data/sciforge.db "PRAGMA user_version"  # 应为 14
+sqlite3 data/sciforge.db ".schema knowledge_points"  # 含 locator/ingestion_status
 
 # 5. 入库后只读体检（提取量/类型双维度/题答绑定/编号/去重/知识图谱边）
 uv run sciforge parse validate data/sciforge.db
@@ -644,6 +657,6 @@ sqlite3 data/sciforge.db "SELECT tags FROM knowledge_points LIMIT 5"
 | `src/sciforge/prompts/templates/pipeline/annotate_stage2_review.txt` | Stage2Review prompt |
 | `src/sciforge/prompts/templates/pipeline/vlm_convert.txt` | Task0 VLM prompt |
 | `src/sciforge/storage/sqlite_backend.py` | SQLite 存储 + SchemaVersionMismatch |
-| `src/sciforge/storage/schema.sql` | DB schema v7 |
+| `src/sciforge/storage/schema.sql` | DB schema v14（核心条目 + concept/evaluation/review + ingestion governance） |
 | `src/sciforge/cli/parse.py` | CLI 入口 |
 | `config/sciforge.toml` | LLM + pipeline TOML 配置 |

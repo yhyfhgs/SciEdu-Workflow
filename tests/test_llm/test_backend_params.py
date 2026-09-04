@@ -36,6 +36,24 @@ class TestAnthropicParamRouting:
             b.async_client = mock_async.return_value
             return b
 
+    def test_output_config_routed_through_extra_body(self, backend):
+        """v11 §G.3：output_config 与 thinking 一样经 extra_body 透传（SDK 版本无关）。"""
+        neutral = backend._resolve_params(
+            output_config={"format": {"type": "json_schema", "schema": {"type": "object"}}}
+        )
+        sdk = backend._to_sdk_params(neutral)
+        assert "output_config" not in sdk
+        assert sdk["extra_body"]["output_config"]["format"]["type"] == "json_schema"
+
+    def test_output_config_and_thinking_coexist_in_extra_body(self, backend):
+        neutral = backend._resolve_params(
+            thinking={"type": "disabled"},
+            output_config={"format": {"type": "json_schema", "schema": {}}},
+        )
+        sdk = backend._to_sdk_params(neutral)
+        assert sdk["extra_body"]["thinking"] == {"type": "disabled"}
+        assert "format" in sdk["extra_body"]["output_config"]
+
     def test_extended_params_reach_sdk(self, backend):
         """top_p / top_k / stop_sequences / thinking 都应该传到 messages.create"""
         mock_response = MagicMock()
@@ -90,7 +108,7 @@ class TestAnthropicParamRouting:
         mock_response.content = [MagicMock(text="ok")]
         backend.client.messages.create.return_value = mock_response
 
-        long_system = "指令" * 400  # 800 字 > 阈值 500
+        long_system = "指令" * 1200  # 2400 字 > 阈值 2048（按模型家族路由，默认 2048）
         backend.generate_sync(prompt="hi", system=long_system)
 
         system = backend.client.messages.create.call_args.kwargs["system"]

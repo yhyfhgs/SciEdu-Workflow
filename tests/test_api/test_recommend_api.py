@@ -21,6 +21,13 @@ def _mock_storage(questions: list[Question]) -> Any:
     by_id = {q.id: q for q in questions}
     s = MagicMock()
     s.search_questions = MagicMock(return_value=[q.id for q in questions])
+    s.search_questions_for_tenant = MagicMock(
+        side_effect=lambda _filters, *, tenant_id, include_public=True: [
+            q.id
+            for q in questions
+            if q.tenant_id == tenant_id or (include_public and not q.tenant_id)
+        ]
+    )
     s.load_questions_by_ids = MagicMock(
         side_effect=lambda ids: [by_id[i] for i in ids if i in by_id]
     )
@@ -69,8 +76,9 @@ def test_recommend_returns_ranked_items(tmp_path: Path) -> None:
     with SaasStore(tmp_path / "saas.db") as store:
         bank = _mock_storage(qs)
         client = TestClient(
-            create_app(_noop(), _noop(), saas_store=store, storage_factory=lambda: bank,
-                       jwt_secret="s")
+            create_app(
+                _noop(), _noop(), saas_store=store, storage_factory=lambda: bank, jwt_secret="s"
+            )
         )
         token = _register(client)
         hdr = {"Authorization": f"Bearer {token}"}

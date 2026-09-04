@@ -20,9 +20,7 @@ from sciforge.core.models import (
 
 
 def _kp(content: str, tags: list[str]) -> KnowledgePoint:
-    return KnowledgePoint(
-        discipline=Discipline.MATH, kp_type="theorem", content=content, tags=tags
-    )
+    return KnowledgePoint(discipline=Discipline.MATH, kp_type="theorem", content=content, tags=tags)
 
 
 def test_hybrid_sort_tag_overlap_priority() -> None:
@@ -70,9 +68,17 @@ class _MockStorage:
     def __init__(self, kps: list[KnowledgePoint], questions: list[Question]) -> None:
         self._kps = {k.id: k for k in kps}
         self._questions = {q.id: q for q in questions}
+        self.knowledge_filters: list[dict[str, Any]] = []
 
     def search_knowledge(self, filters: dict[str, Any]) -> list[str]:
-        return list(self._kps)
+        self.knowledge_filters.append(filters)
+        if "include_ids" in filters:
+            return [
+                item_id
+                for item_id in filters["include_ids"]
+                if item_id in self._kps and self._kps[item_id].ingestion_status == "accepted"
+            ]
+        return [item_id for item_id, kp in self._kps.items() if kp.ingestion_status == "accepted"]
 
     def load_knowledge_by_ids(self, ids: list[str]) -> list[KnowledgePoint]:
         return [self._kps[i] for i in ids if i in self._kps]
@@ -99,3 +105,29 @@ def test_build_context_hybrid_ranks_relevant_kp_first() -> None:
     assert isinstance(bundle, ContextBundle)
     # query("math:数学") 与"连续...有界"内容更相关 → 排第一
     assert bundle.knowledge_points[0] is relevant
+
+
+def test_explicit_knowledge_pin_is_prioritized_but_still_quality_gated() -> None:
+    ranked = _kp("连续函数紧致性相关内容，因此会被语义检索排到前面。", ["math:数学"])
+    pinned = _kp("用户明确选择的测度论定义，应优先于自动排序结果。", ["math:数学"])
+    pinned.subject = "measure_theory:测度论"
+    blocked = _kp("未完成复核的原始占位内容不能因显式 ID 绕过门禁。", ["math:数学"])
+    blocked.ingestion_status = "uncertain"
+    storage = _MockStorage([ranked, pinned, blocked], [])
+    retriever = ContextRetriever(storage)  # type: ignore[arg-type]
+    request = GenerationRequest(
+        topics=["math:数学"],
+        knowledge_ids=[pinned.id, blocked.id],
+        subject="real_analysis:实分析",
+        difficulty_target=5,
+        strategy=VariantStrategy.TOPIC_GENERATION,
+    )
+
+    bundle = retriever.build_context(request, Discipline.MATH)
+
+    assert bundle.knowledge_points[0] is pinned
+    assert blocked not in bundle.knowledge_points
+    pin_query = next(call for call in storage.knowledge_filters if "include_ids" in call)
+    assert pin_query["include_ids"] == [pinned.id, blocked.id]
+    assert "subject" not in pin_query
+    assert "quality_gate" in pin_query

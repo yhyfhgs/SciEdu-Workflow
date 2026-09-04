@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 820" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="flows-title flows-desc" font-family="-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif">
+  <title id="flows-title">QGen 前端关键流程目标态</title>
+  <desc id="flows-desc">展示生成并验证结构化题目、会话管理和安全数学渲染三条流程，以及分阶段浏览器验收。</desc>
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0f766e"/></marker>
+    <marker id="af" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#dc2626"/></marker>
+    <style>
+      .tb{font-size:15px;font-weight:600;fill:#0f172a}.t{font-size:11.5px;fill:#1e293b}.ts{font-size:10px;fill:#5a6b74}
+      .step{fill:#f0fdfa;stroke:#0d9488;stroke-width:1.3;rx:6}.dec{fill:#fffbeb;stroke:#d97706;stroke-width:1.3}
+      .guard{fill:#eef2f5;stroke:#245f7c;stroke-width:1.3;rx:6}.flag{font-size:9.5px;fill:#dc2626;font-weight:600}
+      .term{fill:#ecfdf5;stroke:#16a34a;stroke-width:1.3;rx:16}
+    </style>
+  </defs>
+  <rect width="1240" height="820" fill="#fdfdfd"/>
+  <text x="40" y="38" class="tb" font-size="19">关键 UI 流程（目标态，标注消化的 FE/FB 发现）</text>
+
+  <!-- 流程1 -->
+  <text x="40" y="78" class="tb">流程 1 · 生成并可信发布结构化题目（FE-01/03/04 · QG-01/02）</text>
+  <rect x="40" y="92" width="130" height="46" class="step"/><text x="54" y="112" class="t">选模式/模板</text><text x="54" y="128" class="ts">左栏一级入口</text>
+  <rect x="200" y="92" width="150" height="46" class="guard"/><text x="214" y="112" class="t">前端参数校验</text><text x="214" y="128" class="ts">拦非法组合(不打后端)</text>
+  <rect x="380" y="92" width="130" height="46" class="guard"/><text x="394" y="112" class="t">提交守卫</text><text x="394" y="128" class="ts">in-flight + ⌘Enter</text>
+  <rect x="540" y="92" width="150" height="46" class="step"/><text x="554" y="112" class="t">SSE 进度</text><text x="554" y="128" class="ts">取消状态机始终可用</text>
+  <rect x="720" y="92" width="130" height="46" class="step"/><text x="734" y="112" class="t">QuestionArtifact</text><text x="734" y="128" class="ts">按 form 校验/渲染</text>
+  <rect x="880" y="92" width="130" height="46" class="guard"/><text x="894" y="112" class="t">EvidenceBinding</text><text x="894" y="128" class="ts">bound_checked gate</text>
+  <rect x="1040" y="92" width="130" height="46" class="term"/><text x="1058" y="120" class="t">终态 / 可发布</text>
+  <line x1="170" y1="115" x2="198" y2="115" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="350" y1="115" x2="378" y2="115" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="510" y1="115" x2="538" y2="115" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="690" y1="115" x2="718" y2="115" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="850" y1="115" x2="878" y2="115" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="1010" y1="115" x2="1038" y2="115" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="204" y="158" class="flag">FE-01 template≠mode 前端拦截</text>
+  <text x="424" y="158" class="flag">FE-04 ⌘Enter 走 in-flight 守卫</text>
+  <text x="724" y="158" class="flag">QG-01 结构字段 round-trip</text>
+  <text x="884" y="158" class="flag">QG-02 compiled_unbound 禁发布</text>
+
+  <!-- 流程2 -->
+  <text x="40" y="228" class="tb">流程 2 · 会话管理（修 FE-10/FB-01/FB-17，依赖 plan-04 端点）</text>
+  <rect x="40" y="242" width="140" height="46" class="step"/><text x="54" y="262" class="t">列表游标分页</text><text x="54" y="278" class="ts">加载更多(DESC)</text>
+  <rect x="210" y="242" width="140" height="46" class="dec"/><text x="224" y="262" class="t">操作 ⋮</text><text x="224" y="278" class="ts">重命名/删除</text>
+  <rect x="380" y="236" width="150" height="38" class="step"/><text x="394" y="259" class="t" font-size="11">PATCH /conversations</text>
+  <rect x="380" y="282" width="150" height="38" class="step"/><text x="394" y="305" class="t" font-size="11">DELETE /conversations</text>
+  <rect x="560" y="242" width="150" height="46" class="step"/><text x="574" y="262" class="t">切换会话</text><text x="574" y="278" class="ts">store 集中重置派生态</text>
+  <rect x="740" y="242" width="150" height="46" class="term"/><text x="760" y="270" class="t">一致视图</text>
+  <line x1="180" y1="265" x2="208" y2="265" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="350" y1="258" x2="378" y2="255" stroke="#0f766e" stroke-width="1.3" marker-end="url(#a)"/>
+  <line x1="350" y1="272" x2="378" y2="301" stroke="#0f766e" stroke-width="1.3" marker-end="url(#a)"/>
+  <line x1="530" y1="265" x2="558" y2="265" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="710" y1="265" x2="738" y2="265" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="44" y="312" class="flag">FB-01 消息 &gt;1000 条不再不可见（游标向上翻）</text>
+  <text x="384" y="340" class="flag">FB-17 后端补 PATCH/DELETE 端点（当前无，按钮死）</text>
+  <text x="564" y="312" class="flag">FE-05/06 catch+回滚 + 跨会话状态重置</text>
+
+  <!-- 流程3 -->
+  <text x="40" y="392" class="tb">流程 3 · 数学渲染管线（修 FE-09，XSS 不变量保持）</text>
+  <rect x="40" y="406" width="150" height="50" class="step"/><text x="54" y="428" class="t">LLM markdown</text><text x="54" y="444" class="ts">含 $...$/表格/代码</text>
+  <rect x="220" y="406" width="160" height="50" class="guard"/><text x="234" y="428" class="t">白名单解析</text><text x="234" y="444" class="ts">仅允许结构标记</text>
+  <rect x="410" y="384" width="170" height="42" class="step"/><text x="424" y="410" class="t">数学 → KaTeX render</text>
+  <rect x="410" y="436" width="170" height="42" class="guard"/><text x="424" y="462" class="t">非数学 → textContent</text>
+  <rect x="610" y="406" width="160" height="50" class="dec"/><text x="624" y="428" class="t">渲染失败？</text><text x="624" y="444" class="ts">throwOnError:false</text>
+  <rect x="800" y="384" width="150" height="42" class="term"/><text x="820" y="410" class="t">显示渲染结果</text>
+  <rect x="800" y="436" width="150" height="42" class="dec"/><text x="814" y="462" class="t">降级显原 LaTeX</text>
+  <line x1="190" y1="431" x2="218" y2="431" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="380" y1="425" x2="408" y2="405" stroke="#0f766e" stroke-width="1.3" marker-end="url(#a)"/>
+  <line x1="380" y1="437" x2="408" y2="457" stroke="#0f766e" stroke-width="1.3" marker-end="url(#a)"/>
+  <line x1="580" y1="431" x2="608" y2="431" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="770" y1="420" x2="798" y2="410" stroke="#0f766e" stroke-width="1.3" marker-end="url(#a)"/><text x="774" y="404" class="ts">否</text>
+  <line x1="770" y1="442" x2="798" y2="452" stroke="#dc2626" stroke-width="1.3" marker-end="url(#af)"/><text x="774" y="470" class="ts">是</text>
+  <text x="234" y="494" class="flag">FE-09 引入 KaTeX（trust:false 禁注入向量）</text>
+  <text x="610" y="500" class="flag">失败不静默 · 非数学永不进 innerHTML（XSS 不变量）</text>
+
+  <!-- 阶段与验收 -->
+  <rect x="40" y="530" width="1160" height="250" fill="#fff" stroke="#94a3b8" rx="8"/>
+  <text x="60" y="556" class="tb">P6 阶段划分与验收</text>
+  <rect x="60" y="570" width="270" height="90" fill="#f6f8f8" stroke="#d7dde2"/><text x="74" y="592" class="t" font-weight="600">P6.1 模块化 + store 单源</text><text x="74" y="612" class="ts">纯重构不改视觉</text><text x="74" y="630" class="ts">补每模块单测（消 FE-11）</text><text x="74" y="650" class="ts">消 FE-05/06 结构根因</text>
+  <rect x="345" y="570" width="270" height="90" fill="#f6f8f8" stroke="#d7dde2"/><text x="359" y="592" class="t" font-weight="600">P6.2 契约修复</text><text x="359" y="612" class="ts">FE-01/02/03/04/05/06</text><text x="359" y="630" class="ts">高频日常路径先修</text><text x="359" y="650" class="ts">与后端端点(plan-04)对齐</text>
+  <rect x="630" y="570" width="270" height="90" fill="#eef7f5" stroke="#0d9488"/><text x="644" y="592" class="t" font-weight="600">P6.3 typed artifact + evidence</text><text x="644" y="612" class="ts">KaTeX + form字段渲染</text><text x="644" y="630" class="ts">binding/manifest + a11y主题</text><text x="644" y="650" class="ts">QG-01/02/05 · FE-07/09/13</text>
+  <rect x="915" y="570" width="270" height="90" fill="#eef7f5" stroke="#0d9488"/><text x="929" y="592" class="t" font-weight="600">P6.4 会话管理 + review</text><text x="929" y="612" class="ts">重命名/删除/分页</text><text x="929" y="630" class="ts">review 队列视图</text><text x="929" y="650" class="ts">依赖 plan-04 端点</text>
+  <text x="60" y="694" class="tb">验收（真实浏览器，PROGRESS §7 精神）</text>
+  <text x="60" y="716" class="ts">desktop/mobile · SSE重连 · 取消/恢复 · choice/fill_blank round-trip · compiled_unbound禁发布 · 数学渲染 · WCAG AA</text>
+  <text x="60" y="740" class="ts">测试：store/api/sse/runstate/render/artifact/evidence 单测 + Playwright E2E；CI 纳入 node check + 单测 + 浏览器</text>
+  <text x="60" y="764" class="flag">关键约束：零构建；普通内容只走DOM API/textContent；KaTeX trust:false 仅作用于数学片段</text>
+</svg>

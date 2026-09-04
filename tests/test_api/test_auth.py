@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -68,6 +69,23 @@ def test_quota_exhausted_returns_429(tmp_path: Path) -> None:
         assert r.status_code == 429
 
 
+def test_valid_key_without_required_scope_returns_403_before_agent(tmp_path: Path) -> None:
+    with SaasStore(tmp_path / "saas.db") as store:
+        tid = store.create_tenant("Acme")
+        solve_only_key = store.create_api_key(tid, scopes=["solve"])
+        qgen_factory = MagicMock()
+        client = TestClient(create_app(qgen_factory, _noop(), saas_store=store))
+
+        r = client.post(
+            "/v1/generate",
+            json={"topics": ["x"]},
+            headers={"X-API-Key": solve_only_key},
+        )
+
+        assert r.status_code == 403
+        qgen_factory.assert_not_called()
+
+
 def test_usage_endpoint(tmp_path: Path) -> None:
     with SaasStore(tmp_path / "saas.db") as store:
         tid = store.create_tenant("Acme", monthly_quota=50)
@@ -77,6 +95,56 @@ def test_usage_endpoint(tmp_path: Path) -> None:
         assert r.status_code == 200
         body = r.json()
         assert body["quota"] == 50 and body["remaining"] == 50
+
+
+def test_usage_is_readable_after_quota_is_exhausted(tmp_path: Path) -> None:
+    with SaasStore(tmp_path / "saas.db") as store:
+        tid = store.create_tenant("Acme", monthly_quota=1)
+        key = store.create_api_key(tid)
+        store.record_usage(tid, "/v1/generate", billable_units=1)
+        client = TestClient(create_app(_noop(), _noop(), saas_store=store))
+
+        r = client.get("/v1/usage", headers={"X-API-Key": key})
+
+        assert r.status_code == 200
+        assert r.json()["used"] == 1
+        assert r.json()["remaining"] == 0
+
+
+def test_usage_counts_only_current_utc_calendar_month(tmp_path: Path) -> None:
+    db_path = tmp_path / "saas.db"
+    with SaasStore(db_path) as store:
+        tid = store.create_tenant("Acme", monthly_quota=10)
+        key = store.create_api_key(tid)
+        store.record_usage(tid, "past-month", billable_units=7)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE usage_records SET ts = datetime('now', 'start of month', '-1 second') "
+                "WHERE endpoint = 'past-month'"
+            )
+        store.record_usage(tid, "current-month", billable_units=2)
+        client = TestClient(create_app(_noop(), _noop(), saas_store=store))
+
+        body = client.get("/v1/usage", headers={"X-API-Key": key}).json()
+
+        assert body["used"] == 2
+        assert body["remaining"] == 8
+        assert body["period_start"].endswith("T00:00:00Z")
+        assert body["period_end"].endswith("T00:00:00Z")
+
+
+def test_zero_quota_has_explicit_unlimited_usage_response(tmp_path: Path) -> None:
+    with SaasStore(tmp_path / "saas.db") as store:
+        tid = store.create_tenant("Enterprise", monthly_quota=0)
+        key = store.create_api_key(tid)
+        store.record_usage(tid, "/v1/generate", billable_units=999)
+        client = TestClient(create_app(_noop(), _noop(), saas_store=store))
+
+        r = client.get("/v1/usage", headers={"X-API-Key": key})
+
+        assert r.status_code == 200
+        assert r.json()["unlimited"] is True
+        assert r.json()["remaining"] is None
 
 
 def test_open_mode_needs_no_key(tmp_path: Path) -> None:
@@ -108,9 +176,9 @@ def test_register_and_login_flow(tmp_path: Path) -> None:
 def test_bearer_token_authorizes_generate(tmp_path: Path) -> None:
     with SaasStore(tmp_path / "saas.db") as store:
         client = TestClient(create_app(_qgen_factory(), _noop(), saas_store=store, jwt_secret="s"))
-        token = client.post(
-            "/v1/auth/register", json={"username": "bob", "password": "pw"}
-        ).json()["token"]
+        token = client.post("/v1/auth/register", json={"username": "bob", "password": "pw"}).json()[
+            "token"
+        ]
         r = client.post(
             "/v1/generate", json={"topics": ["x"]}, headers={"Authorization": f"Bearer {token}"}
         )

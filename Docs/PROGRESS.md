@@ -1,200 +1,123 @@
 # SciForge 开发进度总览
 
-> 更新日期: 2026-06-15 CST
-> 当前阶段: 本地 CLI MVP。主线是 **5 阶段并发 Pipeline** + **多 Agent 生成系统** + **学科参数化**。
+> 更新：2026-07-11 CST
+> 当前阶段：通用无损 Pipeline + QGen durable Harness + Web Chatbox MVP。
+> 这里记录当前代码事实；历史优化过程可查 Git，不再把过期测试数和本机数据快照当作产品状态。
 
----
+## 1. 总体状态
 
-## 00. 2026-06-15 Pipeline 优化批次（30 条 REC，全部落地 + 审计绿）
+| 模块 | 状态 | 当前事实 |
+|---|---|---|
+| 项目基础 | ✅ | Python 3.11+、uv、Pydantic v2、Typer/Rich、structlog、Ruff、mypy strict |
+| 内容存储 | ✅ schema v14 | FTS5、locator、tenant question dedup、ingestion status、concept/evaluation/review |
+| Pipeline | ✅ | Task0 + 5 Stage、无损兜底、marker/patch/concept/evaluation post-pass |
+| 多格式 | ✅ | PDF/DOCX/PPTX/MD/TeX/Image + CSV/TSV/XLSX/JSON/JSONL/HTML/EPUB/TXT/RST |
+| LLM 优化 | ✅ | 0-LLM adapters、文字层、批量、风险 review、cache、thinking、局部 patch |
+| QGen | ✅ Harness | prefilter、deep solve、evolve、population、数值/Lean、四态证据 |
+| Durable runtime | ✅ | run/step/budget/checkpoint/event、resume/cancel、启动恢复 |
+| CLI | ✅ | parse/generate/variant/evolve/deep/durable/resume/cancel/config/serve |
+| API/SaaS | ✅ MVP | auth/scope/quota/tenant、conversation/run/SSE、推荐、组卷/导出 |
+| Chatbox | ✅ MVP | 七模式、知识引用、进度/验证、移动 rail、取消/恢复、历史 |
+| 分布式执行 | 🔲 | 多 worker lease、队列 broker、hardened executor 尚未实现 |
+| 富前端 | 🔲 | KaTeX、artifact center、完整会话管理与图谱工作台尚未实现 |
 
-基于对全 pipeline 逐行精读产出的 30 条优化建议（plan: `~/.claude/plans/workflow-pipeline-llm-bubbly-avalanche.md`），
-围绕**效率 / 准确率 / LLM 调用控制 / 多格式识别 / 内容提取 / 标准化入库**系统落地。schema 升至 **v10**。
+## 2. Pipeline 完成项
 
-- **LLM 调用压降**（一本 300 页书 ~1930→~390）：REC-04 Stage2 批量打标（N 条合 1 次，800→~180）、
-  REC-05 Stage2Review 默认关闭（700→0，职责交 Stage3 确定性规则）、REC-06 Stage1Review 改风险信号制条件跳过（250→~90）、
-  REC-01 文本型 PDF 探测文字层走 fitz（Task0 VLM 调用→0）。
-- **效率/吞吐**：REC-02 VLM 批内 Semaphore 并发+保序+截断检测、REC-03 Stage2 默认并发(4/2)+加深 stage queue(8)、
-  REC-09 tag_tree 只读快照（消除并发竞争+缓存抖动）、REC-10 Stage3 批量入库、REC-17 post-pass/预扫 to_thread、
-  REC-22/26 分支推断与 numbering/content_hash 记忆化、REC-27 LLM 日志截断+轮转、REC-24 retry jitter。
-- **准确率/召回**：REC-11 resume 复原 Stage1Review 原文、REC-12 文末 force-extract 兜底、REC-07 截断翻倍重抓、
-  REC-15 reconciliation 高置信自动纠正(opt-in)+跨学科 fuzzy 防漂移、REC-20 确定性章节边界注入提取 prompt。
-- **多格式 / 内容广度**：REC-14 detect_genre 书本/试卷/讲义识别（试卷/讲义关 fast-skip 提召回）、
-  REC-19 选择/填空结构化(options/correct_option/blanks)、REC-18 figures 图表落库、REC-16 题型双维度去污染+索引。
-- **成本/可观测**：REC-08 兼容网关 prompt cache opt-in + 真实 token usage 采集、REC-13 thinking 默认值+便宜模型分级路由模板、
-  REC-23 Anthropic Message Batches API（约半价，API 层完成）、REC-07 JSON mode 默认(OpenAI 系)。
-- **存储/一致性**：schema v10 增量迁移（options/blanks/figures/order_index 索引）、REC-28 delete 级联清边、
-  REC-29 `parse relink` 跨文档题答联动（习题册+答案册分文件）、REC-30 配置默认对齐。
-- **测试**：704 全量通过（+115），ruff check + ruff format + mypy strict 全干净（86 源文件）。
+### 2.1 输入与安全
 
-> 两处有意架构边界：REC-23 流式管线的 `--batch` 执行模式（提取本质串行，留待专门设计）；
-> REC-07 对兼容网关不强制 tool-use（用 response_format + 截断重抓 + thinking 覆盖）。
+- 统一 Recognizer 协议；电子 PDF 自动文字层，扫描文档才走 VLM；
+- CSV/TSV、JSON/JSONL、XLSX、HTML、EPUB、TXT/RST 由确定性 adapter 产生 source-located
+  Markdown block，Task0 默认 0 LLM；
+- 单图有界 VLM；VLM 整批内容审核误判时逐页回退；
+- ZIP 容器限制体积、entry、解压总量、压缩比与路径穿越；结构化输入限制字节、列和深度。
 
----
+### 2.2 无损提取
 
-## 0. 2026-06 提取质量重构（9 项诉求，已完成 #1–#9 核心）
+- genre/format profile、强弱 marker、章节边界、adaptive window、carry/halo；
+- Stage1 每窗口批量提取；Stage1Review 按风险调用；Stage2 小批标注；Stage2Review 默认关闭；
+- missed marker 只做局部 micro extraction，不重跑整窗；
+- 文末、重试耗尽或 patch 仍未解决时保存 `uncertain_fragment`/占位，非空原始 span 不静默丢失；
+- provisional id remap、ReorderBuffer、Stage3 单调写入与 checkpoint/mirror 恢复。
 
-围绕用户 9 项诉求做了系统性重构，schema 升至 **v8**：
+### 2.3 治理与发布
 
-- **#2 不漏 / #8 不重不分离**：结构感知 fast-skip（强标记+弱信号双层）杜绝静默丢条目；
-  `content_hash` UNIQUE 写入去重；`numbering_audit` 编号连续性兜底。
-- **#3 题答精准绑定**：`solution_status` 三态 + `answer_linker` 跨章节回填（习题在正文、答案在附录）。
-- **#4 字段规范化**：`number_canonical` + `seq_*` 自动派生（消除 "1" vs "第1题"）；DB CHECK 约束。
-- **#5 类型双维度**：`question_form`（选择/填空/判断/解答）与 `question_type`（认知类别，含
-  反例/构造性证明/存在性证明…）正交；`SingleItemExtractLLM.question_form` 由 Stage1 识别。
-- **#6 tag/知识图谱**：`tag_canonicalizer` 受控词表统一（别名表 + 双向一致性）；
-  `relation_inference` 确定性推断 `corollary_of/tests/successor` 边写 `item_relations`。
-- **#7 自动纠错**：`reconciliation` 复核重复条目 + 类型误判（报告式，不改库）。
-- **#9 token 效率**：prompt caching（静态指令拆可缓存 system 前缀）；推理模型 `thinking` 预算分级
-  （MiniMax-M3 实测单窗口 127s→3.7s）；经 `extra_body` 透传兼容老 SDK / anthropic 兼容网关。
-- **#1 单文档并行（opt-in）**：`document_segmenter`（覆盖不变量断言）+ `parallel_extract`
-  段级并发 + `assign_order_index` 段序保序重排。
-- **鲁棒性**：VLM 内容审核误判（MiniMax 1026）自动回退逐页识别；`parse validate` 只读体检命令。
-- **测试**：573 全量通过，ruff + mypy 干净（82 源文件）。
+- schema v14 把摄取可靠性固化为 `accepted/uncertain/needs_patch/rejected`；
+- answer linker、numbering audit、relation inference、reconciliation；
+- taxonomy 驱动 concept/alias/item/concept-relation 四表；
+- 默认 0-LLM evaluation 与 review queue；
+- SQL 质量门禁在 limit 前排除非 accepted、非 active concept、open/in-progress review 和低分 item；
+- QGen、知识搜索、推荐和组卷共享门禁。
 
-> 注：真实教材端到端跑通受 provider 限制（MiniMax-M3 推理慢、需配 `thinking` budget；
-> 已验证组件级 + 直连提取产出正确）。生产建议提取/标注用快模型（Kimi K2 / 4o-mini），
-> MiniMax-M3 留给 generate/solve。
+## 3. QGen 完成项
 
----
+- 领域契约：math/physics/chemistry/biology/other 均有 type/form/tag 规则；
+- 图节点：retrieve/generate/next/prefilter/solve/verify/annotate/diagnose/evolve/select；
+- 模式：new/evolve/variant/adjust_difficulty/deepen/solve/evaluate；
+- A1–A6/B1–B2 策略、有限失败修正、parent/generation/directive lineage；
+- 候选池按 correctness、difficulty fit、novelty、pedagogy、verification strength 稳定选择；
+- full-question/full-solution independent reviewer；
+- fast/balanced/strict/formal 策略与 passed/failed/unavailable/error 证据；
+- 默认受限 Docker/Podman sandbox，数值 Python 与 Lean；trusted-local 只允许审核代码；
+- public structured solution，不输出 raw chain-of-thought；
+- DurableQGenHarness 节点 checkpoint、硬预算、事件、取消与恢复。
 
-## 1. 总体结论
+## 4. Web/API 完成项
 
-| 模块 | 状态 | 当前进度 |
-|------|------|----------|
-| 项目脚手架 | ✅ 完成 | `uv` + Python 3.11+ + Pydantic v2 + Typer/Rich + structlog |
-| SQLite 存储 | ✅ 完成 | schema **v10**：`knowledge_points`/`questions`（+ number_canonical/seq_*/question_form/content_hash UNIQUE + options/correct_option/blanks）+ FTS5 + `discipline_tag_trees` + `item_relations` + `figures` 表；增量迁移 v8→v9→v10 |
-| Pipeline 主线 | ✅ 完成 | Task0 + 5 Stage + 4 queue；Stage1 批量窗口提取，Stage2 **默认并发 + 批量打标**，Stage2Review 默认关 |
-| LLM 配置 | ✅ 完成 | v2 TOML schema：`[providers.*]` + `[tasks.*]`，支持 provider_ref、env 插值、per-model 并发限流 |
-| 多学科参数化 | ✅ 完成 | 顶层 `Discipline` + `DisciplineSpec`；数学/物理 spec 已落地 |
-| Agent 系统 | ✅ 完成 MVP | QGen / Solve / Tag / DocAssembly-lite 完整；KB/Recommend/Format/OCR/ContentTagger 为 Post-MVP 骨架 |
-| CLI | ✅ 完成 MVP | `parse run/run-book/audit/audit-tags/migrate-legacy/db-stats`，`generate free/solve/batch/lecture`，`config show/validate` |
-| 数据库内容 | ⚠️ 可用但需重跑 | 当前 DB 有 3418 条数学记录，但全部 66 个 source_file 被质量审计标为需重跑，主因是旧导入遗留的 `order_index` 重复 |
-| FastAPI / Web / 用户系统 | 🔲 未开始 | Docs 08/10/11/12/13 仍是蓝图 |
+- `/v1/conversations`、messages、runs、SSE、cancel/resume、templates、knowledge search；
+- 会话历史在提交前做有界不可变快照并写入 durable input；
+- QGen 成功后把 question + solution materialize 到当前 tenant 题库；
+- 启动恢复 pending/running run，并 reconciliation 缺失 assistant/artifact/question/usage；
+- `Last-Event-ID` 补发与 heartbeat；
+- HMAC 签名 bearer access token、API key、scope、月配额和 tenant/public 可见性；
+- RecommendEngine、确定性组卷、Markdown/DOCX 导出；
+- `/app/` 原生 HTML/CSS/JS Chatbox：七模式、领域题型联动、知识 locator/pin、验证面板、
+  桌面三栏与窄屏 drawers。
 
----
+## 5. 数据库职责
 
-## 2. 当前代码规模
+| 数据库 | 内容 |
+|---|---|
+| `data/sciforge.db` | 教育内容、FTS、概念、评价、review |
+| `data/conversations.db` | 会话、消息、run links、artifacts |
+| `data/qgen_runtime.db` | runs、steps、checkpoints、events |
+| `data/saas.db` | tenants、users、keys、usage、batch tasks、behavior |
 
-| 区域 | 当前规模 |
-|------|----------|
-| `src/sciforge/**/*.py` | 14,592 行 |
-| `tests/**/*.py` | 7,268 行 |
-| Prompt `.txt` 模板 | 28 个 |
-| 顶层文档 `Docs/*.md` | 19 个，约 4,610 行 |
+## 6. 明确限制
 
----
+1. SQLite 调度是单实例 MVP；没有跨进程 worker lease/exactly-once；
+2. restricted OCI container 不是 hostile multi-tenant 的最终边界；生产应增加 gVisor/Firecracker；
+3. numerical verifier 当前执行生成的 Python，尚无每题型 property-based hidden suite；
+4. Lean compile 证明形式化 source，不自动证明自然语言翻译忠实；
+5. KB Agent/RecommendAgent wrapper 等仍有骨架，但相关 pipeline/recommend engine 职责已实现；
+6. 前端无 KaTeX、完整 CommonMark、artifact 中心、上传审核、会话删除/分支/分享；
+7. 向量检索未成为默认路径；当前为结构过滤 + 标签/轻量文本排序；
+8. access token 没有 refresh/吊销生命周期和第三方登录。
 
-## 3. Pipeline 当前事实
-
-当前 Pipeline 是 **Task0 Producer + Stage1Extract + Stage1Review + Stage2Annotate + Stage2Review + Stage3Persist**：
-
-- **Task0**：`VlmRecognizer` / `PyMuPdfRecognizer` / `MarkdownRecognizer` 按 batch 生成 markdown checkpoint，支持 PDF 1-based 页号、Task0 cache replay、失败 batch 记录。
-- **Stage1Extract**：已从“每次一条”升级为**每窗口一次 LLM 调用批量提取所有完整条目**，输出 `BatchItemExtractPayloadLLM` 和 `ExtractedBatch`，用 `OrderIndexAllocator` 动态预留连续 `item_id`。
-- **Stage1Review**：批量 review，一次 LLM 校验同窗口 N 条 item，输出 `BatchReviewPayloadLLM`，低风险 batch 可条件化跳过。
-- **Stage2Annotate / Stage2Review**：单 item 标注与审核，支持可选 N-worker 并发；并发时用 `ReorderBuffer` 恢复下游顺序。
-- **Stage3Persist**：无 LLM，校正 taxonomy、补齐学科根 tag、集中累积 `TagTree`，写入 SQLite。Stage3 允许上游拒绝 item 造成 gap，但禁止 item_id 倒退。
-- **可靠性**：retry with feedback、429 长睡预算、checkpoint 节流保存、stage mirror replay、目录级 progress、per-model semaphore 都已实现。
-
-当前主线文件：
-
-| 文件 | 状态 |
-|------|------|
-| `pipeline/orchestrator.py` | ✅ 6 Task 编排、目录并发、cache replay、stage mirror replay |
-| `pipeline/stages/stage1_extract.py` | ✅ 批量窗口提取、regex fast-skip、force-consume、全局 ID 分配 |
-| `pipeline/stages/stage1_review.py` | ✅ 批量复核、条件化跳过、fallback 直通 |
-| `pipeline/stages/stage2_annotate.py` | ✅ 单条标注、局部 taxonomy 注入、可并发 |
-| `pipeline/stages/stage2_review.py` | ✅ annotation 审核、条件化跳过、可并发 |
-| `pipeline/stages/stage3_persist.py` | ✅ KP/Question 合并入库、tag root/taxonomy root 兜底 |
-| `pipeline/llm_schemas.py` | ✅ `BatchItemExtractPayloadLLM` / `BatchReviewPayloadLLM` / `SingleAnnotationLLM` |
-| `pipeline/retry.py` | ✅ schema retry with feedback + 429 长睡预算 |
-| `pipeline/reorder_buffer.py` | ✅ Stage2 并发保序 |
-| `pipeline/taxonomy_validator.py` | ✅ taxonomy 精确/前缀/模糊校验 |
-
----
-
-## 4. Agent 当前事实
-
-| Agent | 状态 | 说明 |
-|------|------|------|
-| QGenAgent | ✅ 完整 | retriever → generator → solver → verifier → difficulty；新增轻量预筛和 verifier 合并 difficulty 可选路径 |
-| SolveAgent | ✅ 完整 | 复用 `qgen/solver.py`，用于 `generate solve` |
-| TagAgent | ✅ 完整 | 复用 `qgen/annotator.py` |
-| DocAssemblyAgent | ✅ Lite | 生成 markdown 讲义，不做 LaTeX/PDF 编译 |
-| KB / Recommend / FormatAnalyzer / ContentExtractor / OcrCorrector / ContentTagger | 🔶 骨架 | 在 `stub_agents.py`，Post-MVP |
-
-QGen 的实际优化状态：
-
-- `qgen/prefilter.py` 已实现内容长度、括号/美元符号平衡、negative examples 相似度预筛。
-- `VerificationPipeline` 可在 PASS 时读取 `difficulty_scores`，`QGenAgent(merge_difficulty_into_verify=True)` 可跳过独立 annotator 调用。
-- `generate variant/evolve/solve-deep` 仍是显式 Post-MVP 占位。
-
----
-
-## 5. 当前数据库状态
-
-数据库文件：`data/sciforge.db`（运行时数据，不纳入 git）。
-
-本次检查结果：
-
-| 项目 | 数值 |
-|------|------|
-| `knowledge_points` | 1262 |
-| `questions` | 2156 |
-| 总 item | 3418 |
-| `discipline_tag_trees` | 1 |
-| 学科分布 | 全部为 `math` |
-| checkpoint `state.json` | 41 个 |
-| checkpoint failed blocks/batches | 0 |
-
-主要类型分布：
-
-- KnowledgePoint：`theorem=519`，`definition=317`，`corollary=125`，`property=97`，`proposition=79`，`lemma=72`。
-- Question：`proof=1384`，`calculation=626`，`fill_blank=94`，`construction=45`，`true_false=7`。
-
-质量审计结论：
-
-- `scripts/audit_quality.py` 判定 **66/66 个 source_file 都需要重跑**。
-- 主因：现有 DB 是旧导入结果，`order_index` 只有 1069 个 distinct 值，却有 3418 条记录；跨文件重复槽位 951 个。
-- 还发现 38 个重复 `content_hash`；部分数学分析分卷存在 fallback tag 或结构化错误比例超阈值。
-- 新代码已通过 `OrderIndexAllocator` 修复跨文件并发分配问题，但当前 DB 仍需用新 pipeline 清理/重跑后才可作为高质量知识库使用。
-
----
-
-## 6. 验证记录
-
-本次已执行：
+## 7. 当前验收入口
 
 ```bash
-scripts/fix-pth.sh .venv
-uv run sciforge --help
-PYTHONPATH=src uv run sciforge parse db-stats data/sciforge.db
-PYTHONPATH=src python scripts/audit_checkpoints_for_resume.py
-PYTHONPATH=src python scripts/audit_quality.py
-sqlite3 data/sciforge.db "<schema/count/distribution/order_index queries>"
+uv run pytest
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run mypy
+node --check src/sciforge/api/static/app.js
+
+uv run sciforge parse validate data/sciforge.db
+uv run sciforge config validate
+uv run sciforge serve --open
 ```
 
-当前环境注意点：
+Pipeline 的“完成”还必须读取实际 checkpoint、报告和数据库状态；Web 的“完成”还必须在真实
+浏览器验证 desktop/mobile、SSE 重连、取消/恢复、知识 locator/pin 和生成题继续变式。
 
-- 该机器的 `.venv` 可能出现 macOS 隐藏 `.pth` 导致 `uv run sciforge` 找不到 `sciforge` 包；`scripts/fix-pth.sh .venv` 已能修复。
-- `data/`、`Raw Data/`、`.env`、`.venv` 均为运行时/本地数据，不提交。
+## 8. 后续优先级
 
----
-
-## 7. 下一步建议
-
-| 优先级 | 事项 | 说明 |
-|--------|------|------|
-| P0 | 用新 pipeline 重跑当前 DB | 先备份/清理 `data/sciforge.db` 与 `data/checkpoint`，再 `SCIFORGE_RESTART=1 ./run_pipeline.sh` 或手动 `parse run --restart` |
-| P0 | 重跑后再执行质量审计 | 目标是 `duplicate_order_slots=0`，fallback/结构错误低于阈值 |
-| P1 | 真实端到端 smoke | 选 1 个 MD、1 个 PDF，用小并发验证 batch extract/review/persist 全链路 |
-| P1 | mypy 严格收敛 | 当前代码量已大，建议按 `pipeline/`、`llm/`、`agents/` 分批修 |
-| P2 | Post-MVP 服务层 | FastAPI/Web/用户系统仍按蓝图推进 |
-
----
-
-## 8. 架构决策
-
-- **schema v7**：保留 `source_file`，删除 `source_chapter` / `exam_type` / `exam_year`，proof/solution 嵌入主表。
-- **Stage1 批量化**：实际主线是 `BatchItemExtractPayloadLLM` + `ExtractedBatch`；`ExtractedSingleItem` / `SingleItemExtractPayloadLLM` 仅保留兼容说明。
-- **Pipeline 与 Agent 分离**：Pipeline 用 queue/checkpoint/背压处理批量文档；Agent 用 `BaseAgent.run()` 处理一次生成/求解/讲义请求。
-- **Tag 一致性**：Stage3 集中更新 `TagTree`，Stage2 prompt 注入当前 tag subtree，Stage3 兜底补齐学科根。
+| 优先级 | 工作 | 验收 |
+|---|---|---|
+| P0 | 用真实多领域语料做 lossless/quality gate 基准 | marker 100% 有去向，非合格进入生成池为 0 |
+| P0 | hardened sandbox 与部署 egress policy | hostile-code 安全评审与逃逸测试 |
+| P1 | 题型专用 deterministic/property verifier | counterexample seed 可重放 |
+| P1 | artifact API/中心、KaTeX 与可复制结构化产物 | 浏览器 E2E |
+| P1 | 分布式 worker lease/队列 | crash/duplicate delivery chaos test |
+| P2 | 向量/图混合检索 | source-backed relevance benchmark |
+| P2 | refresh/撤销/第三方身份 | token lifecycle 与权限测试 |

@@ -84,17 +84,37 @@ _BOOK_SIGNAL_RE = re.compile(
 )
 _LECTURE_SIGNAL_RE = re.compile(r"讲义|lecture\s*notes?|slide|课件|第\s*\d+\s*讲|本讲|本节课|课堂")
 
+# §E.0（v11）：习题集信号——密集编号习题/练习标记；与解答稀缺度联合判定（见 detect_genre）。
+_PROBLEM_SET_MARKER_RE = re.compile(
+    r"^\s*(?:习题|练习|问题)\s*[\d一二三四五六七八九十]*[.、．：:]?\s*$"  # "习题 3.1" 小节行
+    r"|^\s*\d+\s*[.、．]\s+\S",  # 行首裸编号题 "12. 设 ..."
+    re.MULTILINE,
+)
+_SOLUTION_MARKER_RE = re.compile(
+    r"(?:^|\n)\s*(?:解|证明?|答案?|Solution|Proof)\s*[:：.]" r"|\\begin\{(?:solution|proof)\}"
+)
 
-def detect_genre(md_text: str) -> str:
+
+def detect_genre(md_text: str, *, extended: bool = False) -> str:
     """从正文结构判别文档体裁：``exam_paper`` / ``book`` / ``lecture`` / ``unknown``。
 
     纯启发式、确定性、零依赖。计数各体裁信号取最高者；信号过弱返回 ``unknown``。
+
+    ``extended=True``（v11 §E.0，format_profile 路径专用）时额外判别 ``problem_set``：
+    编号习题密集且解答标记稀缺（< 20% 题数）的文档。默认 ``False`` 保持
+    v10 四值返回不变——REC-14 的 fast-skip 白名单分支不受新体裁影响（R2）。
     """
     if not md_text or not md_text.strip():
         return "unknown"
     exam = len(_EXAM_SIGNAL_RE.findall(md_text)) + len(_EXAM_CHOICE_RE.findall(md_text))
     book = len(_BOOK_SIGNAL_RE.findall(md_text))
     lecture = len(_LECTURE_SIGNAL_RE.findall(md_text))
+    if extended:
+        problems = len(_PROBLEM_SET_MARKER_RE.findall(md_text))
+        solutions = len(_SOLUTION_MARKER_RE.findall(md_text))
+        # 题多解少（≥8 题且解答 < 20% 题数）且题目信号强于书本/讲义 → 习题集
+        if problems >= 8 and solutions < problems * 0.2 and problems > max(book, lecture):
+            return "problem_set"
     best = max(exam, book, lecture)
     if best < 2:  # 信号太弱，不妄断
         return "unknown"
@@ -105,7 +125,12 @@ def detect_genre(md_text: str) -> str:
     return "lecture"
 
 
-_GENRE_LABELS = {"exam_paper": "试卷", "book": "书本/教材", "lecture": "讲义"}
+_GENRE_LABELS = {
+    "exam_paper": "试卷",
+    "book": "书本/教材",
+    "lecture": "讲义",
+    "problem_set": "习题集",
+}
 
 
 def genre_label(genre: str) -> str:

@@ -1,6 +1,7 @@
 # CLI 接口设计
 
-> 版本: v6.1 | 日期: 2026-06-15
+> 当前命令契约：Pipeline schema v14、完整 QGen Harness、durable runtime 与 Web 服务入口。
+> 旧优化批次说明保留为历史背景；命令是否存在以 `src/sciforge/cli/` 为准。
 >
 > **2026-06-15 优化批次新增（详见 [PROGRESS.md](PROGRESS.md) §00）**：
 > - `parse run` 新增 `--force-vlm`（REC-01，关闭文字层自动探测）、`--parallel-extract` +
@@ -31,26 +32,30 @@ sciforge
 │   └── db-stats <db>                  # SQLite 数据库统计
 │
 ├── generate                            # AI 题目 / 讲义 / 解答生成
-│   ├── free                           # QGenAgent 5 阶段闭环（MVP 主线）
+│   ├── free                           # QGen 默认低延迟状态图
 │   ├── solve <question-id>            # SolveAgent 为已有题目生成详细解答
 │   ├── batch                          # 等价于 `free --count N`（便捷别名）
 │   ├── lecture                        # DocAssemblyAgent lite 生成 markdown 讲义
-│   ├── variant <source-id>            # Post-MVP 占位（NotImplementedError）
-│   ├── evolve                         # Post-MVP 占位
-│   └── solve-deep <question-id>       # Post-MVP 占位（依赖 sandbox + tool calling）
+│   ├── variant <source-id>            # A1-A6/B1-B2 源题变式
+│   ├── evolve                         # 失败诊断、定向改进、候选选择
+│   ├── solve-deep <question-id>       # 多轮 tool calling + sandbox
+│   ├── durable                        # 带硬预算、checkpoint/event 的长任务
+│   ├── resume <run-id>                # 从 next-node cursor 恢复
+│   └── cancel <run-id>                # cooperative cancel
 │
-└── config                              # 配置诊断与校验
+├── config                              # 配置诊断与校验
     ├── show
     └── validate
+│
+└── serve                               # FastAPI + /app/ Chatbox；默认鉴权，--open 本地调试
 ```
 
 > MVP 主线完整覆盖：
 > - Pipeline：`parse run` / `run-book` / `audit` / `audit-tags` / `validate` / `relink` / `migrate-legacy` / `db-stats`
-> - Agent：`generate free` / `solve` / `batch` / `lecture`
+> - Agent：`generate free` / `solve` / `batch` / `lecture` / `variant` / `evolve` /
+>   `solve-deep` / `durable` / `resume` / `cancel`
 > - Config：`config show` / `validate`
->
-> `generate variant / evolve / solve-deep` 是显式占位（`typer.Exit(2)`），返回
-> 明确错误并引导用户使用 `free` / `solve`。
+> - Web：`serve [--open]`，可分别指定 content/saas/conversation/runtime DB。
 
 ---
 
@@ -362,7 +367,8 @@ Legacy `MATHFORGE_*` 前缀会在启动时发 deprecation warning（不再生效
 |---|---|
 | `src/sciforge/cli/main.py` | Typer 入口 + `--log-level/--log-format/--log-dir` |
 | `src/sciforge/cli/parse.py` | `parse run / run-book / audit / audit-tags / validate / relink / migrate-legacy / db-stats` + backend/llm-config 校验 |
-| `src/sciforge/cli/generate.py` | `generate free / solve / batch / lecture` + 3 个 Post-MVP 占位 |
+| `src/sciforge/cli/generate.py` | 所有生成、变式、进化、深度求解与 durable/resume/cancel 命令 |
+| `src/sciforge/cli/serve.py` | FastAPI、Chatbox、四类数据库与 agent factory 组装 |
 | `src/sciforge/cli/config_cmd.py` | `config show / validate` |
 | `src/sciforge/cli/display.py` | Rich 输出 helper |
 

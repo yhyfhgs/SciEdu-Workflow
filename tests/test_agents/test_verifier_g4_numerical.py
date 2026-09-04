@@ -9,8 +9,14 @@ from typing import Any
 
 import pytest
 
+from sciforge.agents.qgen.verification_sandbox import TrustPolicy, VerificationSandbox
 from sciforge.agents.qgen.verifier import VerificationPipeline
-from sciforge.core.models import Discipline, Question, Solution
+from sciforge.core.models import (
+    Discipline,
+    Question,
+    Solution,
+    VerificationEvidenceStatus,
+)
 
 
 class _LLM:
@@ -48,6 +54,8 @@ async def test_g4_all_passed() -> None:
         review_llm=_LLM({"verification_code": code}),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
         enable_numerical_verification=True,
+        sandbox=VerificationSandbox(),
+        sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
     )
     result = await pipe.verify(_q(), _sol())
     assert result.checks["numerical_valid"] is True
@@ -64,6 +72,8 @@ async def test_g4_some_failed_rejects() -> None:
         review_llm=_LLM({"verification_code": code}),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
         enable_numerical_verification=True,
+        sandbox=VerificationSandbox(),
+        sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
     )
     result = await pipe.verify(_q(), _sol())
     assert result.checks["numerical_valid"] is False
@@ -73,19 +83,40 @@ async def test_g4_some_failed_rejects() -> None:
 
 
 @pytest.mark.asyncio
-async def test_g4_exec_error_degrades_to_pass() -> None:
-    """验证代码自身崩溃（非数学矛盾）→ 降级为通过，不误杀候选"""
+async def test_g4_exec_error_is_explicit_optional_evidence_not_fake_pass() -> None:
+    """验证器崩溃记 error；可选检查不误杀，但绝不伪装成 numerical_valid。"""
     code = 'raise ValueError("boom in verification code")'
     pipe = VerificationPipeline(
         review_llm=_LLM({"verification_code": code}),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
         enable_numerical_verification=True,
+        sandbox=VerificationSandbox(),
+        sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
     )
     result = await pipe.verify(_q(), _sol())
-    assert result.checks["numerical_valid"] is True
+    assert "numerical_valid" not in result.checks
+    assert result.passed is True
     assert result.numerical_verification is not None
     assert result.numerical_verification.execution is not None
     assert result.numerical_verification.execution.success is False
+    assert result.evidence[-1].status is VerificationEvidenceStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_g4_required_exec_error_blocks_publication() -> None:
+    pipe = VerificationPipeline(
+        review_llm=_LLM({"verification_code": "raise RuntimeError('boom')"}),  # type: ignore[arg-type]
+        discipline=Discipline.MATH,
+        enable_numerical_verification=True,
+        require_numerical_verification=True,
+        sandbox=VerificationSandbox(),
+        sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
+    )
+
+    result = await pipe.verify(_q(), _sol())
+
+    assert result.checks["numerical_valid"] is False
+    assert result.passed is False
 
 
 @pytest.mark.asyncio
@@ -97,3 +128,44 @@ async def test_g4_disabled_by_default() -> None:
     result = await pipe.verify(_q(), _sol())
     assert "numerical_valid" not in result.checks
     assert result.numerical_verification is None
+
+
+@pytest.mark.asyncio
+async def test_g4_required_plain_only_solution_is_not_skipped() -> None:
+    code = 'print("ALL_PASSED")'
+    pipe = VerificationPipeline(
+        review_llm=_LLM({"verification_code": code}),  # type: ignore[arg-type]
+        enable_numerical_verification=True,
+        require_numerical_verification=True,
+        sandbox=VerificationSandbox(),
+        sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
+    )
+    solution = Solution(solution_plain="The derivative at 3 equals 6.", confidence="high")
+
+    result = await pipe.verify(_q(), solution)
+
+    assert result.checks["numerical_valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_g4_required_missing_solution_creates_error_and_blocks() -> None:
+    pipe = VerificationPipeline(
+        review_llm=_LLM({"verification_code": 'print("ALL_PASSED")'}),  # type: ignore[arg-type]
+        enable_solution_relevance=False,
+        enable_numerical_verification=True,
+        require_numerical_verification=True,
+    )
+
+    result = await pipe.verify(_q(), Solution(confidence="high"))
+
+    assert result.checks["numerical_valid"] is False
+    evidence = next(item for item in result.evidence if item.kind == "numerical")
+    assert evidence.status is VerificationEvidenceStatus.ERROR
+
+
+def test_g4_required_cannot_be_disabled() -> None:
+    with pytest.raises(ValueError, match="requires enable_numerical"):
+        VerificationPipeline(  # type: ignore[arg-type]
+            review_llm=_LLM({}),
+            require_numerical_verification=True,
+        )

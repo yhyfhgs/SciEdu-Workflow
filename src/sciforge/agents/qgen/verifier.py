@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import structlog
 
+from sciforge.agents.qgen.verification_sandbox import (
+    SandboxLimits,
+    SandboxStatus,
+    TrustPolicy,
+    VerificationExecutionResult,
+    VerificationSandbox,
+)
 from sciforge.core.models import (
+    CodeExecutionResult,
     ContextBundle,
     DifficultyScore,
     Discipline,
     NumericalVerification,
     Question,
     Solution,
+    VerificationEvidence,
+    VerificationEvidenceStatus,
     VerificationResult,
 )
 from sciforge.llm.client import LLMClient
@@ -40,13 +48,31 @@ class VerificationPipeline:
         *,
         enable_solution_relevance: bool = True,
         enable_numerical_verification: bool = False,
+        require_numerical_verification: bool = False,
+        enable_lean_verification: bool = False,
+        require_lean_verification: bool = False,
         sandbox_timeout: int = 10,
+        sandbox: VerificationSandbox | None = None,
+        sandbox_trust_policy: TrustPolicy | str = TrustPolicy.CONTAINER_REQUIRED,
     ) -> None:
+        if require_numerical_verification and not enable_numerical_verification:
+            raise ValueError(
+                "require_numerical_verification requires enable_numerical_verification"
+            )
+        if require_lean_verification and not enable_lean_verification:
+            raise ValueError("require_lean_verification requires enable_lean_verification")
         self.review_llm = review_llm  # 独立实例避免确认偏差
         self.discipline = discipline
         self.enable_solution_relevance = enable_solution_relevance
         self.enable_numerical_verification = enable_numerical_verification
+        self.require_numerical_verification = require_numerical_verification
+        self.enable_lean_verification = enable_lean_verification
+        self.require_lean_verification = require_lean_verification
         self.sandbox_timeout = sandbox_timeout
+        self.sandbox = sandbox or VerificationSandbox(
+            limits=SandboxLimits(timeout_seconds=float(sandbox_timeout))
+        )
+        self.sandbox_trust_policy = TrustPolicy(sandbox_trust_policy)
         self._review_template = get_generation_prompt_template(
             "verification/review.txt", discipline
         )
@@ -60,60 +86,188 @@ class VerificationPipeline:
             if enable_numerical_verification
             else ""
         )
+        self._lean_template = (
+            get_generation_prompt_template("verification/generate_lean_test.txt", discipline)
+            if enable_lean_verification
+            else ""
+        )
 
     async def verify(
         self,
         candidate: Question,
         solution: Solution,
         context: ContextBundle | None = None,
+        *,
+        review_instruction: str = "",
     ) -> VerificationResult:
         """执行全部验证检查"""
         checks: dict[str, bool] = {}
         suggestions: list[str] = []
         numerical_verification: NumericalVerification | None = None
+        evidence: list[VerificationEvidence] = []
+        solution_text = (solution.solution_latex or solution.solution_plain).strip()
 
         # Check 1: 解题置信度
         checks["solve_confidence"] = solution.confidence in ("high", "medium")
+        evidence.append(
+            VerificationEvidence(
+                kind="solve_confidence",
+                status=(
+                    VerificationEvidenceStatus.PASSED
+                    if checks["solve_confidence"]
+                    else VerificationEvidenceStatus.FAILED
+                ),
+                required=True,
+                backend="independent_solver",
+                summary=f"solver confidence={solution.confidence}",
+            )
+        )
         if not checks["solve_confidence"]:
             suggestions.append("求解引擎置信度低，题目可能存在问题")
 
         # Check 2: 数学/物理正确性（独立审核 LLM）
-        review = await self._check_with_review_llm(candidate)
+        review = await self._check_with_review_llm(
+            candidate,
+            solution,
+            review_instruction=review_instruction,
+        )
+        raw_review_issues = review.get("issues", [])
+        review_issues = (
+            [str(issue) for issue in raw_review_issues]
+            if isinstance(raw_review_issues, list)
+            else [str(raw_review_issues)]
+            if raw_review_issues
+            else []
+        )
         checks["review_passed"] = bool(review.get("passed", False))
+        evidence.append(
+            VerificationEvidence(
+                kind="independent_review",
+                status=(
+                    VerificationEvidenceStatus.PASSED
+                    if checks["review_passed"]
+                    else VerificationEvidenceStatus.FAILED
+                ),
+                required=True,
+                backend=_llm_backend_name(self.review_llm),
+                summary=str(review.get("suggestions") or "independent review completed"),
+                details={"issues": review_issues},
+            )
+        )
         if not checks["review_passed"]:
-            raw_issues = review.get("issues", [])
-            if isinstance(raw_issues, list):
-                suggestions.extend(str(i) for i in raw_issues)
+            suggestions.extend(review_issues)
+            reviewer_suggestion = str(review.get("suggestions") or "").strip()
+            if reviewer_suggestion:
+                suggestions.append(reviewer_suggestion)
 
         # Check 3: 非平凡性
         checks["non_trivial"] = len(candidate.content) > 30
+        evidence.append(
+            VerificationEvidence(
+                kind="non_trivial",
+                status=(
+                    VerificationEvidenceStatus.PASSED
+                    if checks["non_trivial"]
+                    else VerificationEvidenceStatus.FAILED
+                ),
+                required=True,
+                backend="deterministic",
+                summary=f"question length={len(candidate.content)}",
+            )
+        )
 
-        # Check 4 (G5): 解答相关性 —— 解答是否在解这道题（套餐可配，默认开）。
-        # 仅在有解答文本时执行；字段缺失或基础设施故障时降级为通过，不误杀候选。
-        if self.enable_solution_relevance and solution.solution_latex.strip():
-            checks["solution_relevant"] = await self._check_solution_relevance(candidate, solution)
+        # Check 4 (G5): 解答相关性。启用后属于核心门禁；缺正文或基础设施错误
+        # 形成显式 error 证据，绝不能静默跳过后让 all(checks) 误判为通过。
+        if self.enable_solution_relevance:
+            relevance_evidence = (
+                await self._check_solution_relevance(candidate, solution)
+                if solution_text
+                else VerificationEvidence(
+                    kind="solution_relevance",
+                    status=VerificationEvidenceStatus.ERROR,
+                    required=True,
+                    backend="deterministic",
+                    summary="solution relevance cannot run without solution text",
+                )
+            )
+            evidence.append(relevance_evidence)
+            checks["solution_relevant"] = (
+                relevance_evidence.status is VerificationEvidenceStatus.PASSED
+            )
             if not checks["solution_relevant"]:
-                suggestions.append("解答与题目主题不一致（疑似答非所问），请检查题目表述是否清晰")
+                suggestions.append(f"解答相关性未通过：{relevance_evidence.summary}")
 
-        # Check 5 (G4): 数值验证 —— 生成 sympy/numpy 代码在沙箱执行，检测数学错误（opt-in）。
-        # 仅在明确检测到数值矛盾时拒题；执行失败/超时/无明确结论时降级为通过，不误杀候选。
-        if self.enable_numerical_verification and solution.solution_latex.strip():
-            numerical_verification = await self._check_numerical(candidate, solution)
-            exec_ok = (
-                numerical_verification.execution is not None
-                and numerical_verification.execution.success
-                and not numerical_verification.execution.timeout
-            )
-            explicit_fail = (
-                exec_ok
-                and not numerical_verification.all_passed
-                and bool(numerical_verification.discrepancies)
-            )
-            checks["numerical_valid"] = not explicit_fail
-            if explicit_fail:
+        # Check 5 (G4): 数值验证 —— 生成 sympy/numpy 代码在安全策略沙箱执行（opt-in）。
+        # 数学反例=failed；执行失败/超时=error；后两者仅在 required policy 下阻止发布。
+        if self.enable_numerical_verification:
+            if solution_text:
+                numerical_verification, numerical_evidence = await self._check_numerical(
+                    candidate,
+                    solution,
+                    required=self.require_numerical_verification,
+                )
+            else:
+                numerical_verification = NumericalVerification(all_passed=False)
+                numerical_evidence = VerificationEvidence(
+                    kind="numerical",
+                    status=VerificationEvidenceStatus.ERROR,
+                    required=self.require_numerical_verification,
+                    backend="deterministic",
+                    summary="numerical verification cannot run without solution text",
+                )
+            evidence.append(numerical_evidence)
+            if (
+                numerical_evidence.status
+                in {
+                    VerificationEvidenceStatus.PASSED,
+                    VerificationEvidenceStatus.FAILED,
+                }
+                or self.require_numerical_verification
+            ):
+                checks["numerical_valid"] = (
+                    numerical_evidence.status is VerificationEvidenceStatus.PASSED
+                )
+            if numerical_evidence.status is VerificationEvidenceStatus.FAILED:
                 suggestions.append(
                     "数值验证发现矛盾：" + "; ".join(numerical_verification.discrepancies[:3])
                 )
+            elif (
+                self.require_numerical_verification
+                and numerical_evidence.status is not VerificationEvidenceStatus.PASSED
+            ):
+                suggestions.append(f"必需的数值验证未完成：{numerical_evidence.summary}")
+
+        if self.enable_lean_verification:
+            lean_evidence = (
+                await self._check_lean(
+                    candidate,
+                    solution,
+                    required=self.require_lean_verification,
+                )
+                if solution_text
+                else VerificationEvidence(
+                    kind="lean",
+                    status=VerificationEvidenceStatus.ERROR,
+                    required=self.require_lean_verification,
+                    backend="deterministic",
+                    summary="Lean verification cannot run without solution text",
+                )
+            )
+            evidence.append(lean_evidence)
+            if (
+                lean_evidence.status
+                in {
+                    VerificationEvidenceStatus.PASSED,
+                    VerificationEvidenceStatus.FAILED,
+                }
+                or self.require_lean_verification
+            ):
+                checks["lean_valid"] = lean_evidence.status is VerificationEvidenceStatus.PASSED
+            if (
+                self.require_lean_verification
+                and lean_evidence.status is not VerificationEvidenceStatus.PASSED
+            ):
+                suggestions.append(f"必需的 Lean 验证未通过：{lean_evidence.summary}")
 
         # Phase 6c: 从 review 提取 difficulty_scores（若 prompt 按新模板输出）
         difficulty_score: DifficultyScore | None = None
@@ -148,11 +302,28 @@ class VerificationPipeline:
             suggestions="\n".join(suggestions) if suggestions else "",
             difficulty_score=difficulty_score,
             numerical_verification=numerical_verification,
+            evidence=evidence,
         )
 
-    async def _check_with_review_llm(self, question: Question) -> dict[str, object]:
-        """独立审核 LLM 判断题目合理性"""
-        prompt = self._review_template.format(question_latex=question.content)
+    async def _check_with_review_llm(
+        self,
+        question: Question,
+        solution: Solution,
+        *,
+        review_instruction: str = "",
+    ) -> dict[str, object]:
+        """独立审核题面与完整解答，避免只看题面的确认偏差。"""
+        prompt = self._review_template.format(
+            question_latex=question.content,
+            solution_latex=solution.solution_latex or solution.solution_plain,
+        )
+        instruction = review_instruction.strip()[:2000]
+        if instruction:
+            prompt += (
+                "\n\n# 用户指定的评估关注点\n"
+                f"{instruction}\n\n"
+                "该关注点仅补充审查维度，不得放宽既有正确性与证据门禁。"
+            )
 
         try:
             result = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)
@@ -169,49 +340,241 @@ class VerificationPipeline:
             logger.warning("review_failed", error=str(exc)[:200])
             return {"passed": False, "issues": [f"review_error: {exc}"]}
 
-    async def _check_solution_relevance(self, question: Question, solution: Solution) -> bool:
+    async def _check_solution_relevance(
+        self, question: Question, solution: Solution
+    ) -> VerificationEvidence:
         """G5：判断解答是否在尝试解这道题（方向/主题一致即可，不要求正确或完整）"""
         prompt = self._relevance_template.format(
             question_latex=question.content,
-            solution_latex=solution.solution_latex,
+            solution_latex=solution.solution_latex or solution.solution_plain,
         )
         try:
             result = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)
-            return bool(result.get("relevant", True))
+            relevant = result.get("relevant")
+            if not isinstance(relevant, bool):
+                return VerificationEvidence(
+                    kind="solution_relevance",
+                    status=VerificationEvidenceStatus.ERROR,
+                    required=True,
+                    backend=_llm_backend_name(self.review_llm),
+                    summary="solution relevance verifier returned no boolean verdict",
+                )
+            reason = str(result.get("reason") or "").strip()
+            return VerificationEvidence(
+                kind="solution_relevance",
+                status=(
+                    VerificationEvidenceStatus.PASSED
+                    if relevant
+                    else VerificationEvidenceStatus.FAILED
+                ),
+                required=True,
+                backend=_llm_backend_name(self.review_llm),
+                summary=reason
+                or (
+                    "solution addresses the candidate question"
+                    if relevant
+                    else "solution does not address the candidate question"
+                ),
+            )
         except Exception as exc:
             logger.warning("solution_relevance_failed", error=str(exc)[:200])
-            return True  # 基础设施故障降级为通过，不因验证器自身故障误杀候选
+            return VerificationEvidence(
+                kind="solution_relevance",
+                status=VerificationEvidenceStatus.ERROR,
+                required=True,
+                backend=_llm_backend_name(self.review_llm),
+                summary=f"solution relevance verification failed: {exc}",
+            )
 
     async def _check_numerical(
-        self, question: Question, solution: Solution
-    ) -> NumericalVerification:
-        """G4：LLM 生成 sympy/numpy 验证代码 → 沙箱执行 → 解析 PASS/FAIL/ALL_PASSED。"""
-        from sciforge.core.sandbox import run_sandboxed
-
+        self,
+        question: Question,
+        solution: Solution,
+        *,
+        required: bool,
+    ) -> tuple[NumericalVerification, VerificationEvidence]:
+        """生成数值检查并在显式信任策略的 sandbox 中执行。"""
         prompt = self._numerical_template.format(
             question_latex=question.content,
-            solution_sketch=solution.solution_latex,
+            solution_sketch=solution.solution_latex or solution.solution_plain,
         )
         try:
             data = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)
         except Exception as exc:
             logger.warning("numerical_codegen_failed", error=str(exc)[:200])
-            return NumericalVerification(all_passed=False)
+            return NumericalVerification(all_passed=False), VerificationEvidence(
+                kind="numerical",
+                status=VerificationEvidenceStatus.ERROR,
+                required=required,
+                backend=_llm_backend_name(self.review_llm),
+                summary=f"numerical verification code generation failed: {exc}",
+            )
 
         code = str(data.get("verification_code") or "").strip()
         if not code:
-            return NumericalVerification(all_passed=False)
+            return NumericalVerification(all_passed=False), VerificationEvidence(
+                kind="numerical",
+                status=VerificationEvidenceStatus.ERROR,
+                required=required,
+                backend=_llm_backend_name(self.review_llm),
+                summary="numerical verifier returned no executable code",
+            )
 
-        # run_sandboxed 是同步 subprocess 调用，用 to_thread 避免阻塞事件循环
-        exec_result = await asyncio.to_thread(run_sandboxed, code, self.sandbox_timeout)
-        stdout = exec_result.stdout or ""
+        sandbox_result = await self.sandbox.arun_python(
+            code,
+            trust_policy=self.sandbox_trust_policy,
+        )
+        stdout = sandbox_result.stdout or ""
         all_passed = "ALL_PASSED" in stdout
         discrepancies = [
             line.strip() for line in stdout.splitlines() if line.strip().startswith("FAIL")
         ]
-        return NumericalVerification(
+        explicit_failure = bool(discrepancies) or "SOME_FAILED" in stdout
+        if explicit_failure and not discrepancies:
+            discrepancies.append("verification reported SOME_FAILED")
+        evidence_status = _execution_evidence_status(
+            sandbox_result,
+            passed=all_passed,
+            explicit_failure=explicit_failure,
+        )
+        execution = CodeExecutionResult(
+            code=code,
+            stdout=sandbox_result.stdout,
+            stderr=sandbox_result.stderr,
+            success=sandbox_result.success,
+            timeout=sandbox_result.timed_out,
+            execution_time_ms=sandbox_result.duration_ms,
+        )
+        numerical = NumericalVerification(
             all_passed=all_passed,
             discrepancies=discrepancies,
             code_used=code,
-            execution=exec_result,
+            execution=execution,
         )
+        summary = sandbox_result.reason or (
+            "all generated numerical checks passed"
+            if evidence_status is VerificationEvidenceStatus.PASSED
+            else "numerical verification found a counterexample"
+            if evidence_status is VerificationEvidenceStatus.FAILED
+            else "numerical verifier did not produce a conclusive result"
+        )
+        return numerical, _sandbox_evidence(
+            "numerical",
+            sandbox_result,
+            evidence_status,
+            required=required,
+            summary=summary,
+            artifact=code,
+            details={"discrepancies": discrepancies},
+        )
+
+    async def _check_lean(
+        self,
+        question: Question,
+        solution: Solution,
+        *,
+        required: bool,
+    ) -> VerificationEvidence:
+        prompt = self._lean_template.format(
+            question_latex=question.content,
+            solution_latex=solution.solution_latex or solution.solution_plain,
+        )
+        try:
+            data = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)
+        except Exception as exc:
+            return VerificationEvidence(
+                kind="lean",
+                status=VerificationEvidenceStatus.ERROR,
+                required=required,
+                backend=_llm_backend_name(self.review_llm),
+                summary=f"Lean formalization generation failed: {exc}",
+            )
+        source = str(data.get("lean_source") or "").strip()
+        assumptions = list(data.get("translation_assumptions") or [])
+        if not source:
+            return VerificationEvidence(
+                kind="lean",
+                status=VerificationEvidenceStatus.ERROR,
+                required=required,
+                backend=_llm_backend_name(self.review_llm),
+                summary="Lean formalizer returned no theorem source",
+                details={"translation_assumptions": assumptions},
+            )
+        result = await self.sandbox.averify_lean(
+            source,
+            trust_policy=self.sandbox_trust_policy,
+        )
+        status = {
+            SandboxStatus.SUCCEEDED: VerificationEvidenceStatus.PASSED,
+            SandboxStatus.FAILED: VerificationEvidenceStatus.FAILED,
+            SandboxStatus.UNAVAILABLE: VerificationEvidenceStatus.UNAVAILABLE,
+            SandboxStatus.POLICY_DENIED: VerificationEvidenceStatus.UNAVAILABLE,
+            SandboxStatus.TIMED_OUT: VerificationEvidenceStatus.ERROR,
+        }[result.status]
+        summary = result.reason or (
+            "Lean theorem compiled without admitted proofs"
+            if status is VerificationEvidenceStatus.PASSED
+            else "Lean compiler rejected the formal proof"
+        )
+        return _sandbox_evidence(
+            "lean",
+            result,
+            status,
+            required=required,
+            summary=summary,
+            artifact=source,
+            details={"translation_assumptions": assumptions},
+        )
+
+
+def _llm_backend_name(llm: LLMClient) -> str:
+    config = getattr(llm, "config", None)
+    provider = getattr(config, "provider", None)
+    model = str(getattr(config, "model", "") or "")
+    provider_name = str(getattr(provider, "value", provider) or "llm")
+    return f"{provider_name}:{model}" if model else provider_name
+
+
+def _execution_evidence_status(
+    result: VerificationExecutionResult,
+    *,
+    passed: bool,
+    explicit_failure: bool,
+) -> VerificationEvidenceStatus:
+    if result.status in {SandboxStatus.UNAVAILABLE, SandboxStatus.POLICY_DENIED}:
+        return VerificationEvidenceStatus.UNAVAILABLE
+    if result.status in {SandboxStatus.TIMED_OUT}:
+        return VerificationEvidenceStatus.ERROR
+    if result.status is SandboxStatus.FAILED:
+        return VerificationEvidenceStatus.ERROR
+    if explicit_failure:
+        return VerificationEvidenceStatus.FAILED
+    if passed:
+        return VerificationEvidenceStatus.PASSED
+    return VerificationEvidenceStatus.ERROR
+
+
+def _sandbox_evidence(
+    kind: str,
+    result: VerificationExecutionResult,
+    status: VerificationEvidenceStatus,
+    *,
+    required: bool,
+    summary: str,
+    artifact: str,
+    details: dict[str, object],
+) -> VerificationEvidence:
+    return VerificationEvidence(
+        kind=kind,
+        status=status,
+        required=required,
+        backend=result.backend,
+        isolation=result.isolation.value,
+        summary=summary,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        diagnostics=list(result.diagnostics),
+        duration_ms=result.duration_ms,
+        artifact=artifact,
+        details=details,
+    )

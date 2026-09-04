@@ -14,6 +14,14 @@ from typing import Any
 
 import structlog
 
+from sciforge.agents.qgen.verification_sandbox import (
+    ContainerPythonRunner,
+    LeanVerifier,
+    SandboxLimits,
+    TrustedLocalPythonRunner,
+    TrustPolicy,
+    VerificationSandbox,
+)
 from sciforge.core.models import (
     ContextBundle,
     Discipline,
@@ -53,11 +61,22 @@ class DeepSolveEngine:
         *,
         sandbox_timeout: int = 10,
         max_turns: int = 5,
+        sandbox: VerificationSandbox | None = None,
+        sandbox_trust_policy: TrustPolicy | str = TrustPolicy.CONTAINER_REQUIRED,
     ) -> None:
         self.llm = llm
         self.discipline = discipline
         self.sandbox_timeout = sandbox_timeout
         self.max_turns = max_turns
+        if sandbox is None:
+            limits = SandboxLimits(timeout_seconds=float(sandbox_timeout))
+            sandbox = VerificationSandbox(
+                local_python=TrustedLocalPythonRunner(limits=limits),
+                container_python=ContainerPythonRunner(limits=limits),
+                lean_verifier=LeanVerifier(limits=limits),
+            )
+        self.sandbox = sandbox
+        self.sandbox_trust_policy = TrustPolicy(sandbox_trust_policy)
         self._system = get_generation_prompt_template("solving/solve_deep_system.txt", discipline)
         self._user_template = get_generation_prompt_template(
             "solving/solve_deep_user.txt", discipline
@@ -76,14 +95,17 @@ class DeepSolveEngine:
             logger.info("solve_deep_no_tools_fallback", question_id=question.id)
             return await self._solve_single(user, question)
 
-        from sciforge.core.sandbox import run_sandboxed
-
-        def _executor(call: ToolCall) -> ToolResult:
+        async def _executor(call: ToolCall) -> ToolResult:
             code = str(call.arguments.get("code", ""))
-            res = run_sandboxed(code, self.sandbox_timeout)
+            res = await self.sandbox.arun_python(
+                code,
+                trust_policy=self.sandbox_trust_policy,
+            )
             out = (res.stdout or "")[:2000]
             if res.stderr:
                 out += "\n[stderr]\n" + res.stderr[:1000]
+            if res.reason:
+                out += f"\n[{res.status.value}] {res.reason}"
             return ToolResult(
                 call_id=call.call_id,
                 output=out or "(无输出)",
@@ -108,7 +130,10 @@ class DeepSolveEngine:
                 content = msg.content
                 break
         logger.info("solve_deep_done", question_id=question.id, turns=len(history))
-        return _to_solution(_extract_json(content), question, content)
+        # Only the explicit structured final answer is publishable.  Do not
+        # fall back to an arbitrary assistant transcript, which may contain
+        # tool-planning narration rather than a learner-facing solution.
+        return _to_solution(_extract_json(content), question)
 
     async def _solve_single(self, user_prompt: str, question: Question) -> Solution | None:
         """降级路径：system+user 合并的单轮深度求解（无工具）。"""
@@ -118,7 +143,7 @@ class DeepSolveEngine:
         except Exception as exc:
             logger.warning("solve_deep_single_failed", error=str(exc)[:200])
             return None
-        return _to_solution(data, question, "")
+        return _to_solution(data, question)
 
 
 def _kp_context(context: ContextBundle | None) -> str:
@@ -147,8 +172,8 @@ def _extract_json(text: str) -> dict[str, Any]:
     return {}
 
 
-def _to_solution(data: dict[str, Any], question: Question, raw: str) -> Solution | None:
-    solution_text = str(data.get("solution_latex") or data.get("solution") or raw or "").strip()
+def _to_solution(data: dict[str, Any], question: Question) -> Solution | None:
+    solution_text = str(data.get("solution_latex") or data.get("solution") or "").strip()
     if not solution_text:
         return None
     conf = str(data.get("confidence", "medium")).lower()
@@ -158,5 +183,18 @@ def _to_solution(data: dict[str, Any], question: Question, raw: str) -> Solution
         question_id=question.id,
         solution_latex=solution_text,
         methods_used=list(data.get("methods_used") or []),
+        step_count=_non_negative_int(data.get("step_count")),
+        self_check=str(data.get("self_check") or ""),
         confidence=conf,  # type: ignore[arg-type]
     )
+
+
+def _non_negative_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if not isinstance(value, (int, float, str)):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0

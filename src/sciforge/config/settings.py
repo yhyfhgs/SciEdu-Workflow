@@ -37,6 +37,9 @@ KNOWN_TASKS: list[str] = [
     "tag",
     "repair",
     "extract_and_classify",
+    # I.4（M4）：Evaluator 多轮任务；未在 TOML 配置则走 default_provider_ref
+    # （调用方可选 fallback 到 "review"，与 Docs/20 I.4 一致，非强制）
+    "extract_validate",
     "improve",
     "numerical_verify",
     "vlm_convert",
@@ -114,6 +117,40 @@ class AppConfig(BaseSettings):
     vlm_text_layer_min_chars_per_page: int = 100
     # 文字层探测抽样页数（从首页起）。
     vlm_text_layer_sample_pages: int = 5
+    # 通用输入适配层：结构化/文本格式先确定性转为 Markdown blocks，再复用 Stage1–3。
+    # 值使用扩展名（不含点）；目录扫描只接纳此白名单，单文件入口同样校验。
+    enabled_input_formats: list[str] = [
+        "tex",
+        "md",
+        "markdown",
+        "pdf",
+        "docx",
+        "pptx",
+        "csv",
+        "tsv",
+        "xlsx",
+        "html",
+        "htm",
+        "epub",
+        "json",
+        "jsonl",
+        "ndjson",
+        "txt",
+        "rst",
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+    ]
+    adapter_rows_per_block: int = 250
+    adapter_max_input_bytes: int = 64 * 1024 * 1024
+    adapter_max_archive_bytes: int = 256 * 1024 * 1024
+    adapter_max_archive_entries: int = 10_000
+    adapter_max_compression_ratio: float = 500.0
+    adapter_max_columns: int = 200
+    adapter_max_json_depth: int = 10
+    vlm_image_max_tokens: int = 8192
 
     # ── Pipeline: Stage1Extract — 单条滑动窗口 ──────────
     extract_window_lines: int = 500  # 初始窗口行数（旧默认 200）
@@ -194,6 +231,12 @@ class AppConfig(BaseSettings):
     qgen_retriever_max_kps: int = 8
     qgen_retriever_max_refs: int = 8
     qgen_retriever_max_negatives: int = 5
+    # 默认生成/推荐池使用 schema v14 量规门禁。旧库在该 kind/rubric 完全没有
+    # evaluation 时允许兼容读取；一旦评价开始，未评价条目也不进入默认池。
+    qgen_quality_gate_enabled: bool = True
+    qgen_quality_gate_allow_legacy_unscored: bool = True
+    qgen_quality_extraction_min: float = 0.7
+    qgen_quality_solution_min: float = 0.6
     qgen_lightweight_prefilter: bool = True
     # Phase 6c: verifier 在 verdict=PASS 时顺带返回 10 维难度评分，
     # 省一次独立的 annotator LLM 调用。默认开启（review.txt 已支持新格式）。
@@ -201,10 +244,32 @@ class AppConfig(BaseSettings):
     pipeline_parallel: bool = False
     evolution_enabled: bool = False
     evolution_max_improvement_rounds: int = 2
+    qgen_population_selection_enabled: bool = False
     solver_max_turns: int = 5
     solver_enable_tools: bool = True
+    qgen_deep_solve_enabled: bool = False
     sandbox_timeout: int = 10
-    enable_numerical_verification: bool = True
+    # LLM/用户产生的验证代码默认只允许容器；容器不可用时显式记为 unavailable。
+    enable_numerical_verification: bool = False
+    require_numerical_verification: bool = False
+    enable_lean_verification: bool = False
+    require_lean_verification: bool = False
+    sandbox_trust_policy: str = "container_required"
+    sandbox_container_runtime: str = "auto"
+    sandbox_python_image: str = "python:3.11-slim"
+    sandbox_lean_image: str = "leanprover/lean4:latest"
+    sandbox_memory_mb: int = 512
+    sandbox_cpus: float = 1.0
+    sandbox_pids_limit: int = 64
+    sandbox_tmpfs_mb: int = 64
+    sandbox_max_output_bytes: int = 64 * 1024
+    sandbox_trusted_local_lean_command: list[str] = []
+    # 长程 QGen runtime 与知识库分库，避免 operational state 污染内容 schema。
+    qgen_runtime_db_path: Path = Path("data/qgen_runtime.db")
+    qgen_run_max_steps: int = 400
+    qgen_run_max_llm_calls: int = 100
+    qgen_run_max_tokens: int = 500_000
+    qgen_run_max_wall_time_seconds: float = 3600.0
 
     # ── Pipeline 优化开关（Phase 2.5 / 4 / 5）──────────────
     empty_window_fast_skip: bool = True
@@ -240,6 +305,60 @@ class AppConfig(BaseSettings):
     # REC-10：Stage3 攒小批再一次 save_batch+commit（WAL fsync N→N/批），去重计数批量预查。
     stage3_persist_batch_size: int = 16
 
+    # ── Pipeline v11 安全默认值 ───────────────────────────
+    # 纯确定性、完整性和发布门禁能力默认开启；额外多轮 LLM 与段级并行仍显式 opt-in。
+    # §E.0（M1）：format/genre profile——extended 体裁探测（含 problem_set）+
+    # 密度自适应窗口 + halo/carry 先验。关闭时体裁探测走 REC-14 白名单路径。
+    format_profile_enabled: bool = True
+    # III.1（M1）：marker ledger 覆盖率审计——对每个已消费窗口段做标记台账对账，
+    # 只写 structlog 指标 + ExtractedBatch.ledger_audit 附件，**不改任何提取行为**。
+    # M1 使命：在真实文档上度量 T4 真值质量（误报/漏报率），M4 才注入 harness prompt。
+    marker_ledger_enabled: bool = True
+    # II.4（M1）：字符级 span——prompt 追加锚点输出指令，LLM 抄边界逐字短串，
+    # resolve_span 确定性定位精确 offset 落 start_char/end_char 列（exact/fuzzy/
+    # line_fallback 三态降级，最坏退回行级=现状）。不覆写 corrected_content。
+    extract_char_span_enabled: bool = False
+    # III.2（M2）：carry 四态——窗口尾部未闭合条目的结构化跨窗交接。
+    # 确定性判别 truly_no_answer/answer_deferred/content_truncated/stem_unfinished
+    # 注入下窗 prompt 指导定案；滑窗语义不变（尾部仍下窗重扫 = v10 兜底）。
+    extract_active_carry_enabled: bool = True
+    # 同一条目连续跨窗未闭合的上限：到顶下一窗 force_extract 强制收尾
+    # （solution_deferred），再不闭合则放弃 carry 退回 v10 被动重扫。
+    extract_carry_max_windows: int = 3
+    # III.4（M2）：segment halo——intra_doc_parallel_extract 时每段向后多读 N 行
+    # 重叠区，跨段边界条目被前段完整看到，仲裁器确定性去重（安全并行）。
+    # 默认 80（> 典型条目长度）；仅 intra_doc_parallel_extract=True 时读取。
+    segment_halo_lines: int = 80
+    # I.3（M3）：per-item 四态 + provisional id 出口 remap——出口按最终 start_line
+    # 排序后一次性分配 final item_id（OrderIndexAllocator.reserve 零改动）。
+    # 显式关闭时走旧版"提取顺序即分配"；开启时回补 WP-22 carry 试探合并
+    # （低置信度匹配标 uncertain 而非直接 accepted）。异常退回现状分配。
+    provisional_id_remap_enabled: bool = True
+    # III.3（M3）：PatchInstruction 局部补抽——依赖 marker_ledger_enabled 产出的
+    # 审计结果，对 missed_marker 做 micro LLM 补抽（±context_lines 小段，不重跑
+    # 整窗）；boundary_fix/pairing_fix/type_fix 确定性修复不额外耗 LLM。
+    # 默认开启；仅在 marker_ledger_enabled=True 时生效（依赖其 AuditReport）。
+    patch_local_extraction_enabled: bool = True
+    patch_context_lines: int = 8
+    # I.1–I.3（M4）：窗口级 ExtractionHarness 总开关。开启后 Stage1 仍只执行
+    # 一次主 _extract_batch；locate/audit/carry 分析均为确定性增强，异常保留首次结果。
+    extract_harness_enabled: bool = True
+    # I.4/I.6（M4）：风险触发 Evaluator 多轮——仅 harness.risk_score 超阈值的
+    # 高风险窗口触发（70-80% 干净窗口 0 额外调用）；provider 约束见 C8
+    # （仅 Anthropic/anthropic_compatible 支持，其余 provider 自动跳过退单轮）。
+    extract_validator_enabled: bool = False
+    extract_validator_max_turns: int = 3
+    extract_validator_risk_threshold: float = 0.3
+    # IV.1–IV.4（M5）：入库后以 taxonomy_path 为稳定身份建立 concept 四表，
+    # tags 仅作别名/展示；未知 tag 进入 pending 治理状态。默认开启。
+    concept_graph_enabled: bool = True
+    # IV.5–IV.6（M6）：0-LLM 确定性 rubric + review queue。rubric_version 是
+    # 持久化契约的一部分；调整特征/权重时必须升版，不能覆盖旧评分快照。
+    item_evaluation_enabled: bool = True
+    rubric_version: str = "v1"
+    evaluation_extraction_threshold: float = 0.7
+    evaluation_solution_threshold: float = 0.6
+
     # ── 429 / 速率限制处理 ────────────────────────────────
     # 遇 LLMRateLimitError 时的基础睡眠秒数（指数退避起点）
     # minimax 5h/4500 次场景建议 300s；其他 provider 可调小
@@ -266,6 +385,14 @@ class AppConfig(BaseSettings):
         load_dotenv(override=False)
         self._load_from_toml()
         self._load_from_env()
+        if self.require_numerical_verification and not self.enable_numerical_verification:
+            raise ValueError(
+                "require_numerical_verification=true requires enable_numerical_verification=true"
+            )
+        if self.require_lean_verification and not self.enable_lean_verification:
+            raise ValueError(
+                "require_lean_verification=true requires enable_lean_verification=true"
+            )
         self._warn_legacy_env_vars()
         return self
 
@@ -291,12 +418,12 @@ class AppConfig(BaseSettings):
         providers_section = data.get("providers", {})
         for name, cfg in providers_section.items():
             if not isinstance(cfg, dict):
-                continue
+                raise ValueError(f"provider {name!r} must be a TOML table")
             interpolated = _interpolate_env(cfg)
             try:
                 self.providers[name] = ProviderConfig(**interpolated)
             except Exception as exc:
-                logger.warning("invalid_provider_config", name=name, error=str(exc))
+                raise ValueError(f"invalid provider config {name!r}: {exc}") from exc
 
         # default_provider_ref (顶层)
         if "default_provider_ref" in data and self.default_provider_ref is None:
@@ -306,7 +433,7 @@ class AppConfig(BaseSettings):
         tasks_section = data.get("tasks", {})
         for task_name, task_cfg in tasks_section.items():
             if not isinstance(task_cfg, dict):
-                continue
+                raise ValueError(f"task {task_name!r} must be a TOML table")
             interpolated = _interpolate_env(task_cfg)
             try:
                 if task_name not in self.task_llm:
@@ -318,7 +445,7 @@ class AppConfig(BaseSettings):
                         if hasattr(existing, key) and getattr(existing, key) is None:
                             setattr(existing, key, value)
             except Exception as exc:
-                logger.warning("invalid_task_config", task=task_name, error=str(exc))
+                raise ValueError(f"invalid task config {task_name!r}: {exc}") from exc
 
         # [pipeline]
         pipeline_section = data.get("pipeline", {})
@@ -343,12 +470,10 @@ class AppConfig(BaseSettings):
         """
         for key, value in section.items():
             if key not in type(self).model_fields:
-                logger.warning(
-                    "unknown_config_field",
-                    section=section_name,
-                    field=key,
+                raise ValueError(
+                    f"unknown [{section_name}] config field {key!r}; "
+                    "fix the spelling or remove the unsupported option"
                 )
-                continue
             field_info = type(self).model_fields[key]
             # 自动把 str 转 Path（若字段类型是 Path）
             if field_info.annotation is Path and isinstance(value, str):

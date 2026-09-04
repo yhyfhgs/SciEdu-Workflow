@@ -136,14 +136,20 @@ class DisciplineRegistry:
 
     @classmethod
     def default(cls) -> DisciplineRegistry:
-        """构造默认注册表（math + physics）"""
+        """构造全部稳定顶层学科的默认注册表。"""
+        from sciforge.disciplines.specs.biology import BIOLOGY_SPEC
+        from sciforge.disciplines.specs.chemistry import CHEMISTRY_SPEC
         from sciforge.disciplines.specs.math import MATH_SPEC
+        from sciforge.disciplines.specs.other import OTHER_SPEC
         from sciforge.disciplines.specs.physics import PHYSICS_SPEC
 
         return cls(
             {
                 Discipline.MATH: MATH_SPEC,
                 Discipline.PHYSICS: PHYSICS_SPEC,
+                Discipline.CHEMISTRY: CHEMISTRY_SPEC,
+                Discipline.BIOLOGY: BIOLOGY_SPEC,
+                Discipline.OTHER: OTHER_SPEC,
             }
         )
 

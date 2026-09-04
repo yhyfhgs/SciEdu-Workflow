@@ -38,6 +38,58 @@ class StructuralContextLLM(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+# v11 III.2（M2）：跨窗尾部条目的四态判别。区分"无答案"的四种真相，
+# 取代一律误判 no_solution 的被动行为：
+# - truly_no_answer    真无答案（习题集只有题、定义无证明）→ 收尾 no_solution_in_source
+# - answer_deferred    答案延后（题在前、答案集中卷末/书末）→ 收尾 solution_deferred
+# - content_truncated  内容被窗口物理截断（正文/解答中途断）→ carry 下窗续接
+# - stem_unfinished    题干本身没说完 → carry 下窗续题干
+TailState = Literal["truly_no_answer", "answer_deferred", "content_truncated", "stem_unfinished"]
+
+
+class IncompleteItemCarry(BaseModel):
+    """v11 III.2（M2）：跨窗结构化交接——上一窗末尾未闭合条目的上下文。
+
+    是 ``stop_reason=incomplete_at_tail`` 被动防御的结构化升级：滑窗仍只推进到
+    最后一条完整条目（尾部下窗重扫，v10 语义不变），carry 额外携带"尾部有什么、
+    处于哪一态"注入下窗 prompt，指导 LLM 优先定案而非再次推迟。
+    不持久化到 checkpoint state：中断恢复后丢失 carry = 退回 v10 被动重扫（安全降级）。
+    """
+
+    item_type: str = ""
+    number: str = ""
+    category: Literal["knowledge", "question"] = "question"
+    head_anchor_start: str = ""  # 条目开头逐字短串（下窗匹配用）
+    head_content: str = Field(default="", max_length=2000)  # 已见正文（截断省 token）
+    tail_state: TailState = "content_truncated"
+    original_start_line: int = Field(ge=1, default=1)  # 全局行号
+    carry_window_count: int = Field(ge=1, default=1)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# v11 I.3（M3）：per-item 四态，取代"提取即分配 id"的现状——允许先判定状态、
+# 出口再统一按最终顺序分配 final id（provisional_id_remap_enabled 时生效）。
+# - accepted：确定性审计通过（默认值，兼容现状）
+# - uncertain：试探合并（carry 低置信度匹配）/低置信边界；仍入库，标记待复核
+# - needs_patch：审计发现遗漏/错配，等 M3 WP-33 局部补抽（本版未接入 patch 流程）
+# - rejected：重复/越界/仲裁淘汰（本版未接入淘汰流程，预留状态值）
+ItemStatus = Literal["accepted", "uncertain", "needs_patch", "rejected"]
+
+
+class ItemAnchorsLLM(BaseModel):
+    """v11 II.4（M1，extract_char_span_enabled 时 LLM 输出）：条目边界锚点短串。
+
+    LLM 只抄"条目真正开头/结尾（含解答）的逐字短串"，精确 offset 由
+    ``pipeline/char_span.resolve_span`` 确定性定位（不让 LLM 数字符）。
+    """
+
+    start_anchor: str = Field(min_length=2, max_length=40)
+    end_anchor: str = Field(min_length=2, max_length=40)
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class SingleItemExtractLLM(BaseModel):
     """Stage1 输出的单条提取条目（纯内容+题答配对+位置信息）
 
@@ -71,6 +123,15 @@ class SingleItemExtractLLM(BaseModel):
     structural_context: StructuralContextLLM = Field(default_factory=StructuralContextLLM)
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
+    # v11 II.4（M1，可选）：LLM 输出的边界锚点；flag 关时 prompt 不提及 → 恒 None
+    anchors: ItemAnchorsLLM | None = None
+    # 内部字段（非 LLM 输出）：resolve_span 定位后回填，Stage3 落 start_char/end_char 列
+    resolved_start_char: int | None = None
+    resolved_end_char: int | None = None
+    # v11 I.3（M3，内部字段非 LLM 输出）：per-item 状态 + provisional id。
+    # provisional_id_remap_enabled=False（显式兼容模式）时两者恒为默认值，不影响现状。
+    status: ItemStatus = "accepted"
+    provisional_id: str = ""
 
     model_config = ConfigDict(extra="ignore")
 

@@ -1,9 +1,11 @@
-# SciForge 完整开发总览
+# SciForge 开发总览
 
-> 版本: v3.1 | 日期: 2026-04-15（Pipeline 5 阶段并发重构 + Agent 系统）
->
-> 最新进度见 [`Docs/PROGRESS.md`](./PROGRESS.md)。
-> Pipeline 架构以 [`CLAUDE.md`](../CLAUDE.md) 的"Pipeline 架构（5 阶段并发 Producer-Consumer）"小节为准。
+> 当前状态：CLI + Web SaaS MVP，内容库 schema v14。当前契约见
+> [`01_数据处理Pipeline.md`](01_数据处理Pipeline.md)、
+> [`21_知识库构建标准与数据契约.md`](21_知识库构建标准与数据契约.md)、
+> [`22_QGen_Harness_架构与验证协议.md`](22_QGen_Harness_架构与验证协议.md) 和
+> [`12_Web前端设计.md`](12_Web前端设计.md)。
+> 第 2 节之后的按日 Phase 是早期历史规划，仅用于解释演进，不是当前功能清单。
 
 ## 0. 系统愿景
 
@@ -20,32 +22,26 @@
 
 ---
 
-## 1. MVP 范围定义
+## 1. 当前交付范围
 
-MVP 以 CLI 工具形式交付三项核心能力，聚焦**大学数学**场景：
+当前产品交付四项核心能力：
 
 | 能力 | 说明 |
 |------|------|
-| **通用数据处理 Pipeline** | LLM+Python 混合架构，支持 TeX/MD/PDF/DOCX/PPTX/EPUB 等任意格式，自动提取结构化题库与知识库 |
-| **核心生成引擎** | 生成新数学题目、生成详细解答、验证题目正确性（5 阶段闭环） |
-| **CLI 接口** | 全部操作通过命令行完成，支持 Rich 终端输出 |
+| **通用数据处理 Pipeline** | 多格式 adapter/VLM、无损提取、概念图、评价与发布门禁 |
+| **QGen Harness** | 新题/变式/进化/调难/深入/求解/评估，数值与 Lean 证据，可恢复运行 |
+| **CLI** | 摄取、验证、生成、durable/resume/cancel、配置诊断与服务启动 |
+| **Web SaaS MVP** | FastAPI、租户鉴权/用量、Chatbox、SSE、知识引用、推荐与组卷 |
 
-> **最小 MVP 产品** = 数据梳理 Pipeline + 生成大学数学题目及配套解答
-
-### 明确排除（不在 MVP 范围内）
-
-- Web 前端（Next.js）
-- FastAPI 服务 / REST API
-- 用户认证系统
-- 试卷组装 / 文档生成
-- 个性化推荐系统
-- 物理/其他学科支持（数据模型预留，但 MVP 不实现）
-- 高中内容（数据模型预留 education_level 字段）
+当前明确不声称已完成：通用知识库 CRUD/上传审核 UI、分布式 worker lease、完整 artifact
+中心、KaTeX 富文本、hardened multi-tenant code executor、通用 property-based verifier、第三方登录
+与 refresh-token 生命周期。
 
 ### 存储方案
 
-- MVP: JSON 文件存储 + SQLite（FTS5 全文检索，通过 `--db` 参数切换）
-- 生产扩展: sqlite-vec 向量索引（语义检索）
+- 内容：SQLite schema v14 + FTS5；原文件/checkpoint/assets 外置；
+- 产品：ConversationStore；运行：SQLiteRunStore；账号计费：SaasStore；
+- 向量检索仍是扩展项，当前使用标签、过滤与轻量文本相似度。
 
 ---
 

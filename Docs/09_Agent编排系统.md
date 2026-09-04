@@ -3,7 +3,8 @@
 > 版本: v3.0 | 日期: 2026-03-31（2026-04-14 订正）| 阶段: Phase 5-6 (Post-MVP 蓝图)
 
 > ⚠️ **当前状态**：本文档描述的是 Post-MVP 完整蓝图（LangGraph + 十大 Agent）。
-> **MVP 实际已实现的 Agent** 见 [`Docs/16_Agent系统MVP.md`](./16_Agent系统MVP.md)。
+> **当前实际实现**见 [`Docs/16_Agent系统MVP.md`](./16_Agent系统MVP.md) 与
+> [`Docs/22_QGen_Harness_架构与验证协议.md`](./22_QGen_Harness_架构与验证协议.md)。
 >
 > - 实际目录：**`src/sciforge/agents/`**（本文档中的 `backend/agents/` 仅作架构示意）
 > - 实际 StateGraph：**手写极简版本**（`src/sciforge/agents/graph.py`），非 LangGraph
@@ -254,7 +255,7 @@ def create_pipeline_subgraph():
 | Tag Agent | `src/sciforge/agents/tag_agent.py` | ✅ |
 | DocAssembly Agent | `src/sciforge/agents/doc_agent.py`（lite 版，markdown 输出） | ✅ |
 | KB Agent | `src/sciforge/agents/stub_agents.py::KBAgent` | 🔲 骨架 |
-| Recommend Agent | `src/sciforge/agents/stub_agents.py::RecommendAgent` | 🔲 骨架 |
+| Recommend Agent | wrapper 仍在 `stub_agents.py`；`agents/recommend/engine.py` 与 API 已实现 | 🟡 引擎完成 |
 | FormatAnalyzer Agent | 职责内置于 `src/sciforge/pipeline/recognizers.py`（`VlmRecognizer` / `PyMuPdfRecognizer` / `MarkdownRecognizer`） | ✅ 内置 |
 | ContentExtractor Agent | 职责内置于 `pipeline/vlm_converter.py` + `stages/stage1_extract.py`（批量窗口提取） | ✅ 内置 |
 | OcrCorrector Agent | 职责内置于 `stages/stage1_extract.py` + `stages/stage1_review.py`（两个 stage LLM 调用，修复 exercise 漏 solution bug） | ✅ 内置 |

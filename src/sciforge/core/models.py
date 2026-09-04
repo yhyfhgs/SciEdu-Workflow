@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -75,8 +75,15 @@ class DocumentFormat(StrEnum):
     PDF = "pdf"
     DOCX = "docx"
     CSV = "csv"
+    TSV = "tsv"
+    XLSX = "xlsx"
+    HTML = "html"
     PPTX = "pptx"
     EPUB = "epub"
+    JSON = "json"
+    JSONL = "jsonl"
+    TEXT = "text"
+    IMAGE = "image"
 
 
 class RelationType(StrEnum):
@@ -97,6 +104,52 @@ class RelationType(StrEnum):
     PROOF_OF = "proof_of"
 
 
+class ConceptStatus(StrEnum):
+    """概念结点的治理状态。
+
+    ``pending`` 结点可以被检索和人工复核，但不会进入默认生成池；这使未知 tag
+    不会静默污染受控 taxonomy，同时仍保留提取信息。
+    """
+
+    ACTIVE = "active"
+    PENDING = "pending"
+    DEPRECATED = "deprecated"
+
+
+class ConceptRole(StrEnum):
+    """条目在某概念上的语义角色。"""
+
+    PRIMARY = "primary"
+    DEFINES = "defines"
+    USES = "uses"
+    PREREQUISITE = "prerequisite"
+    TESTS = "tests"
+
+
+class CognitiveLevel(StrEnum):
+    """Bloom 修订版认知层级。"""
+
+    REMEMBER = "remember"
+    UNDERSTAND = "understand"
+    APPLY = "apply"
+    ANALYZE = "analyze"
+    EVALUATE = "evaluate"
+    CREATE = "create"
+
+
+class EvaluationSource(StrEnum):
+    PIPELINE_AUTO = "pipeline_auto"
+    LLM_JUDGE = "llm_judge"
+    HUMAN = "human"
+
+
+class ReviewQueueStatus(StrEnum):
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    RESOLVED = "resolved"
+    DISMISSED = "dismissed"
+
+
 # ── 来源元数据 ────────────────────────────────────────
 
 
@@ -115,7 +168,7 @@ class KPSource(BaseModel):
 
 
 class KnowledgePoint(BaseModel):
-    """知识点存储模型 — 与 DB schema v7 一一对应"""
+    """知识点存储模型 — 与 DB schema v14 一一对应。"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH
@@ -135,7 +188,14 @@ class KnowledgePoint(BaseModel):
     source_file: str = ""  # 源 logical_document 的文件路径（首个分卷路径，便于追溯）
     start_line: int = 0
     end_line: int = 0
+    # v11 §F（M1）字符级溯源：start_line 行内起始偏移 / end_line 行内 exclusive 偏移。
+    # 默认 0 = 行级（未启用 char span 时等价现状）；由 resolve_span（II.4）填充。
+    start_char: int = 0
+    end_char: int = 0
+    page: int | None = None  # 源 PDF 页码（MdBlockSource.page_start；文本格式为 None）
     order_index: int = 0
+    # schema v14：摄取可靠性与内容本身分离；非 accepted 条目保留但不进入默认生成池。
+    ingestion_status: Literal["accepted", "uncertain", "needs_patch", "rejected"] = "accepted"
 
     model_config = ConfigDict(validate_assignment=True)
 
@@ -156,13 +216,20 @@ class KnowledgePoint(BaseModel):
 
 
 class Solution(BaseModel):
-    """题目解答 — 用于生成流程的内存对象（parse pipeline 已直接嵌入到 Question.solution_content）"""
+    """题目解答 — 可发布的推导、方法摘要与自检，不存储模型私密思维链。
+
+    ``solution_latex`` 是面向学习者的完整逐步解答；``self_check`` 与
+    ``step_count`` 是可审计的结构化摘要，便于 UI、难度分析和验证模块复用。
+    parse pipeline 的原文答案仍直接嵌入 ``Question.solution_content``。
+    """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     question_id: str = ""
     solution_latex: str = ""
     solution_plain: str = ""
     methods_used: list[str] = Field(default_factory=list)
+    step_count: int = Field(default=0, ge=0)
+    self_check: str = ""
     confidence: Literal["high", "medium", "low"] = "medium"
     is_verified: bool = False
 
@@ -180,7 +247,7 @@ class Figure(BaseModel):
 
 
 class Question(BaseModel):
-    """题目存储模型 — 与 DB schema v10 一一对应"""
+    """题目存储模型 — 与 DB schema v14 一一对应。"""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discipline: Discipline = Discipline.MATH
@@ -212,7 +279,12 @@ class Question(BaseModel):
     source_file: str = ""  # 源 logical_document 的文件路径（首个分卷路径，便于追溯）
     start_line: int = 0
     end_line: int = 0
+    # v11 §F（M1）字符级溯源（同 KnowledgePoint；默认 0 = 行级，等价现状）
+    start_char: int = 0
+    end_char: int = 0
+    page: int | None = None
     order_index: int = 0
+    ingestion_status: Literal["accepted", "uncertain", "needs_patch", "rejected"] = "accepted"
     # ── 生成元数据（v9）：区分生成题/手动题，支撑版权归属、计费与统计追溯 ──
     is_generated: bool = False
     generator_model: str = ""  # 生成所用模型 id（如 claude-opus-4-8）
@@ -329,6 +401,30 @@ class NumericalVerification(BaseModel):
     execution: CodeExecutionResult | None = None
 
 
+class VerificationEvidenceStatus(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+    ERROR = "error"
+
+
+class VerificationEvidence(BaseModel):
+    """一项可审计验证证据；不将基础设施失败伪装为通过。"""
+
+    kind: str
+    status: VerificationEvidenceStatus
+    required: bool = False
+    backend: str = ""
+    isolation: str = "none"
+    summary: str = ""
+    stdout: str = ""
+    stderr: str = ""
+    diagnostics: list[str] = Field(default_factory=list)
+    duration_ms: int = Field(default=0, ge=0)
+    artifact: str = ""
+    details: dict[str, object] = Field(default_factory=dict)
+
+
 # ── 流水线阶段中间结果 ──────────────────────────────────
 
 
@@ -388,6 +484,13 @@ class GenerationRequest(BaseModel):
     topics: list[str]
     difficulty_target: int = Field(ge=1, le=10)
     question_type: str = "proof"
+    question_form: str = ""
+    # 用户在知识浏览器中明确固定的条目。Retriever 会把合法、同学科条目置于
+    # 自动检索结果之前，避免“选中知识点”退化成只复制 tag 的弱提示。
+    knowledge_ids: list[str] = Field(default_factory=list, max_length=20)
+    # 仅保存有界、带角色标签的近期会话摘要；它随 durable input 一起持久化，
+    # 因而恢复执行得到与首次调度完全相同的上下文。
+    conversation_context: str = Field(default="", max_length=6000)
     strategy: VariantStrategy
     source_question: Question | None = None
     exclusion_ids: set[str] = Field(default_factory=set)
@@ -430,6 +533,7 @@ class VerificationResult(BaseModel):
     checks: dict[str, bool] = Field(default_factory=dict)
     suggestions: str = ""
     numerical_verification: NumericalVerification | None = None
+    evidence: list[VerificationEvidence] = Field(default_factory=list)
     # Phase 6c：verdict=PASS 时可顺带返回 10 维难度评分（若 verifier 产出）
     # 启用 QGenAgent(merge_difficulty_into_verify=True) 时跳过独立 annotator 调用
     difficulty_score: DifficultyScore | None = None
@@ -623,6 +727,116 @@ class ItemRelation(BaseModel):
     note: str = ""
 
 
+# ── Concept Graph（schema v12）──────────────────────────
+
+
+class ConceptNode(BaseModel):
+    """跨书、跨文件稳定的概念实体。
+
+    ``id`` 优先使用受控 taxonomy 的完整路径（如
+    ``math.analysis.continuity.uniform_continuity``）；未知 tag 使用同样的层级
+    slug，但状态为 ``pending``，等待治理后再进入生成池。
+    """
+
+    id: str
+    discipline: Discipline
+    branch: str
+    canonical_en: str
+    canonical_zh: str
+    tag_path: str = ""
+    kind: str = "concept"
+    status: ConceptStatus = ConceptStatus.ACTIVE
+    depth: int = Field(ge=1, default=1)
+
+
+class ConceptAlias(BaseModel):
+    """分支作用域内的持久化概念别名。"""
+
+    discipline: Discipline
+    branch: str
+    alias: str
+    concept_id: str
+    locale: Literal["en", "zh", "mixed"] = "mixed"
+    source: Literal["taxonomy", "pipeline", "spec", "manual"] = "pipeline"
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+
+
+class ItemConceptLink(BaseModel):
+    """KnowledgePoint/Question 与 ConceptNode 的多对多关联。"""
+
+    item_id: str
+    item_kind: Literal["knowledge", "question"]
+    concept_id: str
+    role: ConceptRole = ConceptRole.PRIMARY
+    weight: float = Field(ge=0.0, le=1.0, default=1.0)
+
+
+class ConceptRelation(BaseModel):
+    """概念粒度知识图谱边。"""
+
+    src_concept: str
+    dst_concept: str
+    relation_type: RelationType = RelationType.RELATED
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    source: Literal["structural", "llm", "manual"] = "structural"
+    evidence_count: int = Field(ge=1, default=1)
+    note: str = ""
+
+
+class ConceptLinkBatch(BaseModel):
+    """一次确定性 concept-link post-pass 的可持久化产物。"""
+
+    concepts: list[ConceptNode] = Field(default_factory=list)
+    aliases: list[ConceptAlias] = Field(default_factory=list)
+    item_links: list[ItemConceptLink] = Field(default_factory=list)
+    relations: list[ConceptRelation] = Field(default_factory=list)
+    pending_concept_ids: list[str] = Field(default_factory=list)
+
+
+# ── Knowledge Evaluation（schema v13）──────────────────
+
+
+class ItemEvaluation(BaseModel):
+    """版本化、可叠加来源的知识条目质量与难度量规。"""
+
+    item_id: str
+    item_kind: Literal["knowledge", "question"]
+    rubric_version: str = "v1"
+    extraction_quality: float = Field(ge=0.0, le=1.0)
+    solution_completeness: float = Field(ge=0.0, le=1.0)
+    difficulty_overall: float = Field(ge=1.0, le=10.0)
+    difficulty_dims: DifficultyScore
+    cognitive_level: CognitiveLevel
+    prerequisite_depth: int = Field(ge=0, default=0)
+    proof_complexity: float = Field(ge=0.0, le=1.0)
+    lecture_suitability: float = Field(ge=0.0, le=1.0)
+    cross_book_generality: float = Field(ge=0.0, le=1.0)
+    source: EvaluationSource = EvaluationSource.PIPELINE_AUTO
+    confidence: float = Field(ge=0.0, le=1.0, default=0.65)
+    evaluated_at: datetime = Field(default_factory=datetime.now)
+
+
+class ReviewQueueItem(BaseModel):
+    """确定性质量门禁产生的人工复核任务。"""
+
+    id: int | None = None
+    item_id: str
+    item_kind: Literal["knowledge", "question"]
+    tenant_id: str = ""
+    rubric_version: str = "v1"
+    reason: str
+    priority: int = Field(ge=1, le=5, default=3)
+    status: ReviewQueueStatus = ReviewQueueStatus.OPEN
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class EvaluationBatch(BaseModel):
+    evaluations: list[ItemEvaluation] = Field(default_factory=list)
+    review_items: list[ReviewQueueItem] = Field(default_factory=list)
+
+
 # ── Pipeline Producer-Consumer 消息 ───────────────────────
 
 
@@ -749,6 +963,47 @@ class ExtractedBatch(BaseModel):
     # Phase 4 条件化 review：Stage1Extract 填入 LLM 的 stop_reason
     # 默认 "all_complete" 以兼容老 checkpoint 回放（无 stop_reason）
     stop_reason: str = "all_complete"
+    # v11 III.1（M1，marker_ledger_enabled 时填充）：已消费窗口段的覆盖率审计
+    # 结论（AuditReport.model_dump()）。纯观测附件——下游可读不改行为；
+    # Stage1Review 后续可据此进一步减少重复校验（I.5）。
+    ledger_audit: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _check_parallel_arrays_and_order(self) -> ExtractedBatch:
+        """守住 Stage1 的最终出口契约，而不是信任各条生产/恢复路径。
+
+        ``item_ids`` 与 ``items`` 是并行数组；任何错位都会把内容绑定到错误的
+        ``order_index``。下游 Stage1Review/Stage3 还依赖 ID 严格递增和条目按
+        原文顺序排列，因此三条不变量必须在 payload 边界一次性强制执行。
+
+        旧 checkpoint 由 orchestrator 逐条包装成单元素 batch 重放，天然满足
+        该契约；兼容修复应留在 replay 边界，而不应放松新 batch 的约束。
+        """
+        if len(self.item_ids) != len(self.items):
+            raise ValueError(
+                "item_ids 与 items 长度必须一致："
+                f"item_ids={len(self.item_ids)}, items={len(self.items)}"
+            )
+
+        for idx in range(1, len(self.item_ids)):
+            previous_id = self.item_ids[idx - 1]
+            current_id = self.item_ids[idx]
+            if current_id <= previous_id:
+                raise ValueError(
+                    "item_ids 必须严格递增："
+                    f"item_ids[{idx - 1}]={previous_id}, item_ids[{idx}]={current_id}"
+                )
+
+        for idx in range(1, len(self.items)):
+            previous_item = self.items[idx - 1]
+            current_item = self.items[idx]
+            if current_item.start_line < previous_item.start_line:
+                raise ValueError(
+                    "items 必须按 start_line 非降序排列："
+                    f"items[{idx - 1}].start_line={previous_item.start_line}, "
+                    f"items[{idx}].start_line={current_item.start_line}"
+                )
+        return self
 
 
 class ReviewedItem(BaseModel):

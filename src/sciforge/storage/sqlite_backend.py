@@ -27,19 +27,27 @@ import structlog
 
 from sciforge.core.exceptions import SciForgeError
 from sciforge.core.models import (
+    ConceptLinkBatch,
+    ConceptRelation,
+    DifficultyScore,
     Discipline,
+    EvaluationBatch,
+    EvaluationSource,
     Figure,
+    ItemEvaluation,
     KnowledgePoint,
     Question,
+    ReviewQueueItem,
+    ReviewQueueStatus,
 )
+from sciforge.storage.query import compile_search_filters
 
 logger = structlog.get_logger()
 
 
 # ── SQL 常量（executemany 批量写入复用）──────────────────
-# schema v9：questions 新增生成元数据列（is_generated / generator_model /
-# generated_at / generation_session_id / tenant_id）；提供 v8→v9 增量迁移
-_SCHEMA_VERSION = 10
+# schema v14：v11 字符级溯源 + M5/M6 + lossless ingestion governance。
+_SCHEMA_VERSION = 14
 
 # schema 增量迁移：{from_version: [该版本→下一版的 ALTER 语句]}。
 # 每条 ALTER 容忍 "duplicate column"（幂等，应对中断重跑）。
@@ -59,6 +67,169 @@ _MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_kp_order_only ON knowledge_points(order_index)",
         "CREATE INDEX IF NOT EXISTS idx_q_order_only ON questions(order_index)",
     ],
+    # v10→v11（v11 §F M1：字符级溯源列，默认 0/NULL = 行级，关闭开关时等价现状）
+    10: [
+        "ALTER TABLE knowledge_points ADD COLUMN start_char INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE knowledge_points ADD COLUMN end_char INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE knowledge_points ADD COLUMN page INTEGER",
+        "ALTER TABLE questions ADD COLUMN start_char INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE questions ADD COLUMN end_char INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE questions ADD COLUMN page INTEGER",
+    ],
+    # v11→v12（v11 子系统 IV / M5：稳定 concept identity + 别名 + 条目映射 + 图边）
+    11: [
+        """
+        CREATE TABLE IF NOT EXISTS concepts (
+            id TEXT PRIMARY KEY,
+            discipline TEXT NOT NULL
+                CHECK(discipline IN ('math','physics','chemistry','biology','other')),
+            branch TEXT NOT NULL,
+            canonical_en TEXT NOT NULL,
+            canonical_zh TEXT NOT NULL DEFAULT '',
+            tag_path TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL DEFAULT 'concept',
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK(status IN ('active','pending','deprecated')),
+            depth INTEGER NOT NULL DEFAULT 1 CHECK(depth >= 1),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS concept_aliases (
+            discipline TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+            locale TEXT NOT NULL DEFAULT 'mixed'
+                CHECK(locale IN ('en','zh','mixed')),
+            source TEXT NOT NULL DEFAULT 'pipeline'
+                CHECK(source IN ('taxonomy','pipeline','spec','manual')),
+            confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0.0 AND 1.0),
+            PRIMARY KEY(discipline, branch, alias)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS item_concepts (
+            item_id TEXT NOT NULL,
+            item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+            concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+            role TEXT NOT NULL DEFAULT 'primary'
+                CHECK(role IN ('primary','defines','uses','prerequisite','tests')),
+            weight REAL NOT NULL DEFAULT 1.0 CHECK(weight BETWEEN 0.0 AND 1.0),
+            PRIMARY KEY(item_id, concept_id, role)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS concept_relations (
+            src_concept TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+            dst_concept TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+            relation_type TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0.0 AND 1.0),
+            source TEXT NOT NULL DEFAULT 'structural'
+                CHECK(source IN ('structural','llm','manual')),
+            evidence_count INTEGER NOT NULL DEFAULT 1 CHECK(evidence_count >= 1),
+            note TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(src_concept, dst_concept, relation_type)
+        ) WITHOUT ROWID
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_concept_discipline_branch "
+        "ON concepts(discipline, branch, status)",
+        "CREATE INDEX IF NOT EXISTS idx_concept_canonical "
+        "ON concepts(discipline, branch, canonical_en)",
+        "CREATE INDEX IF NOT EXISTS idx_concept_alias_target ON concept_aliases(concept_id)",
+        "CREATE INDEX IF NOT EXISTS idx_item_concept_concept ON item_concepts(concept_id, role)",
+        "CREATE INDEX IF NOT EXISTS idx_concept_rel_dst "
+        "ON concept_relations(dst_concept, relation_type)",
+    ],
+    # v12→v13（v11 子系统 IV / M6：版本化评价量规 + human review queue）
+    12: [
+        """
+        CREATE TABLE IF NOT EXISTS item_evaluations (
+            item_id TEXT NOT NULL,
+            item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+            rubric_version TEXT NOT NULL,
+            extraction_quality REAL NOT NULL CHECK(extraction_quality BETWEEN 0.0 AND 1.0),
+            solution_completeness REAL NOT NULL
+                CHECK(solution_completeness BETWEEN 0.0 AND 1.0),
+            difficulty_overall REAL NOT NULL CHECK(difficulty_overall BETWEEN 1.0 AND 10.0),
+            difficulty_dims TEXT NOT NULL DEFAULT '{}',
+            cognitive_level TEXT NOT NULL
+                CHECK(cognitive_level IN
+                    ('remember','understand','apply','analyze','evaluate','create')),
+            prerequisite_depth INTEGER NOT NULL DEFAULT 0 CHECK(prerequisite_depth >= 0),
+            proof_complexity REAL NOT NULL DEFAULT 0.0
+                CHECK(proof_complexity BETWEEN 0.0 AND 1.0),
+            lecture_suitability REAL NOT NULL DEFAULT 0.0
+                CHECK(lecture_suitability BETWEEN 0.0 AND 1.0),
+            cross_book_generality REAL NOT NULL DEFAULT 0.0
+                CHECK(cross_book_generality BETWEEN 0.0 AND 1.0),
+            source TEXT NOT NULL CHECK(source IN ('pipeline_auto','llm_judge','human')),
+            confidence REAL NOT NULL DEFAULT 0.65 CHECK(confidence BETWEEN 0.0 AND 1.0),
+            evaluated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY(item_id, rubric_version, source)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS review_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id TEXT NOT NULL,
+            item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+            tenant_id TEXT NOT NULL DEFAULT '',
+            rubric_version TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+            status TEXT NOT NULL DEFAULT 'open'
+                CHECK(status IN ('open','in_progress','resolved','dismissed')),
+            details TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(item_id, reason, rubric_version)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_eval_item ON item_evaluations(item_id)",
+        "CREATE INDEX IF NOT EXISTS idx_eval_quality_gate "
+        "ON item_evaluations(rubric_version, source, extraction_quality, "
+        "solution_completeness, difficulty_overall)",
+        "CREATE INDEX IF NOT EXISTS idx_review_queue_work "
+        "ON review_queue(tenant_id, status, priority, created_at)",
+    ],
+    # v13→v14：提取可靠性成为结构化治理列，避免用正文前缀表达发布资格。
+    13: [
+        "ALTER TABLE knowledge_points ADD COLUMN ingestion_status TEXT NOT NULL "
+        "DEFAULT 'accepted' CHECK(ingestion_status IN "
+        "('accepted','uncertain','needs_patch','rejected'))",
+        "ALTER TABLE questions ADD COLUMN ingestion_status TEXT NOT NULL "
+        "DEFAULT 'accepted' CHECK(ingestion_status IN "
+        "('accepted','uncertain','needs_patch','rejected'))",
+        "CREATE INDEX IF NOT EXISTS idx_kp_ingestion_status "
+        "ON knowledge_points(ingestion_status, order_index)",
+        "CREATE INDEX IF NOT EXISTS idx_q_ingestion_status "
+        "ON questions(ingestion_status, order_index)",
+        # 题目去重必须在 tenant 作用域内；公共题库 tenant_id='' 仍保持全局去重。
+        "DROP INDEX IF EXISTS idx_q_hash_uniq",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_q_hash_tenant_uniq "
+        "ON questions(tenant_id, content_hash) WHERE content_hash != ''",
+        # accepted 校正会更新正文/taxonomy；补齐外部内容 FTS 的 UPDATE 同步。
+        """
+        CREATE TRIGGER IF NOT EXISTS kp_fts_update
+        AFTER UPDATE OF content, taxonomy_path ON knowledge_points BEGIN
+            INSERT INTO kp_fts(kp_fts, rowid, content, taxonomy_path)
+            VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+            INSERT INTO kp_fts(rowid, content, taxonomy_path)
+            VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS q_fts_update
+        AFTER UPDATE OF content, taxonomy_path ON questions BEGIN
+            INSERT INTO question_fts(question_fts, rowid, content, taxonomy_path)
+            VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+            INSERT INTO question_fts(rowid, content, taxonomy_path)
+            VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
+        END
+        """,
+    ],
 }
 
 # 用 INSERT OR IGNORE：content_hash 唯一索引命中（重复内容）或 id 冲突时静默跳过，
@@ -68,8 +239,9 @@ INSERT OR IGNORE INTO knowledge_points
     (id, discipline, kp_type, number, number_canonical,
      seq_chapter, seq_section, seq_index,
      content, proof_content, difficulty, subject, taxonomy_path, tags, source_file,
-     start_line, end_line, order_index, content_hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     start_line, end_line, start_char, end_char, page, order_index, content_hash,
+     ingestion_status)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _Q_INSERT_SQL = """
@@ -78,9 +250,35 @@ INSERT OR IGNORE INTO questions
      seq_chapter, seq_section, seq_index,
      content, solution_content, options, correct_option, blanks,
      difficulty, subject, taxonomy_path, tags, source_file,
-     start_line, end_line, order_index, content_hash,
+     start_line, end_line, start_char, end_char, page, order_index, content_hash,
+     ingestion_status,
      is_generated, generator_model, generated_at, generation_session_id, tenant_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+# 同一去重域内，只有经过验证的 accepted 新版本可以覆盖非 accepted 占位。
+# 稳定 id/content_hash/tenant_id 保持不变，从而不破坏既有关系边、评价与引用。
+_KP_PROMOTE_SQL = """
+UPDATE knowledge_points SET
+    discipline = ?, kp_type = ?, number = ?, number_canonical = ?,
+    seq_chapter = ?, seq_section = ?, seq_index = ?, content = ?, proof_content = ?,
+    difficulty = ?, subject = ?, taxonomy_path = ?, tags = ?, source_file = ?,
+    start_line = ?, end_line = ?, start_char = ?, end_char = ?, page = ?, order_index = ?,
+    ingestion_status = 'accepted'
+WHERE content_hash = ? AND ingestion_status != 'accepted'
+"""
+
+_Q_PROMOTE_SQL = """
+UPDATE questions SET
+    discipline = ?, question_type = ?, question_form = ?, number = ?,
+    number_canonical = ?, seq_chapter = ?, seq_section = ?, seq_index = ?,
+    content = ?, solution_content = ?, options = ?, correct_option = ?, blanks = ?,
+    difficulty = ?, subject = ?, taxonomy_path = ?, tags = ?, source_file = ?,
+    start_line = ?, end_line = ?, start_char = ?, end_char = ?, page = ?, order_index = ?,
+    ingestion_status = 'accepted', is_generated = ?, generator_model = ?,
+    generated_at = ?, generation_session_id = ?
+WHERE tenant_id = ? AND content_hash = ? AND ingestion_status != 'accepted'
 """
 
 
@@ -97,6 +295,11 @@ def _content_hash(text: str) -> str:
     """
     normalized = " ".join(text.split())
     return hashlib.sha256(normalized.encode()).hexdigest()[:32]
+
+
+def _row_value(row: sqlite3.Row, col: str, default: Any) -> Any:
+    """按列名安全取值：列不存在（旧查询/裁剪 SELECT）时返回默认值。"""
+    return row[col] if col in row.keys() else default  # noqa: SIM118 - sqlite3.Row 无 __contains__
 
 
 def _safe_json_list(row: sqlite3.Row, col: str) -> list[str]:
@@ -131,8 +334,12 @@ def _kp_to_tuple(kp: KnowledgePoint) -> tuple[Any, ...]:
         kp.source_file,
         kp.start_line,
         kp.end_line,
+        kp.start_char,
+        kp.end_char,
+        kp.page,
         kp.order_index,
         _content_hash(kp.content),
+        kp.ingestion_status,
     )
 
 
@@ -160,14 +367,28 @@ def _question_to_tuple(q: Question) -> tuple[Any, ...]:
         q.source_file,
         q.start_line,
         q.end_line,
+        q.start_char,
+        q.end_char,
+        q.page,
         q.order_index,
         _content_hash(q.content),
+        q.ingestion_status,
         int(q.is_generated),
         q.generator_model,
         q.generated_at.isoformat() if q.generated_at else None,
         q.generation_session_id,
         q.tenant_id,
     )
+
+
+def _kp_promotion_tuple(kp: KnowledgePoint) -> tuple[Any, ...]:
+    values = _kp_to_tuple(kp)
+    return (*values[1:21], values[21])
+
+
+def _question_promotion_tuple(q: Question) -> tuple[Any, ...]:
+    values = _question_to_tuple(q)
+    return (*values[1:25], *values[27:31], values[31], values[25])
 
 
 class SQLiteStorageBackend:
@@ -192,14 +413,31 @@ class SQLiteStorageBackend:
 
     def _init_schema(self) -> None:
         cur_version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        has_kp_table = (
-            self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_points'"
-            ).fetchone()
-            is not None
-        )
+        core_tables = {
+            str(row[0])
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('knowledge_points','questions')"
+            ).fetchall()
+        }
+        if core_tables and core_tables != {"knowledge_points", "questions"}:
+            raise SchemaVersionMismatch(
+                "检测到不完整的核心 schema（knowledge_points/questions 必须同时存在）；"
+                "拒绝自动补写，请先备份并用 --restart 重建。"
+            )
+        has_core_tables = bool(core_tables)
+        if has_core_tables and cur_version > _SCHEMA_VERSION:
+            raise SchemaVersionMismatch(
+                f"检测到未来 DB schema v{cur_version}，当前代码仅支持 v{_SCHEMA_VERSION}；"
+                "拒绝降级写入，请使用匹配或更新版本的 SciForge。"
+            )
+        if has_core_tables and cur_version < 8:
+            raise SchemaVersionMismatch(
+                f"检测到非空 DB schema v{cur_version}，当前增量迁移仅支持 v8 起；"
+                "请先备份并使用 --restart 重建。"
+            )
         # 旧库：优先走增量迁移（ALTER）；仅在缺迁移路径时才要求删库重建
-        if has_kp_table and 0 < cur_version < _SCHEMA_VERSION:
+        if has_core_tables and cur_version < _SCHEMA_VERSION:
             self._migrate(cur_version)
 
         schema_path = Path(__file__).parent / "schema.sql"
@@ -265,7 +503,7 @@ class SQLiteStorageBackend:
         kps: list[KnowledgePoint],
         questions: list[Question],
     ) -> int:
-        """一次事务 + executemany 保存多个 KP + Question（INSERT OR IGNORE 幂等去重）。
+        """一次事务批量保存，并允许 accepted 校正晋升既有不确定占位。
 
         返回尝试条数（非真实新增——FTS AFTER INSERT 触发器会污染 total_changes）。
         REC-10：真实 persisted/deduped 由 Stage3 用 ``count_existing_content`` 批量预查得出。
@@ -273,12 +511,43 @@ class SQLiteStorageBackend:
         with self._write_lock, self.transaction():
             if kps:
                 self._conn.executemany(_KP_INSERT_SQL, [_kp_to_tuple(kp) for kp in kps])
+                accepted_kps = [kp for kp in kps if kp.ingestion_status == "accepted"]
+                if accepted_kps:
+                    self._conn.executemany(
+                        _KP_PROMOTE_SQL,
+                        [_kp_promotion_tuple(kp) for kp in accepted_kps],
+                    )
+                    self._conn.executemany(
+                        "UPDATE review_queue SET status = 'resolved', updated_at = datetime('now') "
+                        "WHERE reason = 'non_accepted_ingestion_status' "
+                        "AND item_id IN (SELECT id FROM knowledge_points WHERE content_hash = ? "
+                        "AND ingestion_status = 'accepted')",
+                        [(_content_hash(kp.content),) for kp in accepted_kps],
+                    )
             if questions:
                 self._conn.executemany(_Q_INSERT_SQL, [_question_to_tuple(q) for q in questions])
+                accepted_questions = [q for q in questions if q.ingestion_status == "accepted"]
+                if accepted_questions:
+                    self._conn.executemany(
+                        _Q_PROMOTE_SQL,
+                        [_question_promotion_tuple(q) for q in accepted_questions],
+                    )
+                    self._conn.executemany(
+                        "UPDATE review_queue SET status = 'resolved', updated_at = datetime('now') "
+                        "WHERE reason = 'non_accepted_ingestion_status' "
+                        "AND item_id IN (SELECT id FROM questions WHERE tenant_id = ? "
+                        "AND content_hash = ? AND ingestion_status = 'accepted')",
+                        [(q.tenant_id, _content_hash(q.content)) for q in accepted_questions],
+                    )
         logger.info("storage_batch_saved", kps=len(kps), questions=len(questions))
         return len(kps) + len(questions)
 
-    def count_existing_content(self, contents: list[str], scope: str) -> int:
+    def count_existing_content(
+        self,
+        contents: list[str],
+        scope: str,
+        tenant_id: str = "",
+    ) -> int:
         """REC-10：批量统计 ``contents`` 已存在于库的条数（一次 SELECT，替代逐条 find_duplicates）。
 
         scope: "knowledge" → knowledge_points；其余 → questions。用 content_hash IN 批量查；
@@ -289,12 +558,45 @@ class SQLiteStorageBackend:
         table = "knowledge_points" if scope == "knowledge" else "questions"
         hashes = list({_content_hash(c) for c in contents})
         placeholders = ",".join("?" for _ in hashes)
+        tenant_clause = " AND tenant_id = ?" if table == "questions" else ""
+        params: list[Any] = [*hashes]
+        if tenant_clause:
+            params.append(tenant_id)
         cur = self._conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE content_hash IN ({placeholders})",  # noqa: S608
-            hashes,
+            f"SELECT COUNT(*) FROM {table} "  # noqa: S608
+            f"WHERE content_hash IN ({placeholders}){tenant_clause}",
+            params,
         )
         row = cur.fetchone()
         return int(row[0]) if row else 0
+
+    def resolve_content_ids(
+        self,
+        contents: list[str],
+        scope: str,
+        tenant_id: str = "",
+    ) -> dict[str, str]:
+        """批量解析去重后的稳定 id，供 figures/调用方避免引用被忽略的新 UUID。"""
+        if not contents:
+            return {}
+        table = "knowledge_points" if scope == "knowledge" else "questions"
+        hashes = list({_content_hash(content) for content in contents})
+        placeholders = ",".join("?" for _ in hashes)
+        tenant_clause = " AND tenant_id = ?" if table == "questions" else ""
+        params: list[Any] = [*hashes]
+        if tenant_clause:
+            params.append(tenant_id)
+        rows = self._conn.execute(
+            f"SELECT id, content_hash FROM {table} "  # noqa: S608
+            f"WHERE content_hash IN ({placeholders}){tenant_clause}",
+            params,
+        ).fetchall()
+        by_hash = {str(row["content_hash"]): str(row["id"]) for row in rows}
+        return {
+            content: by_hash[_content_hash(content)]
+            for content in contents
+            if _content_hash(content) in by_hash
+        }
 
     def save_figures(self, figures: list[Figure]) -> int:
         """REC-18：批量写入图表元数据（INSERT OR IGNORE，UNIQUE(item_id,image_path) 幂等）。"""
@@ -334,11 +636,15 @@ class SQLiteStorageBackend:
 
     def save_knowledge_point(self, kp: KnowledgePoint) -> str:
         self.save_batch([kp], [])
-        return kp.id
+        return self.resolve_content_ids([kp.content], "knowledge").get(kp.content, kp.id)
 
     def save_question(self, question: Question) -> str:
         self.save_batch([], [question])
-        return question.id
+        return self.resolve_content_ids(
+            [question.content],
+            "question",
+            question.tenant_id,
+        ).get(question.content, question.id)
 
     # ── 读取 ──────────────────────────────────────────
 
@@ -509,6 +815,18 @@ class SQLiteStorageBackend:
         return {
             "kp_total": scalar("SELECT COUNT(*) FROM knowledge_points"),
             "q_total": q_total,
+            "kp_by_ingestion_status": dist(
+                "SELECT ingestion_status, COUNT(*) FROM knowledge_points "
+                "GROUP BY ingestion_status ORDER BY 2 DESC"
+            ),
+            "q_by_ingestion_status": dist(
+                "SELECT ingestion_status, COUNT(*) FROM questions "
+                "GROUP BY ingestion_status ORDER BY 2 DESC"
+            ),
+            "nonaccepted_total": scalar(
+                "SELECT COUNT(*) FROM knowledge_points WHERE ingestion_status != 'accepted'"
+            )
+            + scalar("SELECT COUNT(*) FROM questions WHERE ingestion_status != 'accepted'"),
             "kp_by_type": dist(
                 "SELECT kp_type, COUNT(*) FROM knowledge_points GROUP BY kp_type ORDER BY 2 DESC"
             ),
@@ -534,6 +852,24 @@ class SQLiteStorageBackend:
             "relations_by_type": dist(
                 "SELECT relation_type, COUNT(*) FROM item_relations "
                 "GROUP BY relation_type ORDER BY 2 DESC"
+            ),
+            "concepts_total": scalar("SELECT COUNT(*) FROM concepts"),
+            "concepts_pending": scalar("SELECT COUNT(*) FROM concepts WHERE status = 'pending'"),
+            "concept_relations_total": scalar("SELECT COUNT(*) FROM concept_relations"),
+            "evaluations_total": scalar("SELECT COUNT(*) FROM item_evaluations"),
+            "quality_gate_pass": scalar(
+                "SELECT COUNT(*) FROM item_evaluations ie "
+                "WHERE ie.source = 'pipeline_auto' "
+                "AND ie.extraction_quality >= 0.7 AND ie.solution_completeness >= 0.6 "
+                "AND ((ie.item_kind = 'knowledge' AND EXISTS ("
+                "  SELECT 1 FROM knowledge_points kp WHERE kp.id = ie.item_id "
+                "  AND kp.ingestion_status = 'accepted')) OR "
+                "(ie.item_kind = 'question' AND EXISTS ("
+                "  SELECT 1 FROM questions q WHERE q.id = ie.item_id "
+                "  AND q.ingestion_status = 'accepted')))"
+            ),
+            "review_queue_open": scalar(
+                "SELECT COUNT(*) FROM review_queue WHERE status IN ('open','in_progress')"
             ),
             "source_files": dist(
                 "SELECT source_file, COUNT(*) FROM ("
@@ -701,6 +1037,538 @@ class SQLiteStorageBackend:
     def relation_count(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM item_relations").fetchone()[0])
 
+    # ── Concept Graph（v12 / M5）──────────────────────
+
+    def concept_link_rows(
+        self,
+        source_files: str | list[str],
+        discipline: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """读取 concept linker 所需的最小条目投影。
+
+        ``source_files`` 支持 logical document 的多个分卷；避免只处理首卷导致图层缺项。
+        """
+        sources = [source_files] if isinstance(source_files, str) else list(source_files)
+        if not sources:
+            return []
+        placeholders = ",".join("?" for _ in sources)
+        out: list[dict[str, Any]] = []
+        for table, kind, type_col in (
+            ("knowledge_points", "knowledge", "kp_type"),
+            ("questions", "question", "question_type"),
+        ):
+            params: list[Any] = list(sources)
+            condition = f"source_file IN ({placeholders}) AND ingestion_status = 'accepted'"
+            if discipline:
+                condition += " AND discipline = ?"
+                params.append(discipline)
+            sql = (  # noqa: S608 — table/type_col 均来自上方硬编码字面量
+                f"SELECT id, discipline, {type_col} AS type, subject, taxonomy_path, "
+                f"tags, order_index FROM {table} WHERE {condition}"
+            )
+            for row in self._conn.execute(sql, params).fetchall():
+                raw_tags = row["tags"] or "[]"
+                try:
+                    parsed_tags = json.loads(raw_tags)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_tags = []
+                out.append(
+                    {
+                        "id": row["id"],
+                        "kind": kind,
+                        "type": row["type"],
+                        "discipline": row["discipline"],
+                        "subject": row["subject"] or "",
+                        "taxonomy_path": row["taxonomy_path"] or "",
+                        "tags": parsed_tags if isinstance(parsed_tags, list) else [],
+                        "order_index": row["order_index"] or 0,
+                    }
+                )
+        out.sort(key=lambda item: (int(item["order_index"]), str(item["id"])))
+        return out
+
+    def load_concept_aliases(self, discipline: str) -> dict[tuple[str, str], str]:
+        """加载某学科的 branch-scoped alias→concept 映射。"""
+        rows = self._conn.execute(
+            "SELECT branch, alias, concept_id FROM concept_aliases WHERE discipline = ?",
+            (discipline,),
+        ).fetchall()
+        return {(str(r["branch"]), str(r["alias"])): str(r["concept_id"]) for r in rows}
+
+    def save_concept_graph(self, batch: ConceptLinkBatch) -> dict[str, int]:
+        """在单事务中幂等写入 concept linker 产物。"""
+        with self._write_lock, self.transaction():
+            if batch.concepts:
+                self._conn.executemany(
+                    """
+                    INSERT INTO concepts
+                        (id, discipline, branch, canonical_en, canonical_zh, tag_path,
+                         kind, status, depth)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        canonical_zh = CASE
+                            WHEN excluded.canonical_zh != '' THEN excluded.canonical_zh
+                            ELSE concepts.canonical_zh END,
+                        tag_path = CASE
+                            WHEN excluded.tag_path != '' THEN excluded.tag_path
+                            ELSE concepts.tag_path END,
+                        kind = CASE
+                            WHEN concepts.kind = 'concept' THEN excluded.kind
+                            ELSE concepts.kind END,
+                        status = CASE
+                            WHEN excluded.status = 'active' THEN 'active'
+                            ELSE concepts.status END,
+                        depth = MIN(concepts.depth, excluded.depth),
+                        updated_at = datetime('now')
+                    """,
+                    [
+                        (
+                            node.id,
+                            node.discipline.value,
+                            node.branch,
+                            node.canonical_en,
+                            node.canonical_zh,
+                            node.tag_path,
+                            node.kind,
+                            node.status.value,
+                            node.depth,
+                        )
+                        for node in batch.concepts
+                    ],
+                )
+            if batch.aliases:
+                # 别名冲突坚持 first-writer-wins；自动流程不重指向已有 canonical identity。
+                self._conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO concept_aliases
+                        (discipline, branch, alias, concept_id, locale, source, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            alias.discipline.value,
+                            alias.branch,
+                            alias.alias,
+                            alias.concept_id,
+                            alias.locale,
+                            alias.source,
+                            alias.confidence,
+                        )
+                        for alias in batch.aliases
+                    ],
+                )
+            if batch.item_links:
+                self._conn.executemany(
+                    """
+                    INSERT INTO item_concepts (item_id, item_kind, concept_id, role, weight)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(item_id, concept_id, role) DO UPDATE SET
+                        item_kind = excluded.item_kind,
+                        weight = excluded.weight
+                    """,
+                    [
+                        (
+                            link.item_id,
+                            link.item_kind,
+                            link.concept_id,
+                            link.role.value,
+                            link.weight,
+                        )
+                        for link in batch.item_links
+                    ],
+                )
+            if batch.relations:
+                self._save_concept_relations_unlocked(batch.relations)
+        return {
+            "concepts": len(batch.concepts),
+            "aliases": len(batch.aliases),
+            "item_links": len(batch.item_links),
+            "relations": len(batch.relations),
+            "pending": len(batch.pending_concept_ids),
+        }
+
+    def _save_concept_relations_unlocked(self, edges: list[ConceptRelation]) -> None:
+        """调用方已持有写锁/事务时保存概念边。"""
+        if not edges:
+            return
+        self._conn.executemany(
+            """
+            INSERT INTO concept_relations
+                (src_concept, dst_concept, relation_type, confidence,
+                 source, evidence_count, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(src_concept, dst_concept, relation_type) DO UPDATE SET
+                confidence = excluded.confidence,
+                source = excluded.source,
+                evidence_count = MAX(concept_relations.evidence_count, excluded.evidence_count),
+                note = excluded.note
+            """,
+            [
+                (
+                    edge.src_concept,
+                    edge.dst_concept,
+                    edge.relation_type.value,
+                    edge.confidence,
+                    edge.source,
+                    edge.evidence_count,
+                    edge.note,
+                )
+                for edge in edges
+            ],
+        )
+
+    def save_concept_relations(self, edges: list[ConceptRelation]) -> int:
+        """幂等保存聚合后的 concept-level 关系边。"""
+        if not edges:
+            return 0
+        with self._write_lock, self.transaction():
+            self._save_concept_relations_unlocked(edges)
+        return len(edges)
+
+    def concept_relation_evidence_rows(self, discipline: str) -> list[dict[str, Any]]:
+        """把 item_relations 投影为 concept 对，供纯函数聚合。"""
+        rows = self._conn.execute(
+            """
+            SELECT src.concept_id AS src_concept,
+                   dst.concept_id AS dst_concept,
+                   rel.relation_type,
+                   rel.confidence
+            FROM item_relations AS rel
+            JOIN item_concepts AS src ON src.item_id = rel.src_id
+            JOIN item_concepts AS dst ON dst.item_id = rel.dst_id
+            JOIN concepts AS src_node ON src_node.id = src.concept_id
+            JOIN concepts AS dst_node ON dst_node.id = dst.concept_id
+            WHERE rel.discipline = ?
+              AND src_node.status = 'active'
+              AND dst_node.status = 'active'
+            """,
+            (discipline,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def items_for_concept(
+        self,
+        concept_id: str,
+        *,
+        role: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """查询一个概念关联的条目，供 QGen/API 复用。"""
+        sql = (
+            "SELECT item_id, item_kind, concept_id, role, weight "
+            "FROM item_concepts WHERE concept_id = ?"
+        )
+        params: list[Any] = [concept_id]
+        if role:
+            sql += " AND role = ?"
+            params.append(role)
+        sql += " ORDER BY weight DESC, item_id LIMIT ?"
+        params.append(max(1, min(limit, 1000)))
+        return [dict(row) for row in self._conn.execute(sql, params).fetchall()]
+
+    def concept_neighbors(
+        self,
+        concept_id: str,
+        *,
+        direction: str = "both",
+        relation_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """查询概念图邻居；direction 为 outgoing/incoming/both。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if direction in ("outgoing", "both"):
+            clause = (
+                "SELECT src_concept, dst_concept, relation_type, confidence, "
+                "source, evidence_count, note FROM concept_relations WHERE src_concept = ?"
+            )
+            local_params: list[Any] = [concept_id]
+            if relation_type:
+                clause += " AND relation_type = ?"
+                local_params.append(relation_type)
+            clauses.append(clause)
+            params.extend(local_params)
+        if direction in ("incoming", "both"):
+            clause = (
+                "SELECT src_concept, dst_concept, relation_type, confidence, "
+                "source, evidence_count, note FROM concept_relations WHERE dst_concept = ?"
+            )
+            local_params = [concept_id]
+            if relation_type:
+                clause += " AND relation_type = ?"
+                local_params.append(relation_type)
+            clauses.append(clause)
+            params.extend(local_params)
+        if not clauses:
+            raise ValueError("direction must be outgoing, incoming, or both")
+        sql = " UNION ".join(clauses) + " ORDER BY confidence DESC LIMIT ?"
+        params.append(max(1, min(limit, 1000)))
+        return [dict(row) for row in self._conn.execute(sql, params).fetchall()]
+
+    def concept_count(self, *, status: str | None = None) -> int:
+        if status:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM concepts WHERE status = ?", (status,)
+            ).fetchone()
+        else:
+            row = self._conn.execute("SELECT COUNT(*) FROM concepts").fetchone()
+        return int(row[0]) if row else 0
+
+    # ── Knowledge Evaluation（v13 / M6）───────────────
+
+    def evaluation_rows(
+        self,
+        source_files: str | list[str],
+        discipline: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """读取确定性 rubric 所需投影；大字段仅取 content + proof/solution。"""
+        sources = [source_files] if isinstance(source_files, str) else list(source_files)
+        if not sources:
+            return []
+        placeholders = ",".join("?" for _ in sources)
+        out: list[dict[str, Any]] = []
+
+        for table, kind, type_col, reasoning_col in (
+            ("knowledge_points", "knowledge", "kp_type", "proof_content"),
+            ("questions", "question", "question_type", "solution_content"),
+        ):
+            params: list[Any] = list(sources)
+            condition = f"base.source_file IN ({placeholders})"
+            if discipline:
+                condition += " AND base.discipline = ?"
+                params.append(discipline)
+            question_fields = (
+                "base.options, base.correct_option, base.tenant_id"
+                if table == "questions"
+                else "'[]' AS options, NULL AS correct_option, '' AS tenant_id"
+            )
+            sql = (  # noqa: S608 — table/column names 来自硬编码元组
+                f"SELECT base.id, base.{type_col} AS type, base.content, "
+                f"base.{reasoning_col} AS reasoning, base.difficulty, base.taxonomy_path, "
+                f"base.tags, base.start_line, base.end_line, base.start_char, base.end_char, "
+                f"base.ingestion_status, "
+                f"{question_fields}, "
+                "(SELECT COUNT(*) FROM figures f WHERE f.item_id = base.id) AS figure_count, "
+                "(SELECT COUNT(*) FROM item_concepts ic WHERE ic.item_id = base.id) "
+                "  AS concept_count, "
+                "COALESCE((SELECT MAX(c.depth) FROM item_concepts ic "
+                "  JOIN concepts c ON c.id = ic.concept_id WHERE ic.item_id = base.id), 0) "
+                "  AS concept_depth, "
+                "CASE WHEN EXISTS(SELECT 1 FROM item_concepts ic JOIN concepts c "
+                "  ON c.id = ic.concept_id WHERE ic.item_id = base.id AND c.status = 'pending') "
+                "THEN 'pending' WHEN EXISTS(SELECT 1 FROM item_concepts ic JOIN concepts c "
+                "  ON c.id = ic.concept_id WHERE ic.item_id = base.id AND c.status = 'active') "
+                "THEN 'active' ELSE '' END AS concept_status, "
+                "COALESCE((SELECT json_group_array(ic.concept_id) FROM item_concepts ic "
+                "  WHERE ic.item_id = base.id), '[]') AS concept_ids "
+                f"FROM {table} base WHERE {condition}"
+            )
+            for row in self._conn.execute(sql, params).fetchall():
+                item = dict(row)
+                for key in ("tags", "options", "concept_ids"):
+                    raw = item.get(key)
+                    try:
+                        parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = []
+                    item[key] = parsed if isinstance(parsed, list) else []
+                item["kind"] = kind
+                out.append(item)
+        out.sort(key=lambda item: str(item["id"]))
+        return out
+
+    def save_evaluation_batch(self, batch: EvaluationBatch) -> dict[str, int]:
+        """幂等保存评价与 review queue；同 rubric/source 可安全重算覆盖。"""
+        with self._write_lock, self.transaction():
+            if batch.evaluations:
+                self._conn.executemany(
+                    """
+                    INSERT INTO item_evaluations
+                        (item_id, item_kind, rubric_version, extraction_quality,
+                         solution_completeness, difficulty_overall, difficulty_dims,
+                         cognitive_level, prerequisite_depth, proof_complexity,
+                         lecture_suitability, cross_book_generality, source, confidence,
+                         evaluated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(item_id, rubric_version, source) DO UPDATE SET
+                        item_kind = excluded.item_kind,
+                        extraction_quality = excluded.extraction_quality,
+                        solution_completeness = excluded.solution_completeness,
+                        difficulty_overall = excluded.difficulty_overall,
+                        difficulty_dims = excluded.difficulty_dims,
+                        cognitive_level = excluded.cognitive_level,
+                        prerequisite_depth = excluded.prerequisite_depth,
+                        proof_complexity = excluded.proof_complexity,
+                        lecture_suitability = excluded.lecture_suitability,
+                        cross_book_generality = excluded.cross_book_generality,
+                        confidence = excluded.confidence,
+                        evaluated_at = excluded.evaluated_at
+                    """,
+                    [
+                        (
+                            evaluation.item_id,
+                            evaluation.item_kind,
+                            evaluation.rubric_version,
+                            evaluation.extraction_quality,
+                            evaluation.solution_completeness,
+                            evaluation.difficulty_overall,
+                            evaluation.difficulty_dims.model_dump_json(),
+                            evaluation.cognitive_level.value,
+                            evaluation.prerequisite_depth,
+                            evaluation.proof_complexity,
+                            evaluation.lecture_suitability,
+                            evaluation.cross_book_generality,
+                            evaluation.source.value,
+                            evaluation.confidence,
+                            evaluation.evaluated_at.isoformat(),
+                        )
+                        for evaluation in batch.evaluations
+                    ],
+                )
+            if batch.review_items:
+                self._conn.executemany(
+                    """
+                    INSERT INTO review_queue
+                        (item_id, item_kind, tenant_id, rubric_version, reason,
+                         priority, status, details, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(item_id, reason, rubric_version) DO UPDATE SET
+                        item_kind = excluded.item_kind,
+                        tenant_id = excluded.tenant_id,
+                        priority = excluded.priority,
+                        details = excluded.details,
+                        updated_at = excluded.updated_at,
+                        status = CASE
+                            WHEN review_queue.status IN ('resolved','dismissed')
+                            THEN review_queue.status ELSE excluded.status END
+                    """,
+                    [
+                        (
+                            item.item_id,
+                            item.item_kind,
+                            item.tenant_id,
+                            item.rubric_version,
+                            item.reason,
+                            item.priority,
+                            item.status.value,
+                            json.dumps(item.details, ensure_ascii=False, separators=(",", ":")),
+                            item.created_at.isoformat(),
+                            item.updated_at.isoformat(),
+                        )
+                        for item in batch.review_items
+                    ],
+                )
+        return {
+            "evaluations": len(batch.evaluations),
+            "review_items": len(batch.review_items),
+        }
+
+    def load_item_evaluation(
+        self,
+        item_id: str,
+        *,
+        rubric_version: str = "v1",
+        source: str = "pipeline_auto",
+    ) -> ItemEvaluation:
+        row = self._conn.execute(
+            "SELECT * FROM item_evaluations "
+            "WHERE item_id = ? AND rubric_version = ? AND source = ?",
+            (item_id, rubric_version, source),
+        ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"Evaluation for {item_id} not found")
+        return ItemEvaluation(
+            item_id=row["item_id"],
+            item_kind=row["item_kind"],
+            rubric_version=row["rubric_version"],
+            extraction_quality=row["extraction_quality"],
+            solution_completeness=row["solution_completeness"],
+            difficulty_overall=row["difficulty_overall"],
+            difficulty_dims=DifficultyScore.model_validate_json(row["difficulty_dims"]),
+            cognitive_level=row["cognitive_level"],
+            prerequisite_depth=row["prerequisite_depth"],
+            proof_complexity=row["proof_complexity"],
+            lecture_suitability=row["lecture_suitability"],
+            cross_book_generality=row["cross_book_generality"],
+            source=EvaluationSource(row["source"]),
+            confidence=row["confidence"],
+            evaluated_at=datetime.fromisoformat(row["evaluated_at"]),
+        )
+
+    def quality_eligible_item_ids(
+        self,
+        *,
+        item_kind: str = "question",
+        rubric_version: str = "v1",
+        extraction_min: float = 0.7,
+        solution_min: float = 0.6,
+        difficulty_range: tuple[float, float] | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """生成/讲义默认池的质量门禁查询。"""
+        if item_kind == "question":
+            base_table = "questions"
+        elif item_kind == "knowledge":
+            base_table = "knowledge_points"
+        else:
+            raise ValueError("item_kind must be 'knowledge' or 'question'")
+        conditions = [
+            "ie.item_kind = ?",
+            "ie.rubric_version = ?",
+            "ie.source = 'pipeline_auto'",
+            "ie.extraction_quality >= ?",
+            "ie.solution_completeness >= ?",
+            "base.ingestion_status = 'accepted'",
+        ]
+        params: list[Any] = [item_kind, rubric_version, extraction_min, solution_min]
+        if difficulty_range:
+            conditions.append("ie.difficulty_overall BETWEEN ? AND ?")
+            params.extend(difficulty_range)
+        params.append(max(1, min(limit, 5000)))
+        rows = self._conn.execute(
+            f"SELECT ie.item_id FROM item_evaluations ie "  # noqa: S608 - allow-listed table
+            f"JOIN {base_table} base ON base.id = ie.item_id WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY ie.lecture_suitability DESC, ie.confidence DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [str(row["item_id"]) for row in rows]
+
+    def load_review_queue(
+        self,
+        *,
+        tenant_id: str = "",
+        status: str = "open",
+        limit: int = 100,
+    ) -> list[ReviewQueueItem]:
+        rows = self._conn.execute(
+            "SELECT * FROM review_queue WHERE tenant_id = ? AND status = ? "
+            "ORDER BY priority DESC, created_at ASC LIMIT ?",
+            (tenant_id, status, max(1, min(limit, 1000))),
+        ).fetchall()
+        result: list[ReviewQueueItem] = []
+        for row in rows:
+            try:
+                details = json.loads(row["details"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                details = {}
+            result.append(
+                ReviewQueueItem(
+                    id=row["id"],
+                    item_id=row["item_id"],
+                    item_kind=row["item_kind"],
+                    tenant_id=row["tenant_id"],
+                    rubric_version=row["rubric_version"],
+                    reason=row["reason"],
+                    priority=row["priority"],
+                    status=ReviewQueueStatus(row["status"]),
+                    details=details,
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                    updated_at=datetime.fromisoformat(row["updated_at"]),
+                )
+            )
+        return result
+
     def search_fulltext(self, query: str, item_type: str = "all") -> list[str]:
         """FTS5 全文检索"""
         results: list[str] = []
@@ -788,44 +1656,29 @@ class SQLiteStorageBackend:
     _ALLOWED_SEARCH_TABLES = {"knowledge_points", "questions"}
 
     @staticmethod
-    def _build_filter_clause(filters: dict[str, object]) -> tuple[list[str], list[object]]:
+    def _build_filter_clause(
+        filters: dict[str, object],
+        *,
+        expected_item_kind: str | None = None,
+    ) -> tuple[list[str], list[object]]:
         """把 filters 字典编译成 (conditions, params)，供 _search 与多租户子类复用。
 
         仅放行白名单字段，避免 SQL 注入（key 全部来自字面量）。
         """
-        conditions: list[str] = []
-        params: list[object] = []
-
-        for key, value in filters.items():
-            if key == "difficulty_range" and isinstance(value, (list, tuple)):
-                conditions.append("difficulty BETWEEN ? AND ?")
-                params.extend(value[:2])
-            elif key == "exclude_ids" and isinstance(value, (list, set)):
-                ids_list = list(value)
-                if ids_list:
-                    placeholders = ",".join("?" * len(ids_list))
-                    conditions.append(f"id NOT IN ({placeholders})")
-                    params.extend(ids_list)
-            elif key in (
-                "discipline",
-                "kp_type",
-                "question_type",
-                "subject",
-                "source_file",
-            ):
-                conditions.append(f"{key} = ?")
-                params.append(value)
-            elif key == "content_hash":
-                conditions.append("content_hash = ?")
-                params.append(value)
-
-        return conditions, params
+        return compile_search_filters(
+            filters,
+            expected_item_kind=expected_item_kind,  # type: ignore[arg-type]
+        )
 
     def _search(self, table: str, filters: dict[str, object]) -> list[str]:
         """动态构建 WHERE 子句（table 必须是白名单内的表名）"""
         assert table in self._ALLOWED_SEARCH_TABLES
 
-        conditions, params = self._build_filter_clause(filters)
+        expected_kind = "knowledge" if table == "knowledge_points" else "question"
+        conditions, params = self._build_filter_clause(
+            filters,
+            expected_item_kind=expected_kind,
+        )
         where = " AND ".join(conditions) if conditions else "1=1"
         rows = self._conn.execute(
             f"SELECT id FROM {table} WHERE {where} ORDER BY order_index LIMIT 500",  # noqa: S608
@@ -857,7 +1710,11 @@ class SQLiteStorageBackend:
             source_file=row["source_file"] or "",
             start_line=row["start_line"] or 0,
             end_line=row["end_line"] or 0,
+            start_char=_row_value(row, "start_char", 0) or 0,
+            end_char=_row_value(row, "end_char", 0) or 0,
+            page=_row_value(row, "page", None),
             order_index=row["order_index"] or 0,
+            ingestion_status=_row_value(row, "ingestion_status", "accepted") or "accepted",
         )
 
     @staticmethod
@@ -888,7 +1745,11 @@ class SQLiteStorageBackend:
             source_file=row["source_file"] or "",
             start_line=row["start_line"] or 0,
             end_line=row["end_line"] or 0,
+            start_char=_row_value(row, "start_char", 0) or 0,
+            end_char=_row_value(row, "end_char", 0) or 0,
+            page=_row_value(row, "page", None),
             order_index=row["order_index"] or 0,
+            ingestion_status=_row_value(row, "ingestion_status", "accepted") or "accepted",
             is_generated=bool(row["is_generated"]),
             generator_model=row["generator_model"] or "",
             generated_at=(

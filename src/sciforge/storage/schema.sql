@@ -1,4 +1,16 @@
--- SciForge SQLite Schema v10
+-- SciForge SQLite Schema v14
+-- v14 变更（Lossless Ingestion Governance）：
+--   * knowledge_points/questions 新增 ingestion_status
+--   * 非 accepted 条目保留原文但在默认质量门禁前置排除
+--   * questions 改为 (tenant_id, content_hash) 作用域去重；校正更新同步 FTS
+-- v13 变更（Knowledge Evaluation / M6）：
+--   * item_evaluations：版本化 10 维难度 + 质量/教学价值量规
+--   * review_queue：低质量、答案不完整、pending concept 的人工治理队列
+-- v12 变更（Concept Graph / M5）：
+--   * concepts：受控 taxonomy 驱动的稳定概念身份
+--   * concept_aliases：分支作用域别名持久化，避免跨分支同名误归并
+--   * item_concepts：条目到概念的多对多角色关联
+--   * concept_relations：跨书聚合后的概念粒度关系图
 -- v10 变更（本版本）：
 --   * 结构化题型（REC-19）：questions 新增 options(JSON) / correct_option / blanks
 --   * 检索优化（REC-16）：knowledge_points / questions 新增 order_index 单列索引
@@ -20,7 +32,7 @@
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 10;
+PRAGMA user_version = 14;
 
 -- ── 知识点 ──
 
@@ -43,8 +55,14 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     source_file TEXT NOT NULL DEFAULT '',
     start_line INTEGER NOT NULL DEFAULT 0,
     end_line INTEGER NOT NULL DEFAULT 0,
+    -- 字符级溯源（v11 §F M1）：行内偏移，0 = 行级；page 为源 PDF 页码
+    start_char INTEGER NOT NULL DEFAULT 0,
+    end_char INTEGER NOT NULL DEFAULT 0,
+    page INTEGER,
     order_index INTEGER NOT NULL DEFAULT 0,
-    content_hash TEXT DEFAULT ''
+    content_hash TEXT DEFAULT '',
+    ingestion_status TEXT NOT NULL DEFAULT 'accepted'
+        CHECK(ingestion_status IN ('accepted','uncertain','needs_patch','rejected'))
 );
 
 -- ── 题目（solution 直接嵌入）──
@@ -73,8 +91,14 @@ CREATE TABLE IF NOT EXISTS questions (
     source_file TEXT NOT NULL DEFAULT '',
     start_line INTEGER NOT NULL DEFAULT 0,
     end_line INTEGER NOT NULL DEFAULT 0,
+    -- 字符级溯源（v11 §F M1）
+    start_char INTEGER NOT NULL DEFAULT 0,
+    end_char INTEGER NOT NULL DEFAULT 0,
+    page INTEGER,
     order_index INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT DEFAULT '',
+    ingestion_status TEXT NOT NULL DEFAULT 'accepted'
+        CHECK(ingestion_status IN ('accepted','uncertain','needs_patch','rejected')),
     -- 生成元数据（v9）
     is_generated INTEGER NOT NULL DEFAULT 0,
     generator_model TEXT NOT NULL DEFAULT '',
@@ -124,6 +148,118 @@ CREATE TABLE IF NOT EXISTS figures (
 
 CREATE INDEX IF NOT EXISTS idx_fig_item ON figures(item_id);
 
+-- ── Concept Graph（v12 / M5）──
+-- taxonomy_path 是权威概念身份来源；tags 仅作为别名与展示路径。
+-- 未命中受控 taxonomy 的 tag 仍可入 concepts，但 status=pending，默认不进入生成池。
+
+CREATE TABLE IF NOT EXISTS concepts (
+    id TEXT PRIMARY KEY,
+    discipline TEXT NOT NULL
+        CHECK(discipline IN ('math','physics','chemistry','biology','other')),
+    branch TEXT NOT NULL,
+    canonical_en TEXT NOT NULL,
+    canonical_zh TEXT NOT NULL DEFAULT '',
+    tag_path TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'concept',
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active','pending','deprecated')),
+    depth INTEGER NOT NULL DEFAULT 1 CHECK(depth >= 1),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- alias 必须在 discipline+branch 内唯一；例如不同分支的 "definition" 不会误合并。
+CREATE TABLE IF NOT EXISTS concept_aliases (
+    discipline TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    locale TEXT NOT NULL DEFAULT 'mixed'
+        CHECK(locale IN ('en','zh','mixed')),
+    source TEXT NOT NULL DEFAULT 'pipeline'
+        CHECK(source IN ('taxonomy','pipeline','spec','manual')),
+    confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0.0 AND 1.0),
+    PRIMARY KEY(discipline, branch, alias)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS item_concepts (
+    item_id TEXT NOT NULL,
+    item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+    concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'primary'
+        CHECK(role IN ('primary','defines','uses','prerequisite','tests')),
+    weight REAL NOT NULL DEFAULT 1.0 CHECK(weight BETWEEN 0.0 AND 1.0),
+    PRIMARY KEY(item_id, concept_id, role)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS concept_relations (
+    src_concept TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    dst_concept TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0.0 AND 1.0),
+    source TEXT NOT NULL DEFAULT 'structural'
+        CHECK(source IN ('structural','llm','manual')),
+    evidence_count INTEGER NOT NULL DEFAULT 1 CHECK(evidence_count >= 1),
+    note TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(src_concept, dst_concept, relation_type)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_concept_discipline_branch
+    ON concepts(discipline, branch, status);
+CREATE INDEX IF NOT EXISTS idx_concept_canonical
+    ON concepts(discipline, branch, canonical_en);
+CREATE INDEX IF NOT EXISTS idx_concept_alias_target ON concept_aliases(concept_id);
+CREATE INDEX IF NOT EXISTS idx_item_concept_concept ON item_concepts(concept_id, role);
+CREATE INDEX IF NOT EXISTS idx_concept_rel_dst ON concept_relations(dst_concept, relation_type);
+
+-- ── Knowledge Evaluation（v13 / M6）──
+
+CREATE TABLE IF NOT EXISTS item_evaluations (
+    item_id TEXT NOT NULL,
+    item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+    rubric_version TEXT NOT NULL,
+    extraction_quality REAL NOT NULL CHECK(extraction_quality BETWEEN 0.0 AND 1.0),
+    solution_completeness REAL NOT NULL CHECK(solution_completeness BETWEEN 0.0 AND 1.0),
+    difficulty_overall REAL NOT NULL CHECK(difficulty_overall BETWEEN 1.0 AND 10.0),
+    difficulty_dims TEXT NOT NULL DEFAULT '{}',
+    cognitive_level TEXT NOT NULL
+        CHECK(cognitive_level IN ('remember','understand','apply','analyze','evaluate','create')),
+    prerequisite_depth INTEGER NOT NULL DEFAULT 0 CHECK(prerequisite_depth >= 0),
+    proof_complexity REAL NOT NULL DEFAULT 0.0 CHECK(proof_complexity BETWEEN 0.0 AND 1.0),
+    lecture_suitability REAL NOT NULL DEFAULT 0.0
+        CHECK(lecture_suitability BETWEEN 0.0 AND 1.0),
+    cross_book_generality REAL NOT NULL DEFAULT 0.0
+        CHECK(cross_book_generality BETWEEN 0.0 AND 1.0),
+    source TEXT NOT NULL
+        CHECK(source IN ('pipeline_auto','llm_judge','human')),
+    confidence REAL NOT NULL DEFAULT 0.65 CHECK(confidence BETWEEN 0.0 AND 1.0),
+    evaluated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(item_id, rubric_version, source)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS review_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id TEXT NOT NULL,
+    item_kind TEXT NOT NULL CHECK(item_kind IN ('knowledge','question')),
+    tenant_id TEXT NOT NULL DEFAULT '',
+    rubric_version TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK(status IN ('open','in_progress','resolved','dismissed')),
+    details TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(item_id, reason, rubric_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_eval_item ON item_evaluations(item_id);
+CREATE INDEX IF NOT EXISTS idx_eval_quality_gate
+    ON item_evaluations(rubric_version, source, extraction_quality,
+                        solution_completeness, difficulty_overall);
+CREATE INDEX IF NOT EXISTS idx_review_queue_work
+    ON review_queue(tenant_id, status, priority, created_at);
+
 -- ── FTS5 全文检索 ──
 
 CREATE VIRTUAL TABLE IF NOT EXISTS kp_fts USING fts5(
@@ -161,7 +297,12 @@ CREATE INDEX IF NOT EXISTS idx_q_source ON questions(source_file);
 CREATE INDEX IF NOT EXISTS idx_q_order ON questions(source_file, order_index);
 -- REC-16：order_index 单列索引
 CREATE INDEX IF NOT EXISTS idx_q_order_only ON questions(order_index);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_q_hash_uniq ON questions(content_hash)
+CREATE INDEX IF NOT EXISTS idx_kp_ingestion_status
+    ON knowledge_points(ingestion_status, order_index);
+CREATE INDEX IF NOT EXISTS idx_q_ingestion_status
+    ON questions(ingestion_status, order_index);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_q_hash_tenant_uniq
+    ON questions(tenant_id, content_hash)
     WHERE content_hash != '';
 -- 生成题 / 租户筛选（v9）
 CREATE INDEX IF NOT EXISTS idx_q_tenant ON questions(tenant_id);
@@ -183,6 +324,14 @@ CREATE TRIGGER IF NOT EXISTS kp_fts_delete AFTER DELETE ON knowledge_points BEGI
     VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
 END;
 
+CREATE TRIGGER IF NOT EXISTS kp_fts_update
+AFTER UPDATE OF content, taxonomy_path ON knowledge_points BEGIN
+    INSERT INTO kp_fts(kp_fts, rowid, content, taxonomy_path)
+    VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+    INSERT INTO kp_fts(rowid, content, taxonomy_path)
+    VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
+END;
+
 CREATE TRIGGER IF NOT EXISTS q_fts_insert AFTER INSERT ON questions BEGIN
     INSERT INTO question_fts(rowid, content, taxonomy_path)
     VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
@@ -191,4 +340,12 @@ END;
 CREATE TRIGGER IF NOT EXISTS q_fts_delete AFTER DELETE ON questions BEGIN
     INSERT INTO question_fts(question_fts, rowid, content, taxonomy_path)
     VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+END;
+
+CREATE TRIGGER IF NOT EXISTS q_fts_update
+AFTER UPDATE OF content, taxonomy_path ON questions BEGIN
+    INSERT INTO question_fts(question_fts, rowid, content, taxonomy_path)
+    VALUES ('delete', OLD.rowid, OLD.content, OLD.taxonomy_path);
+    INSERT INTO question_fts(rowid, content, taxonomy_path)
+    VALUES (NEW.rowid, NEW.content, NEW.taxonomy_path);
 END;

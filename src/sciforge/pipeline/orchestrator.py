@@ -43,6 +43,11 @@ from sciforge.core.models import (
 )
 from sciforge.core.sentinel import SENTINEL
 from sciforge.pipeline.answer_linker import link_answers
+from sciforge.pipeline.concept_linker import (
+    aggregate_item_relations_to_concepts,
+    link_items_to_concepts,
+)
+from sciforge.pipeline.evaluation import evaluate_item_rows
 from sciforge.pipeline.numbering_audit import audit_numbering, write_numbering_report
 from sciforge.pipeline.recognizers import (
     detect_section_boundaries,
@@ -76,6 +81,33 @@ if TYPE_CHECKING:
     from sciforge.storage.protocol import BatchStorageBackend
 
 logger = structlog.get_logger()
+
+_SUPPORTED_INPUT_FORMATS = frozenset(
+    {
+        "tex",
+        "md",
+        "markdown",
+        "pdf",
+        "docx",
+        "pptx",
+        "csv",
+        "tsv",
+        "xlsx",
+        "html",
+        "htm",
+        "epub",
+        "json",
+        "jsonl",
+        "ndjson",
+        "txt",
+        "rst",
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+    }
+)
 
 
 # ── 数据结构 ──────────────────────────────────────────
@@ -118,9 +150,15 @@ class NoopStorageBackend:
         del content, item_type
         return []
 
-    def count_existing_content(self, contents: list[str], scope: str) -> int:
-        del contents, scope
+    def count_existing_content(self, contents: list[str], scope: str, tenant_id: str = "") -> int:
+        del contents, scope, tenant_id
         return 0
+
+    def resolve_content_ids(
+        self, contents: list[str], scope: str, tenant_id: str = ""
+    ) -> dict[str, str]:
+        del contents, scope, tenant_id
+        return {}
 
     def save_figures(self, figures: list[Figure]) -> int:
         return len(figures)
@@ -236,6 +274,15 @@ class PipelineOrchestrator:
         files = [file_path] if isinstance(file_path, Path) else list(file_path)
         if not files:
             raise ValueError("empty file list")
+        configured_formats = getattr(self.config, "enabled_input_formats", _SUPPORTED_INPUT_FORMATS)
+        enabled = {value.lower().lstrip(".") for value in configured_formats}
+        for source in files:
+            suffix = source.suffix.lower().lstrip(".")
+            if suffix not in enabled:
+                raise ValueError(
+                    f"输入格式 .{suffix or '<none>'} 未启用；请检查 pipeline.enabled_input_formats"
+                )
+            self._detect_format(source)
 
         primary_path = files[0]
         result = PipelineResult(file_path=str(primary_path))
@@ -531,6 +578,83 @@ class PipelineOrchestrator:
 
             # 10.8 文档级 reconciliation 复核（#7）：重复条目 + 类型误判，写报告不改库
             if isinstance(storage_for_pipeline, SQLiteStorageBackend) and getattr(
+                self.config, "concept_graph_enabled", False
+            ):
+                try:
+                    source_files = [str(path) for path in files]
+                    concept_rows, aliases = await asyncio.gather(
+                        asyncio.to_thread(
+                            storage_for_pipeline.concept_link_rows,
+                            source_files,
+                            self.discipline.value,
+                        ),
+                        asyncio.to_thread(
+                            storage_for_pipeline.load_concept_aliases,
+                            self.discipline.value,
+                        ),
+                    )
+                    concept_batch = link_items_to_concepts(
+                        concept_rows,
+                        discipline=self.discipline,
+                        existing_aliases=aliases,
+                    )
+                    graph_stats = await asyncio.to_thread(
+                        storage_for_pipeline.save_concept_graph, concept_batch
+                    )
+
+                    evidence_rows = await asyncio.to_thread(
+                        storage_for_pipeline.concept_relation_evidence_rows,
+                        self.discipline.value,
+                    )
+                    aggregated_edges = aggregate_item_relations_to_concepts(evidence_rows)
+                    if aggregated_edges:
+                        await asyncio.to_thread(
+                            storage_for_pipeline.save_concept_relations, aggregated_edges
+                        )
+                    logger.info(
+                        "pipeline_concept_graph_linked",
+                        file=primary_path.name,
+                        evidence_edges=len(aggregated_edges),
+                        **graph_stats,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Concept graph 是可重建 post-pass；失败不得把已成功提取的文档标失败。
+                    logger.warning("concept_graph_linking_failed", error=str(exc))
+
+            if isinstance(storage_for_pipeline, SQLiteStorageBackend) and getattr(
+                self.config, "item_evaluation_enabled", False
+            ):
+                try:
+                    source_files = [str(path) for path in files]
+                    evaluation_rows = await asyncio.to_thread(
+                        storage_for_pipeline.evaluation_rows,
+                        source_files,
+                        self.discipline.value,
+                    )
+                    evaluation_batch = evaluate_item_rows(
+                        evaluation_rows,
+                        rubric_version=str(getattr(self.config, "rubric_version", "v1")),
+                        extraction_threshold=float(
+                            getattr(self.config, "evaluation_extraction_threshold", 0.7)
+                        ),
+                        solution_threshold=float(
+                            getattr(self.config, "evaluation_solution_threshold", 0.6)
+                        ),
+                    )
+                    evaluation_stats = await asyncio.to_thread(
+                        storage_for_pipeline.save_evaluation_batch, evaluation_batch
+                    )
+                    logger.info(
+                        "pipeline_items_evaluated",
+                        file=primary_path.name,
+                        rubric_version=getattr(self.config, "rubric_version", "v1"),
+                        **evaluation_stats,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("item_evaluation_failed", error=str(exc))
+
+            # 10.10 文档级 reconciliation 复核（#7）：重复条目 + 类型误判，写报告不改库
+            if isinstance(storage_for_pipeline, SQLiteStorageBackend) and getattr(
                 self.config, "reconciliation_enabled", True
             ):
                 try:
@@ -821,7 +945,7 @@ class PipelineOrchestrator:
                 return False
 
             fmt = self._detect_format(f)
-            if fmt in (DocumentFormat.MARKDOWN, DocumentFormat.TEX):
+            if fmt in (DocumentFormat.MARKDOWN, DocumentFormat.TEX, DocumentFormat.IMAGE):
                 if len(batches) != 1:
                     return False
                 continue
@@ -872,7 +996,13 @@ class PipelineOrchestrator:
         # REC-30：与 AppConfig.max_concurrent_files 默认对齐（消除 4 vs 8 漂移）
         max_concurrent_files: int = 8,
     ) -> list[PipelineResult]:
-        files = sorted(self._collect_files(dir_path), key=self._natural_sort_key)
+        files = sorted(
+            self._collect_files(
+                dir_path,
+                getattr(self.config, "enabled_input_formats", tuple(_SUPPORTED_INPUT_FORMATS)),
+            ),
+            key=self._natural_sort_key,
+        )
         grouped = self._group_part_files(files)
 
         dir_progress = self._load_directory_progress(dir_path)
@@ -1014,20 +1144,46 @@ class PipelineOrchestrator:
     @staticmethod
     def _detect_format(file_path: Path) -> DocumentFormat:
         suffix = file_path.suffix.lower()
-        return {
+        mapping = {
             ".tex": DocumentFormat.TEX,
             ".md": DocumentFormat.MARKDOWN,
             ".markdown": DocumentFormat.MARKDOWN,
             ".pdf": DocumentFormat.PDF,
             ".docx": DocumentFormat.DOCX,
             ".csv": DocumentFormat.CSV,
+            ".tsv": DocumentFormat.TSV,
+            ".xlsx": DocumentFormat.XLSX,
+            ".html": DocumentFormat.HTML,
+            ".htm": DocumentFormat.HTML,
             ".pptx": DocumentFormat.PPTX,
             ".epub": DocumentFormat.EPUB,
-        }.get(suffix, DocumentFormat.MARKDOWN)
+            ".json": DocumentFormat.JSON,
+            ".jsonl": DocumentFormat.JSONL,
+            ".ndjson": DocumentFormat.JSONL,
+            ".txt": DocumentFormat.TEXT,
+            ".rst": DocumentFormat.TEXT,
+            ".png": DocumentFormat.IMAGE,
+            ".jpg": DocumentFormat.IMAGE,
+            ".jpeg": DocumentFormat.IMAGE,
+            ".webp": DocumentFormat.IMAGE,
+            ".gif": DocumentFormat.IMAGE,
+        }
+        try:
+            return mapping[suffix]
+        except KeyError as exc:
+            raise ValueError(f"不支持的输入格式: {suffix or '<none>'}") from exc
 
     @staticmethod
-    def _collect_files(dir_path: Path) -> list[Path]:
-        extensions = {".tex", ".md", ".markdown", ".pdf", ".docx", ".pptx"}
+    def _collect_files(
+        dir_path: Path,
+        enabled_formats: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> list[Path]:
+        enabled = (
+            _SUPPORTED_INPUT_FORMATS
+            if enabled_formats is None
+            else {value.lower().lstrip(".") for value in enabled_formats} & _SUPPORTED_INPUT_FORMATS
+        )
+        extensions = {f".{value}" for value in enabled}
         return [
             p
             for p in dir_path.rglob("*")
@@ -1227,7 +1383,13 @@ class PipelineOrchestrator:
     def purge_directory_checkpoints(self, dir_path: Path) -> None:
         import hashlib
 
-        files = sorted(self._collect_files(dir_path), key=self._natural_sort_key)
+        files = sorted(
+            self._collect_files(
+                dir_path,
+                getattr(self.config, "enabled_input_formats", tuple(_SUPPORTED_INPUT_FORMATS)),
+            ),
+            key=self._natural_sort_key,
+        )
         grouped = self._group_part_files(files)
         for item in grouped:
             try:

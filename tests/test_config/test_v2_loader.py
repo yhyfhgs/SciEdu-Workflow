@@ -134,6 +134,23 @@ thinking = { type = "enabled", budget_tokens = 16384 }
             "budget_tokens": 16384,
         }
 
+    def test_unknown_task_parameter_fails_instead_of_silent_fallback(self, tmp_path):
+        toml_path = _write_toml(
+            tmp_path,
+            """
+[providers.local]
+type = "openai_compatible"
+api_key = "test"
+
+[tasks.tag]
+provider_ref = "local"
+max_token = 999999
+""",
+        )
+
+        with pytest.raises(ValueError, match="max_token"):
+            AppConfig(llm_config_file=toml_path)
+
 
 # ── 环境变量插值 ────────────────────────────────────────
 
@@ -224,8 +241,8 @@ llm_log_dir = "custom/llm_logs"
         assert app.llm_log_interval == 5
         assert app.llm_log_dir == Path("custom/llm_logs")
 
-    def test_unknown_field_ignored_with_warning(self, tmp_path, caplog):
-        """未知字段被忽略并打 warning（不 crash）"""
+    def test_unknown_pipeline_field_fails_fast(self, tmp_path):
+        """未知字段必须阻止启动，避免 typo 静默继承默认值。"""
         toml_path = _write_toml(
             tmp_path,
             """
@@ -234,8 +251,8 @@ pages_per_batch = 5
 nonexistent_field = "foo"
 """,
         )
-        app = AppConfig(llm_config_file=toml_path)
-        assert app.pages_per_batch == 5
+        with pytest.raises(ValueError, match="nonexistent_field"):
+            AppConfig(llm_config_file=toml_path)
 
 
 # ── from_app_config 与 TOML 的集成 ─────────────────────
