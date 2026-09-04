@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1340 1040" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="sequence-title sequence-desc" font-family="-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif">
+  <title id="sequence-title">SciForge 前端、API、Harness 与数据库时序</title>
+  <desc id="sequence-desc">展示生成题和试卷导出流程，标注权限能力、租户隔离、结构化题目、幂等计费和恢复副作用边界。</desc>
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#0f766e"/></marker>
+    <marker id="ad" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7c3aed"/></marker>
+    <marker id="af" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#dc2626"/></marker>
+    <style>
+      .tb{font-size:15px;font-weight:600;fill:#0f172a}.t{font-size:11.5px;fill:#1e293b}.ts{font-size:10px;fill:#475569}
+      .lane{font-size:12.5px;font-weight:600;fill:#fff}
+      .msg{font-size:11px;fill:#0f766e}.flag{font-size:10px;fill:#dc2626;font-weight:600}.good{font-size:10px;fill:#16a34a;font-weight:600}
+    </style>
+  </defs>
+  <rect width="1340" height="1040" fill="#fdfdfd"/>
+  <text x="40" y="38" class="tb" font-size="21">前后端时序：「生成一道题」（现状 + 契约缺陷）</text>
+  <text x="40" y="60" class="ts">app.js ↔ /v1/* · SSE 手写客户端(fetch+ReadableStream, 非EventSource) · durable run 后台执行</text>
+
+  <!-- 泳道头 -->
+  <rect x="40" y="80" width="180" height="34" fill="#0f766e"/><text x="60" y="102" class="lane">前端 app.js</text>
+  <rect x="270" y="80" width="200" height="34" fill="#1d4ed8"/><text x="290" y="102" class="lane">FastAPI /v1/*</text>
+  <rect x="520" y="80" width="200" height="34" fill="#7c3aed"/><text x="540" y="102" class="lane">DurableHarness(后台)</text>
+  <rect x="770" y="80" width="180" height="34" fill="#6366f1"/><text x="790" y="102" class="lane">RunStore/事件表</text>
+  <rect x="1000" y="80" width="180" height="34" fill="#0891b2"/><text x="1020" y="102" class="lane">存储(题库/会话)</text>
+
+  <!-- 生命线 -->
+  <line x1="130" y1="114" x2="130" y2="820" stroke="#94a3b8" stroke-dasharray="3"/>
+  <line x1="370" y1="114" x2="370" y2="820" stroke="#94a3b8" stroke-dasharray="3"/>
+  <line x1="620" y1="114" x2="620" y2="820" stroke="#94a3b8" stroke-dasharray="3"/>
+  <line x1="860" y1="114" x2="860" y2="820" stroke="#94a3b8" stroke-dasharray="3"/>
+  <line x1="1090" y1="114" x2="1090" y2="820" stroke="#94a3b8" stroke-dasharray="3"/>
+
+  <!-- 1 submit -->
+  <text x="135" y="131" class="ts">submitMessage: 前端校验 + 乐观 append 用户消息 + "运行中"占位</text>
+  <line x1="130" y1="150" x2="368" y2="150" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="135" y="147" class="msg">POST /conversations/{id}/messages {mode,content,knowledge_ids,budget,template_id...}</text>
+  <text x="135" y="168" class="flag">FE-01 选模板后切模式芯片 → template_id≠mode → 422 · FE-04 ⌘Enter 无守卫可并发第二run</text>
+
+  <!-- 2 create -->
+  <text x="375" y="184" class="ts">enforce_scope + quota + 历史快照 + 校验；XC-01 legacy generate scope 可扩成多项能力</text>
+  <line x1="370" y1="205" x2="858" y2="205" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#ad)"/>
+  <text x="375" y="201" class="msg">create_run(qgen, PENDING) [event run.created]</text>
+  <line x1="370" y1="228" x2="1088" y2="228" stroke="#1d4ed8" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="375" y="224" class="msg">add_user_message_and_link_run（单事务 conversations.db）</text>
+  <text x="375" y="246" class="flag">FB-04 配额 check-then-record 竞态可超卖 · FB-18 两步间崩溃产生孤儿 pending run</text>
+  <line x1="368" y1="266" x2="132" y2="266" stroke="#1d4ed8" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#a)"/>
+  <text x="135" y="262" class="msg">202 {run_id, events_url}</text>
+
+  <!-- 3 SSE open -->
+  <line x1="130" y1="298" x2="368" y2="298" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="135" y="294" class="msg">GET /runs/{id}/events (SSE, Last-Event-ID header)</text>
+  <text x="375" y="316" class="ts">require_owned_run(metadata.tenant + link 双校验) → _stream_events 0.2s 轮询</text>
+  <text x="375" y="334" class="flag">FB-08 每客户端0.2s新建SQLite连接阻塞事件循环 · FB-09 startup恢复无并发上限</text>
+
+  <!-- 4 background run -->
+  <rect x="524" y="352" width="192" height="130" fill="#f5f3ff" stroke="#c4b5fd" rx="4"/>
+  <text x="534" y="372" class="t" font-weight="600">_run_qgen 节点循环</text>
+  <text x="534" y="392" class="ts">TenantView（XC-02 黑名单）</text>
+  <text x="534" y="410" class="ts">retrieve→generate→prefilter</text>
+  <text x="534" y="428" class="ts">→solve→verify→annotate</text>
+  <text x="534" y="446" class="ts">每节点 begin_step/</text>
+  <text x="534" y="464" class="ts">usage/checkpoint（无effect key）</text>
+  <line x1="620" y1="490" x2="858" y2="490" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#ad)"/>
+  <text x="625" y="486" class="msg">写 event: step.* / qgen.progress / usage.recorded（QG-06 非幂等）</text>
+
+  <!-- 5 SSE push -->
+  <line x1="858" y1="515" x2="372" y2="515" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#a)"/>
+  <text x="450" y="511" class="msg">事件(after Last-Event-ID)</text>
+  <line x1="368" y1="535" x2="132" y2="535" stroke="#1d4ed8" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#a)"/>
+  <text x="135" y="531" class="msg">SSE frame → handleRunEvent(去重/乱序容忍)</text>
+  <text x="135" y="553" class="good">✓ Last-Event-ID/去重/退避/heartbeat/终态双保险 与后端严格吻合</text>
+  <text x="135" y="571" class="flag">FE-03 刷新/切会话后附着run时"停止运行"永久disabled · FE-09 无KaTeX原文显示</text>
+
+  <!-- 6 persist -->
+  <line x1="620" y1="600" x2="1088" y2="600" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="625" y="596" class="msg">verify passed → persist question(INSERT OR IGNORE) [question.persisted]</text>
+  <text x="625" y="618" class="flag">QG-01 options/key/blanks 未贯穿验证/持久化/UI · QG-02 Lean passed 未绑定题解</text>
+  <line x1="620" y1="642" x2="1088" y2="642" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="625" y="638" class="msg">record_assistant_result(uuid5) [assistant.final] · record_usage(计1+tokens)</text>
+  <text x="625" y="660" class="flag">QG-06 assistant局部幂等但usage无effect key · HR-05多路径usage失真</text>
+
+  <!-- 7 finalize -->
+  <line x1="858" y1="690" x2="372" y2="690" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#a)"/>
+  <text x="450" y="686" class="msg">assistant.final → 关流</text>
+  <line x1="368" y1="712" x2="132" y2="712" stroke="#1d4ed8" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#a)"/>
+  <text x="135" y="708" class="msg">refreshRun(回填生成题ID到源题框) → refreshCurrentMessages</text>
+  <line x1="130" y1="732" x2="368" y2="732" stroke="#0f766e" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="135" y="728" class="msg">GET /conversations/{id}/messages?limit=1000</text>
+  <text x="135" y="750" class="flag">FB-01 会话>1000条后返回最旧1000条，新assistant结果UI永久不可见（High）</text>
+  <text x="135" y="768" class="flag">FB-11 grace 0.25s 内交付未完成时 assistant.final 可能在关流后 · FE-02 422→"[object Object]"</text>
+
+  <!-- 崩溃恢复 -->
+  <rect x="40" y="792" width="1140" height="26" fill="#fef2f2" stroke="#fca5a5"/>
+  <text x="50" y="810" class="flag">恢复：QG-05 无执行manifest · QG-06 reconcile可重复计费 · HR-01 无lease/fencing · FB-05 批量配额不释放</text>
+
+  <!-- 组卷链路 -->
+  <rect x="40" y="838" width="1140" height="180" fill="#fff" stroke="#94a3b8" rx="8"/>
+  <text x="52" y="862" class="tb">链路 B：「组卷导出」— 前端未接，纯 API 能力</text>
+  <text x="52" y="884" class="ts">前端 handleLegacy() 仅弹说明对话框："请通过 API /v1/papers 导出" —— 契约断层（无组卷UI）</text>
+  <line x1="52" y1="900" x2="52" y2="990" stroke="#cbd5e1"/>
+  <text x="70" y="918" class="t">POST /v1/papers/export → require_papers_quota → _assemble_paper_items:</text>
+  <text x="90" y="938" class="ts">TenantScopedView（已审 SQL 先 tenant 过滤；facade 仍为黑名单）→ require_scored_quality_gate</text>
+  <text x="90" y="956" class="ts">→ LIMIT 500 → ids[:count] → render markdown/docx；QG-01 PaperItem/export 不含结构题型字段</text>
+  <text x="70" y="978" class="flag">GN-10 组卷=过滤+取前N · QG-01 选择题可无选项 · QG-07 /v1/solve硬编码数学 · 无PDF</text>
+  <text x="70" y="998" class="ts">已审端点未复现IDOR；XC-02 要求storage capability白名单，不能据此称全面fail-closed</text>
+
+  <!-- 图例 -->
+  <text x="1200" y="862" class="ts" transform="rotate(0)">实线=请求</text>
+  <text x="1200" y="880" class="ts">虚线=响应/事件</text>
+  <text x="1200" y="898" class="flag">红=契约缺陷</text>
+  <text x="1200" y="916" class="good">绿=已验证正确</text>
+</svg>

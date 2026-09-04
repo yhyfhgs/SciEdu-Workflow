@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 820" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="workbench-title workbench-desc" font-family="-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif">
+  <title id="workbench-title">SciForge 可信生成与审阅工作台目标态</title>
+  <desc id="workbench-desc">桌面三栏工作台，左侧会话和模板，中间结构化题目 artifact，右侧带绑定状态的验证证据、来源与运行指标。</desc>
+  <defs>
+    <style>
+      .tb{font-size:14px;font-weight:600;fill:#0f172a}.t{font-size:12px;fill:#1e293b}.ts{font-size:10.5px;fill:#5a6b74}
+      .panel{fill:#fff;stroke:#d7dde2;stroke-width:1}.rail{fill:#f6f8f8;stroke:#d7dde2;stroke-width:1}
+      .new{fill:#eef7f5;stroke:#0d9488;stroke-width:1.5}.newlabel{font-size:9.5px;fill:#0d9488;font-weight:600}
+      .fix{font-size:9.5px;fill:#dc2626;font-weight:600}
+      .btn{fill:#245f7c;rx:5}.btw{font-size:11px;fill:#fff}
+      .chip{fill:#eef2f5;stroke:#c4ccd2;stroke-width:1;rx:12}
+      .ev-pass{fill:#16a34a}.ev-warn{fill:#d97706}.ev-fail{fill:#dc2626}.ev-na{fill:#94a3b8}
+    </style>
+  </defs>
+  <rect width="1280" height="820" fill="#eef1f2"/>
+  <text x="32" y="34" class="tb" font-size="19">目标态工作台线框（桌面三栏 · 浅色学术工具气质 · 暗色主题镜像）</text>
+  <text x="32" y="54" class="ts">🟢 绿框=新增真实功能  🔴 红标=修复点  · 窄屏左右栏收进 drawer（现有 inert+scrim 机制保留）</text>
+
+  <!-- 顶栏 -->
+  <rect x="24" y="66" width="1232" height="44" class="panel"/>
+  <text x="44" y="93" class="tb">SciForge 工作台</text>
+  <rect x="980" y="76" width="120" height="24" class="chip"/><text x="998" y="92" class="ts">◐ 明/暗 主题</text>
+  <rect x="1112" y="76" width="120" height="24" class="chip"/><text x="1128" y="92" class="ts">● API 已连接</text>
+
+  <!-- 左栏 -->
+  <rect x="24" y="120" width="270" height="680" class="rail"/>
+  <rect x="40" y="134" width="238" height="30" class="btn"/><text x="130" y="154" class="btw">+ 新会话</text>
+  <text x="44" y="186" class="tb">会话</text>
+  <rect x="40" y="196" width="238" height="30" class="panel"/><text x="52" y="216" class="t">连续函数专题</text><text x="250" y="216" class="ts">⋮</text>
+  <rect x="40" y="230" width="238" height="30" class="panel"/><text x="52" y="250" class="t">群论习题变式</text><text x="250" y="250" class="ts">⋮</text>
+  <rect x="40" y="264" width="238" height="30" class="panel"/><text x="52" y="284" class="t">线代期中组卷</text><text x="250" y="284" class="ts">⋮</text>
+  <text x="44" y="312" class="ts">加载更多…</text>
+  <text x="104" y="326" class="fix" font-size="8.5">FE-10/FB-17 操作 · FB-01 游标分页</text>
+
+  <line x1="40" y1="330" x2="278" y2="330" stroke="#d7dde2"/>
+  <text x="44" y="352" class="tb">模板 / 模式</text>
+  <rect x="40" y="362" width="238" height="28" class="panel"/><text x="52" y="381" class="t">01 出新题</text>
+  <rect x="40" y="394" width="238" height="28" class="panel"/><text x="52" y="413" class="t">独立求解</text>
+  <rect x="40" y="426" width="238" height="28" class="new"/><text x="52" y="445" class="t">组卷 ★</text><text x="200" y="445" class="newlabel">真实组卷</text>
+  <rect x="40" y="458" width="238" height="28" class="new"/><text x="52" y="477" class="t">讲义 ★</text><text x="200" y="477" class="newlabel">真检索+PDF</text>
+  <text x="44" y="508" class="fix">FE-01 前端拦 template/mode 非法组合</text>
+
+  <line x1="40" y1="524" x2="278" y2="524" stroke="#d7dde2"/>
+  <rect x="40" y="536" width="238" height="120" class="new"/>
+  <text x="52" y="558" class="tb">review 队列 ★</text>
+  <text x="52" y="578" class="ts">待复核生成题 3</text>
+  <rect x="52" y="588" width="214" height="26" class="panel"/><text x="62" y="605" class="ts">题 #a1f2 · pending_concept</text>
+  <rect x="52" y="618" width="214" height="26" class="panel"/><text x="62" y="635" class="ts">题 #b3c8 · 待人工确认</text>
+  <text x="150" y="558" class="newlabel">PA-10 处理入口</text>
+
+  <!-- 中栏 -->
+  <rect x="304" y="120" width="620" height="680" class="panel"/>
+  <text x="324" y="146" class="tb">对话流 + 生成结果</text>
+  <!-- 用户命令 -->
+  <rect x="324" y="158" width="580" height="40" fill="#f6f8f8" stroke="#d7dde2"/><text x="338" y="182" class="t">▸ 生成一道实分析证明题，难度 6</text>
+  <!-- artifact 卡片 -->
+  <rect x="324" y="210" width="580" height="200" class="new"/>
+  <text x="342" y="234" class="tb">QuestionArtifact v3</text><text x="720" y="234" class="newlabel">artifact/solution digest 已固定</text>
+  <rect x="342" y="246" width="544" height="70" fill="#fbfcfa" stroke="#e2e8f0"/>
+  <text x="356" y="270" class="t">设 f 在 [a,b] 连续，证明存在 ξ 使得</text>
+  <text x="356" y="294" class="t" font-style="italic">∫ₐᵇ f(x)dx = f(ξ)(b−a)</text>
+  <text x="740" y="270" class="fix">FE-09 KaTeX 渲染</text>
+  <text x="356" y="309" class="ts" font-size="9">form=proof · choice/options/key、fill_blank/blanks 按 form 显示</text>
+  <rect x="342" y="326" width="90" height="22" class="chip"/><text x="356" y="341" class="ts">难度 6</text>
+  <rect x="440" y="326" width="70" height="22" class="chip"/><text x="454" y="341" class="ts">证明</text>
+  <rect x="518" y="326" width="110" height="22" class="chip"/><text x="532" y="341" class="ts">实分析</text>
+  <rect x="342" y="356" width="110" height="28" class="panel"/><text x="356" y="375" class="ts">证据未绑定</text>
+  <rect x="460" y="356" width="80" height="28" class="panel"/><text x="478" y="375" class="t">变式</text>
+  <rect x="548" y="356" width="80" height="28" class="panel"/><text x="566" y="375" class="t">复制</text>
+  <rect x="636" y="356" width="90" height="28" class="panel"/><text x="654" y="375" class="t">导出</text>
+  <!-- 运行中 -->
+  <rect x="324" y="422" width="580" height="44" fill="#f6f8f8" stroke="#d7dde2"/>
+  <text x="338" y="442" class="t">运行中… retrieve → generate → verify</text>
+  <rect x="792" y="430" width="96" height="28" fill="#fff" stroke="#dc2626" stroke-width="1.5"/><text x="812" y="449" class="t">■ 停止</text>
+  <text x="620" y="442" class="fix">FE-03 取消始终可用</text>
+  <!-- 输入框 -->
+  <rect x="324" y="720" width="580" height="64" fill="#fbfcfa" stroke="#c4ccd2"/>
+  <text x="338" y="748" class="ts">输入命令…（⌘Enter 发送）</text>
+  <rect x="812" y="742" width="80" height="30" class="btn"/><text x="838" y="762" class="btw">发送</text>
+  <text x="338" y="778" class="fix">FE-04 ⌘Enter 走 in-flight 守卫，禁并发第二 run</text>
+
+  <!-- 右栏 检视器 -->
+  <rect x="934" y="120" width="322" height="680" class="rail"/>
+  <rect x="948" y="134" width="294" height="200" fill="#fff" stroke="#0d9488" stroke-width="2"/>
+  <text x="962" y="158" class="tb">验证证据链 ★（签名元素）</text>
+  <circle cx="968" cy="182" r="6" class="ev-pass"/><text x="984" y="187" class="t">独立复核 passed · required</text>
+  <circle cx="968" cy="210" r="6" class="ev-na"/><text x="984" y="215" class="t">数值验证 N/A · optional</text>
+  <circle cx="968" cy="238" r="6" class="ev-warn"/><text x="984" y="243" class="t">Lean compiled_unbound · required</text>
+  <circle cx="968" cy="266" r="6" class="ev-pass"/><text x="984" y="271" class="t">解题置信 passed</text>
+  <text x="962" y="300" class="fix">overall: 阻断 formal 发布（QG-02 未绑定）</text>
+  <text x="962" y="320" class="ts">manifest qg-7f2 · verifier spec lean-v2</text>
+
+  <rect x="948" y="346" width="294" height="120" fill="#fff" stroke="#d7dde2"/>
+  <text x="962" y="370" class="tb">知识引用</text>
+  <rect x="962" y="380" width="266" height="30" fill="#fbfcfa" stroke="#e2e8f0"/><text x="974" y="399" class="ts">实分析.pdf · p.42 · 定积分中值定理</text>
+  <text x="962" y="432" class="ts">📌 pin 到主题（多 pin 支持）</text>
+  <text x="962" y="452" class="fix">FE-06 切会话时重置 pin</text>
+
+  <rect x="948" y="478" width="294" height="100" fill="#fff" stroke="#d7dde2"/>
+  <text x="962" y="502" class="tb">run 指标</text>
+  <text x="962" y="524" class="ts">LLM调用 6 · tokens 4.2k · 8.3s</text>
+  <text x="962" y="544" class="fix">effect usage.v1 · QG-06 重放不重复计费</text>
+
+  <rect x="948" y="590" width="294" height="196" class="new"/>
+  <text x="962" y="614" class="tb">artifact 中心 ★</text><text x="1140" y="614" class="newlabel">新增</text>
+  <text x="962" y="636" class="ts">typed产物历史（版本/manifest/证据可查）</text>
+  <rect x="962" y="646" width="266" height="30" fill="#fbfcfa" stroke="#e2e8f0"/><text x="974" y="665" class="ts">题 · 连续函数中值定理证明</text>
+  <rect x="962" y="682" width="266" height="30" fill="#fbfcfa" stroke="#e2e8f0"/><text x="974" y="701" class="ts">试卷 · 线代期中（12 题）</text>
+  <rect x="962" y="718" width="266" height="30" fill="#fbfcfa" stroke="#e2e8f0"/><text x="974" y="737" class="ts">讲义 · 实分析专题.pdf</text>
+  <text x="962" y="770" class="ts">QuestionArtifact round-trip · 非Markdown加壳</text>
+</svg>

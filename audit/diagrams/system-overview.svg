@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 900" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="system-title system-desc" font-family="-apple-system,'Segoe UI',Roboto,'Helvetica Neue','PingFang SC','Microsoft YaHei',sans-serif">
+  <title id="system-title">SciForge 当前系统总览与重审风险边界</title>
+  <desc id="system-desc">展示输入、数据处理管线、知识库、QGen、FastAPI 前端与四个运行数据库，并标注运行身份、结构题型、证据绑定、租户能力和计费边界。</desc>
+  <defs>
+    <marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#475569"/></marker>
+    <marker id="arwR" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#dc2626"/></marker>
+    <style>
+      .t{font-size:13px;fill:#1e293b}.tb{font-size:15px;font-weight:600;fill:#0f172a}
+      .ts{font-size:11px;fill:#475569}.tw{font-size:12px;fill:#fff}
+      .lane{fill:#f1f5f9;stroke:#cbd5e1;stroke-width:1}
+      .box{fill:#fff;stroke:#3b82f6;stroke-width:1.5;rx:6}
+      .db{fill:#eef2ff;stroke:#6366f1;stroke-width:1.5}
+      .crit{stroke:#dc2626;stroke-width:2.5}
+      .flag{font-size:10px;fill:#dc2626;font-weight:600}
+      .good{font-size:10px;fill:#16a34a;font-weight:600}
+    </style>
+  </defs>
+  <rect width="1280" height="900" fill="#fdfdfd"/>
+  <text x="40" y="42" class="tb" font-size="22">SciForge 系统总览（当前实现）</text>
+  <text x="40" y="66" class="ts">数据管线 ⇄ 知识库 ⇄ QGen ⇄ 前端 · dev@ba29f3b · 1318 tests✓ · line 76.9% / branch 66.9% · 无 CI</text>
+
+  <!-- 输入 -->
+  <rect x="40" y="100" width="200" height="150" class="lane" rx="8"/>
+  <text x="50" y="122" class="tb">输入源</text>
+  <rect x="54" y="134" width="172" height="30" class="box"/><text x="64" y="153" class="t">PDF / DOCX / PPTX</text>
+  <rect x="54" y="170" width="172" height="30" class="box"/><text x="64" y="189" class="t">MD / TeX / 图片</text>
+  <rect x="54" y="206" width="172" height="30" class="box"/><text x="64" y="225" class="t" font-size="11">CSV/JSON/XLSX/HTML 等</text>
+
+  <!-- Pipeline -->
+  <rect x="270" y="100" width="330" height="430" class="lane" rx="8"/>
+  <text x="282" y="122" class="tb">① 数据处理 Pipeline（离线，asyncio）</text>
+  <rect x="286" y="134" width="298" height="46" class="box crit"/><text x="296" y="153" class="t">Task0 识别：VLM 当前10页/批 · fitz</text><text x="296" y="170" class="flag">DP-01 run/cache/sink 身份未分离</text>
+  <rect x="286" y="188" width="298" height="40" class="box crit"/><text x="296" y="206" class="t">Stage1 Extract 滑窗批量提取（LLM）</text><text x="296" y="222" class="flag">DP-05 stable-ID patch · DP-06 SourceMap 缺口</text>
+  <rect x="286" y="236" width="298" height="34" class="box"/><text x="296" y="257" class="t">Stage1 Review 条件复核（LLM，风险信号）</text>
+  <rect x="286" y="278" width="298" height="34" class="box"/><text x="296" y="299" class="t">Stage2 Annotate 批量标注 tags/难度（LLM）</text>
+  <rect x="286" y="320" width="298" height="30" class="box"/><text x="296" y="340" class="t">Stage2 Review（默认关闭）</text>
+  <rect x="286" y="358" width="298" height="34" class="box"/><text x="296" y="379" class="t">Stage3 Persist 合并入库（无 LLM）</text>
+  <rect x="286" y="400" width="298" height="60" class="box crit"/><text x="296" y="419" class="t">确定性 post-pass（无 LLM）</text><text x="296" y="435" class="ts">numbering · answer · relation · concept · eval</text><text x="296" y="452" class="flag">PA-01 误绑/删题 · DP-04 失败仍 completed</text>
+  <rect x="286" y="468" width="298" height="52" class="box"/><text x="296" y="487" class="t">知识图谱：item_relations + concept 四表</text><text x="296" y="504" class="flag">PA-08 只写不读 · 仅 4 种边 · 无 prerequisite</text>
+
+  <!-- 知识库 -->
+  <rect x="630" y="100" width="230" height="430" class="lane" rx="8"/>
+  <text x="642" y="122" class="tb">② 知识库</text>
+  <rect x="644" y="134" width="202" height="92" class="db" rx="6"/><text x="654" y="154" class="tb" font-size="13">sciforge.db (schema v14)</text><text x="654" y="173" class="ts">KP/Question · FTS5 · tags/难度</text><text x="654" y="190" class="ts">concept 图 · evaluation/review</text><text x="654" y="213" class="flag">IS-01 去重查询 O(N²)</text>
+  <rect x="644" y="238" width="202" height="60" class="db" rx="6"/><text x="654" y="258" class="tb" font-size="13">质量门禁 (query.py)</text><text x="654" y="277" class="ts" font-size="9">accepted · concept有效 · review已闭</text><text x="654" y="291" class="flag">GN-02 生成题被排除</text>
+  <text x="644" y="330" class="ts" font-weight="600">读取方（TenantScopedView）:</text>
+  <rect x="644" y="340" width="202" height="26" class="box"/><text x="654" y="357" class="t" font-size="11.5">QGen retriever（TF，非FTS）</text>
+  <rect x="644" y="372" width="202" height="26" class="box"/><text x="654" y="389" class="t">组卷 papers / 讲义</text>
+  <rect x="644" y="404" width="202" height="26" class="box"/><text x="654" y="421" class="t">推荐 RecommendEngine</text>
+  <rect x="644" y="436" width="202" height="26" class="box"/><text x="654" y="453" class="t">knowledge/search</text>
+  <text x="644" y="486" class="flag">XC-02 tenant facade 黑名单放行</text>
+  <text x="644" y="502" class="flag">XC-03 v14 shape 未完整校验</text>
+  <text x="644" y="518" class="good">✓ FTS UPDATE/DELETE 触发器完整</text>
+
+  <!-- QGen -->
+  <rect x="890" y="100" width="350" height="430" class="lane" rx="8"/>
+  <text x="902" y="122" class="tb">③ QGen Agent Harness</text>
+  <rect x="904" y="134" width="322" height="70" class="box crit"/><text x="914" y="153" class="t">StateGraph 10 节点（有界反馈图）</text><text x="914" y="170" class="ts">retrieve→generate→prefilter→solve→verify→</text><text x="914" y="185" class="ts">annotate；fail→diagnose→evolve；select</text><text x="914" y="200" class="flag">QG-01 structured form 跨节点丢字段</text>
+  <rect x="904" y="212" width="322" height="58" class="box crit"/><text x="914" y="231" class="t">DurableQGenHarness + SQLiteRunStore</text><text x="914" y="248" class="ts">run/step/budget/checkpoint/event/resume</text><text x="914" y="264" class="flag">HR-01 无 lease · QG-05 无执行 manifest</text>
+  <rect x="904" y="278" width="322" height="64" class="box crit"/><text x="914" y="297" class="t">多路径验证</text><text x="914" y="314" class="ts">LLM review · 数值 · Lean · 四态证据</text><text x="914" y="330" class="flag">QG-02 Lean 可编译≠绑定当前题解</text>
+  <rect x="904" y="350" width="322" height="46" class="box crit"/><text x="914" y="369" class="t">VerificationSandbox（OCI 参数加固）</text><text x="914" y="386" class="flag">QG-04 trusted_local 未强制 provenance</text>
+  <rect x="904" y="404" width="322" height="40" class="box crit"/><text x="914" y="423" class="t">输出：新题/变式/讲义/组卷/导出</text><text x="914" y="438" class="flag">QG-01 API/paper/export 继续丢结构字段</text>
+  <rect x="904" y="452" width="322" height="40" class="box crit"/><text x="914" y="471" class="t">LLM Client（多 backend 能力矩阵）</text><text x="914" y="487" class="flag">QG-09 cache未充分利用 · usage 不完整</text>
+  <text x="904" y="516" class="flag">QG-08 多目标含常数 · QG-10 三入口漂移</text>
+
+  <!-- 前端 + API -->
+  <rect x="270" y="560" width="590" height="290" class="lane" rx="8"/>
+  <text x="282" y="582" class="tb">④ 内置 Web Chatbox（零构建原生 JS）+ FastAPI /v1/*</text>
+  <rect x="286" y="596" width="280" height="120" class="box crit"/><text x="296" y="616" class="t" font-weight="600">前端 app.js (1114行 单IIFE)</text><text x="296" y="635" class="ts">七模式 · SSE · 会话历史 · 知识pin</text><text x="296" y="652" class="ts">验证面板 · 取消/恢复 · 响应式</text><text x="296" y="672" class="good">✓ LLM文本经 DOM textContent</text><text x="296" y="690" class="flag">QG-01 无 typed artifact renderer</text><text x="296" y="707" class="flag">QG-02 无 evidence binding 状态</text>
+  <rect x="586" y="596" width="260" height="120" class="box crit"/><text x="596" y="616" class="t" font-weight="600">FastAPI 23 路由</text><text x="596" y="635" class="ts">auth/generate/solve/papers/recommend</text><text x="596" y="652" class="ts">conversations/runs/SSE/knowledge</text><text x="596" y="672" class="ts">双通道鉴权 + scope + 月配额</text><text x="596" y="690" class="flag">XC-01 legacy scope 过宽</text><text x="596" y="707" class="flag">QG-06 计费副作用非幂等</text>
+  <text x="286" y="740" class="ts" font-weight="600">前后端契约（app.js ↔ /v1/*）：</text>
+  <text x="286" y="758" class="flag">FE-02 422不可读 · FB-13 template.mode 漂移 · FE-06 跨会话残留</text>
+  <rect x="286" y="770" width="560" height="66" fill="#f8fafc" stroke="#cbd5e1"/><text x="296" y="790" class="ts" font-weight="600">前端未接的纯 API 能力（控制台仅弹说明）：</text><text x="296" y="808" class="ts">papers/export · recommend · behavior · generate/batch</text><text x="296" y="826" class="flag">QG-01 需要 QuestionArtifact round-trip，而非 Markdown 加壳</text>
+
+  <!-- 其他数据库 -->
+  <rect x="890" y="560" width="350" height="290" class="lane" rx="8"/>
+  <text x="902" y="582" class="tb">运行时数据库（四库分离）</text>
+  <rect x="904" y="596" width="322" height="52" class="db" rx="6"/><text x="914" y="616" class="tb" font-size="13">qgen_runtime.db</text><text x="914" y="635" class="ts">runs/steps/checkpoints/events（触发器不可变）</text>
+  <rect x="904" y="656" width="322" height="52" class="db" rx="6"/><text x="914" y="676" class="tb" font-size="13">conversations.db</text><text x="914" y="695" class="ts">会话/消息/run links/artifacts</text>
+  <rect x="904" y="716" width="322" height="52" class="db" rx="6"/><text x="914" y="736" class="tb" font-size="13">saas.db</text><text x="914" y="755" class="ts">tenants/keys(sha256)/users/usage/tasks/behavior</text>
+  <text x="904" y="792" class="flag">QG-06 effect retry可重复扣费 · FB-08同步轮询</text>
+  <text x="904" y="810" class="ts">checkpoint：state.json + recognize cache</text>
+  <text x="904" y="828" class="flag">DP-01 sink未绑定 · HR-07 checkpoint O(n²)</text>
+
+  <!-- 数据流箭头（水平主链 + ②③间隙的检索/回写平行短箭头，均不穿越框体）-->
+  <line x1="240" y1="175" x2="268" y2="175" stroke="#475569" stroke-width="2" marker-end="url(#arw)"/>
+  <line x1="600" y1="310" x2="628" y2="200" stroke="#475569" stroke-width="2" marker-end="url(#arw)"/>
+  <line x1="862" y1="300" x2="888" y2="300" stroke="#475569" stroke-width="2" marker-end="url(#arw)"/>
+  <text x="861" y="294" class="ts">检索</text>
+  <line x1="888" y1="424" x2="862" y2="424" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arw)"/>
+  <text x="861" y="418" class="ts">回写</text>
+  <line x1="586" y1="656" x2="566" y2="656" stroke="#475569" stroke-width="2" marker-end="url(#arw)"/>
+  <text x="890" y="551" class="ts">前端对话 → durable run（详见时序图）</text>
+
+  <!-- 图例 -->
+  <rect x="40" y="820" width="210" height="60" fill="#fff" stroke="#cbd5e1"/>
+  <text x="50" y="838" class="ts" font-weight="600">图例</text>
+  <rect x="50" y="846" width="16" height="12" class="box"/><text x="72" y="856" class="ts">组件</text>
+  <rect x="120" y="846" width="16" height="12" fill="#fff" class="crit"/><text x="142" y="856" class="ts">含Crit/High缺陷</text>
+  <text x="50" y="874" class="flag">红=缺陷</text><text x="120" y="874" class="good">绿=已加固/正面</text>
+</svg>
