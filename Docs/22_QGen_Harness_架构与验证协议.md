@@ -105,8 +105,10 @@ checkpoint；solve/evaluate 同样持久化并可重建恢复，但不是同一�
 artifact 和 usage。启动 reconciliation 会补做缺失交付；`question.persisted`、稳定 message id 与
 账单事件避免重复发布/计费。
 生成候选的原始 ID 保留在不可变 runtime output；入库采用当前 tenant 的 `save_question`
-canonical id，并通过 `question.persisted` 记录映射。API 输出、artifact 与交付恢复共享该映射投影，
+canonical id，并通过 `question.persisted` 记录映射。GET run、新 artifact 与缺失交付恢复共享该映射投影，
 统一题目和解答的关联 ID，不把内容去重时被忽略的新 UUID 当作已入库题目。
+已交付的历史 artifact 不重写；补正映射后的 GET run 可能与历史 artifact 中的旧 ID 不同，
+这是保留历史交付记录的兼容边界，不代表本次执行了历史数据迁移。
 
 CLI 只有 `generate durable` 默认启用这套 graph checkpoint，并配套 `generate resume/cancel`；
 `free/variant/evolve/solve-deep` 是直接交互命令，不应误写成全部自动持久化。

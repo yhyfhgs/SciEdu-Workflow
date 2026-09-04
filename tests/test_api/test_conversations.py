@@ -620,6 +620,61 @@ def test_duplicate_qgen_uses_canonical_ids_for_get_artifact_and_restart(
             storage.load_question("generated-question")
 
 
+def test_historical_delivered_artifact_stays_immutable_after_canonical_id_recovery(
+    tmp_path: Path,
+) -> None:
+    bank_path = tmp_path / "bank.db"
+    original = _generated_output()
+    assert original.generated is not None
+    raw_output = original.model_dump(mode="json")
+    with SQLiteStorageBackend(bank_path) as storage:
+        storage.save_question(original.generated.question.model_copy(update={"id": "canonical"}))
+    with _stores(tmp_path) as (conversations, runs):
+        facade = _QGenFacade(fail=True)
+        client = _local_app(
+            conversations,
+            runs,
+            qgen_factory=lambda _discipline: facade,
+            storage_factory=lambda: SQLiteStorageBackend(bank_path),
+        )
+        conversation_id = _create_local_conversation(client)
+        record = runs.create_run(
+            "qgen",
+            {},
+            metadata={"tenant_id": "local", "conversation_id": conversation_id, "mode": "new"},
+        )
+        run_id = record.run_id
+        conversations.link_run(conversation_id, "local", run_id)
+        runs.begin_run(run_id)
+        runs.complete_run(run_id, raw_output)
+        message, artifact = conversations.record_assistant_result(
+            conversation_id,
+            "local",
+            run_id=run_id,
+            content="Historical delivery with generated-question ID.",
+            artifact_kind="generated_question",
+            artifact_payload=raw_output,
+        )
+        runs.append_event(run_id, "question.persisted", {"question_id": "generated-question"})
+        runs.append_event(run_id, "assistant.final", {"artifact_id": artifact.artifact_id})
+        with client:
+            output = client.get(f"/v1/runs/{run_id}").json()["output"]
+        assert output["generated"]["question"]["id"] == "canonical"
+        assert output["generated"]["solution"]["question_id"] == "canonical"
+        assert conversations.list_artifacts(conversation_id, "local") == [artifact]
+        assert conversations.list_messages(conversation_id, "local") == [message]
+        assert artifact.payload == raw_output
+        assert runs.require_run(run_id).output_payload == raw_output
+        events = runs.list_events(run_id)
+        assert [event.payload for event in events if event.event_type == "question.persisted"] == [
+            {"question_id": "generated-question"},
+            {"question_id": "canonical"},
+        ]
+        assert sum(event.event_type == "assistant.final" for event in events) == 1
+        assert not any(event.event_type == "product.reconciliation_failed" for event in events)
+        assert facade.inputs == []
+
+
 def test_qgen_materialization_resolves_canonical_id_within_current_tenant(tmp_path: Path) -> None:
     bank_path = tmp_path / "bank.db"
     output = _generated_output()
