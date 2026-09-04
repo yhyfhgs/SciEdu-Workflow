@@ -15,7 +15,11 @@ from fastapi.testclient import TestClient
 from sciforge.agents import QGenAgent, QGenOutput, SolveOutput
 from sciforge.agents.runtime import RunStatus, SQLiteRunStore
 from sciforge.api.app import create_app
-from sciforge.api.conversation_routes import _stream_events, _temporary_verification_policy
+from sciforge.api.conversation_routes import (
+    _persist_generated_question,
+    _stream_events,
+    _temporary_verification_policy,
+)
 from sciforge.api.conversations import ConversationStore
 from sciforge.core.models import (
     DifficultyScore,
@@ -554,6 +558,128 @@ def test_verified_qgen_result_is_materialized_with_solution_for_followup(
         and event.payload == {"question_id": "generated-question"}
         for event in runs.list_events(accepted.json()["run_id"])
     )
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_duplicate_qgen_uses_canonical_ids_for_get_artifact_and_restart(
+    tmp_path: Path, recover: bool
+) -> None:
+    bank_path = tmp_path / "bank.db"
+    original = _generated_output()
+    assert original.generated is not None
+    with SQLiteStorageBackend(bank_path) as storage:
+        storage.save_question(original.generated.question.model_copy(update={"id": "canonical"}))
+    with _stores(tmp_path) as (conversations, runs):
+        facade = _QGenFacade(fail=recover)
+        client = _local_app(
+            conversations,
+            runs,
+            qgen_factory=lambda _discipline: facade,
+            storage_factory=lambda: SQLiteStorageBackend(bank_path),
+        )
+        conversation_id = _create_local_conversation(client)
+        if recover:
+            record = runs.create_run(
+                "qgen",
+                {},
+                metadata={"tenant_id": "local", "conversation_id": conversation_id, "mode": "new"},
+            )
+            run_id = record.run_id
+            conversations.link_run(conversation_id, "local", run_id)
+            runs.begin_run(run_id)
+            runs.complete_run(run_id, original.model_dump(mode="json"))
+        with client:
+            if not recover:
+                accepted = client.post(
+                    f"/v1/conversations/{conversation_id}/messages",
+                    json={"mode": "new", "content": "生成可继续加工的紧致性题目"},
+                )
+                assert accepted.status_code == 202
+                run_id = accepted.json()["run_id"]
+            output = client.get(f"/v1/runs/{run_id}").json()["output"]
+        artifact = conversations.list_artifacts(conversation_id, "local")[0]
+        for payload in (output, artifact.payload):
+            assert payload["generated"]["question"]["id"] == "canonical"
+            assert payload["generated"]["solution"]["question_id"] == "canonical"
+        raw = runs.require_run(run_id).output_payload
+        assert raw is not None
+        assert raw["generated"]["question"]["id"] == "generated-question"
+        assert raw["generated"]["solution"]["question_id"] == "generated-question"
+        with client:
+            assert client.get(f"/v1/runs/{run_id}").json()["output"] == output
+        assert conversations.list_artifacts(conversation_id, "local")[0] == artifact
+        assert len(facade.inputs) == (0 if recover else 1)
+        assert [
+            event.payload
+            for event in runs.list_events(run_id)
+            if event.event_type == "question.persisted"
+        ] == [{"question_id": "canonical"}]
+    with SQLiteStorageBackend(bank_path) as storage:
+        assert storage.load_question("canonical").content == original.generated.question.content
+        with pytest.raises(FileNotFoundError):
+            storage.load_question("generated-question")
+
+
+def test_qgen_materialization_resolves_canonical_id_within_current_tenant(tmp_path: Path) -> None:
+    bank_path = tmp_path / "bank.db"
+    output = _generated_output()
+    assert output.generated is not None
+    with SQLiteStorageBackend(bank_path) as storage:
+        for tenant in ("tenant-a", "tenant-b"):
+            storage.save_question(
+                output.generated.question.model_copy(update={"id": tenant, "tenant_id": tenant})
+            )
+    persisted_id = _persist_generated_question(
+        output,
+        storage=None,
+        storage_factory=lambda: SQLiteStorageBackend(bank_path),
+        storage_tenant_id="tenant-a",
+    )
+    assert persisted_id == "tenant-a"
+    assert output.generated.question.id == "generated-question"
+
+
+def test_failed_qgen_storage_does_not_publish_id_and_recovers_on_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bank_path = tmp_path / "bank.db"
+    with SQLiteStorageBackend(bank_path):
+        pass
+    with _stores(tmp_path) as (conversations, runs):
+        facade = _QGenFacade()
+        client = _local_app(
+            conversations,
+            runs,
+            qgen_factory=lambda _discipline: facade,
+            storage_factory=lambda: SQLiteStorageBackend(bank_path),
+        )
+        conversation_id = _create_local_conversation(client)
+
+        def fail_save(_storage: SQLiteStorageBackend, _question: Question) -> str:
+            raise OSError("question storage unavailable")
+
+        with monkeypatch.context() as patch, client:
+            patch.setattr(SQLiteStorageBackend, "save_question", fail_save)
+            accepted = client.post(
+                f"/v1/conversations/{conversation_id}/messages",
+                json={"mode": "new", "content": "生成可继续加工的紧致性题目"},
+            )
+            assert accepted.status_code == 202
+            run_id = accepted.json()["run_id"]
+        assert runs.require_run(run_id).status is RunStatus.SUCCEEDED
+        assert not any(
+            event.event_type == "question.persisted" for event in runs.list_events(run_id)
+        )
+        with client:
+            assert client.get(f"/v1/runs/{run_id}").json()["status"] == "succeeded"
+        assert len(facade.inputs) == 1
+        assert [
+            event.payload
+            for event in runs.list_events(run_id)
+            if event.event_type == "question.persisted"
+        ] == [{"question_id": "generated-question"}]
+    with SQLiteStorageBackend(bank_path) as storage:
+        assert storage.load_question("generated-question").solution_content
 
 
 def test_qgen_facade_background_failure_is_terminal_and_user_visible(tmp_path: Path) -> None:

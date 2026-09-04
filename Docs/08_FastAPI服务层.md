@@ -124,6 +124,10 @@ visible(question) := question.tenant_id == principal.tenant_id
 
 生成成功且通过验证时，服务把 Question 与 `solution_content` 写入当前 tenant 题库并发出
 `question.persisted`。前端可直接用稳定 question id 发起 variant/deepen/adjust/evaluate。
+存储通过 `save_question` 返回同一 tenant 去重后的 canonical id，不能使用被忽略候选的 UUID。
+runtime 中的原始生成输出保持不可变；`question.persisted` 是实际入库 ID 的权威映射，GET run、
+产品 artifact 与启动交付恢复通过同一投影同步 `question.id` 和 `solution.question_id`。
+存储失败时不发出成功入库事件，已成功的原始 run 仍可在后续 reconciliation 中补交付。
 
 ## 7. 任务、推荐与导出
 

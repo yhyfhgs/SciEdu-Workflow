@@ -104,6 +104,9 @@ checkpoint；solve/evaluate 同样持久化并可重建恢复，但不是同一�
 产品交付与 Agent 成功分开：成功 run 还需幂等地 materialize 生成题、写 assistant final message、
 artifact 和 usage。启动 reconciliation 会补做缺失交付；`question.persisted`、稳定 message id 与
 账单事件避免重复发布/计费。
+生成候选的原始 ID 保留在不可变 runtime output；入库采用当前 tenant 的 `save_question`
+canonical id，并通过 `question.persisted` 记录映射。API 输出、artifact 与交付恢复共享该映射投影，
+统一题目和解答的关联 ID，不把内容去重时被忽略的新 UUID 当作已入库题目。
 
 CLI 只有 `generate durable` 默认启用这套 graph checkpoint，并配套 `generate resume/cancel`；
 `free/variant/evolve/solve-deep` 是直接交互命令，不应误写成全部自动持久化。

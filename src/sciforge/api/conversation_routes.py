@@ -390,7 +390,7 @@ class _RunRecoveryCoordinator:
                         "question.persisted",
                         {"question_id": persisted_id},
                     )
-            content, artifact_kind, artifact_payload = _rebuild_product_delivery(record)
+            content, artifact_kind, artifact_payload = _rebuild_product_delivery(record, self.runs)
             product_exists = self.conversations.has_assistant_result(
                 link.conversation_id,
                 link.tenant_id,
@@ -811,7 +811,7 @@ def install_conversation_routes(
         enforce_scope(principal, scopes["runs_read"])
         conversations, runs = require_services()
         record = require_owned_run(conversations, runs, run_id, tenant_for(principal))
-        return _run_out(record)
+        return _run_out(record, runs)
 
     @app.get("/v1/runs/{run_id}/events")
     async def stream_run_events(
@@ -1261,15 +1261,54 @@ def _rebuild_background_task(
     raise ValueError(f"unsupported recoverable run kind: {record.run_kind}")
 
 
+def _materialized_run_output(
+    record: RunRecord,
+    runs: SQLiteRunStore,
+) -> dict[str, Any] | None:
+    """Project canonical question IDs without rewriting immutable generation output."""
+    output = record.output_payload
+    if record.run_kind != "qgen" or output is None:
+        return output
+
+    persisted_id: str | None = None
+    after = 0
+    while True:
+        page = runs.list_events(record.run_id, after_sequence=after, limit=500)
+        for event in page:
+            if event.event_type == "question.persisted":
+                persisted_id = str(event.payload["question_id"])
+        if len(page) < 500:
+            break
+        after = page[-1].sequence
+    if persisted_id is None:
+        return output
+
+    from sciforge.agents import QGenOutput
+
+    result = QGenOutput.model_validate(output)
+    generated = result.generated
+    if generated is None:
+        raise ValueError("question.persisted event requires a generated question")
+    solution_text = (generated.solution.solution_latex or generated.solution.solution_plain).strip()
+    updates: dict[str, object] = {"id": persisted_id, "solution_content": solution_text or None}
+    storage_tenant_id = str(record.metadata.get("storage_tenant_id", "") or "")
+    if storage_tenant_id:
+        updates["tenant_id"] = storage_tenant_id
+    generated.question = generated.question.model_copy(update=updates)
+    generated.solution = generated.solution.model_copy(update={"question_id": persisted_id})
+    return result.model_dump(mode="json")
+
+
 def _rebuild_product_delivery(
     record: RunRecord,
+    runs: SQLiteRunStore,
 ) -> tuple[str, str, Mapping[str, Any]]:
     """Render a successful immutable run output without invoking an Agent."""
     from sciforge.agents import QGenOutput, SolveOutput
 
-    if record.output_payload is None:
+    output = _materialized_run_output(record, runs)
+    if output is None:
         raise ValueError("successful conversation run has no output payload")
-    output = dict(record.output_payload)
     output_type = str(record.metadata.get("output_type", "question_solution"))
     if output_type not in {
         "question_solution",
@@ -1598,8 +1637,7 @@ async def _run_qgen(
                 {"question_id": persisted_id},
             )
 
-        output = result.model_dump(mode="json")
-        assistant = _render_qgen_result(result, output_type=output_type)
+        assistant, artifact_kind, output = _rebuild_product_delivery(runs.require_run(run_id), runs)
         _record_success(
             conversations,
             runs,
@@ -1607,7 +1645,7 @@ async def _run_qgen(
             tenant_id=tenant_id,
             run_id=run_id,
             content=assistant,
-            artifact_kind="generated_question",
+            artifact_kind=artifact_kind,
             artifact_payload=output,
         )
         _record_usage_safely(saas_store, runs, run_id, tenant_id, "/v1/conversations/messages")
@@ -1639,9 +1677,7 @@ def _persist_generated_question(
     if storage_tenant_id:
         updates["tenant_id"] = storage_tenant_id
     question = generated.question.model_copy(update=updates)
-    generated.question = question
-
-    target = storage if callable(getattr(storage, "save_batch", None)) else None
+    target = storage
     owned_base: Any | None = None
     scoped: TenantScopedStorageView | None = None
     if target is None and storage_factory is not None:
@@ -1654,7 +1690,7 @@ def _persist_generated_question(
     if target is None:
         return None
     try:
-        target.save_batch([], [question])
+        persisted_id: str = target.save_question(question)
     finally:
         if scoped is not None:
             scoped.close()
@@ -1662,7 +1698,7 @@ def _persist_generated_question(
             close = getattr(owned_base, "close", None)
             if callable(close):
                 close()
-    return str(question.id)
+    return persisted_id
 
 
 async def _run_solve(
@@ -2166,7 +2202,7 @@ def _message_out(record: MessageRecord) -> ConversationMessageOut:
     )
 
 
-def _run_out(record: Any) -> AgentRunOut:
+def _run_out(record: RunRecord, runs: SQLiteRunStore) -> AgentRunOut:
     return AgentRunOut(
         id=record.run_id,
         kind=record.run_kind,
@@ -2176,7 +2212,7 @@ def _run_out(record: Any) -> AgentRunOut:
         usage=RunUsageOut(**record.usage.to_dict()),
         budget=RunBudgetOut(**record.budget.to_dict()),
         cancel_requested=record.cancel_requested,
-        output=record.output_payload,
+        output=_materialized_run_output(record, runs),
         error=record.last_error,
         created_at=record.created_at,
         updated_at=record.updated_at,

@@ -427,6 +427,9 @@ Harness；`generate free` 等其余子命令走一次性 `QGenAgent.run()`。API
   `tenant_id=current` 或 public (`tenant_id=''`)；SQL 在 `ORDER BY/LIMIT` 前过滤，foreign id
   与不存在 id 等价。papers/export、recommend、QGen、batch、Solve 均使用 scoped view；
   knowledge points 仍是共享公共 corpus。离线 pipeline 的 unscoped backend 不直接暴露给认证请求
+- **生成题入库 ID**：对话交付使用 `save_question` 返回的当前 tenant canonical id，并在写入成功后
+  发出 `question.persisted`；API 输出、artifact 与重启交付恢复统一投影该 ID 到题目/解答关联字段。
+  runtime 原始生成输出不改写，不能把去重忽略的候选 UUID 当成入库成功，也不伪造存储成功事件。
 - **推荐**：`agents/recommend/engine.py` 纯算法（无 LLM），行为流水聚合 UserProfile →
   最近发展区（掌握难度 + 步长）+ 薄弱标签命中打分；冷启动退化为默认难度
 - 后续 P3（多端 + 网关 + 统一身份）见 [`Docs/17_前端产品化实施计划.md`](Docs/17_前端产品化实施计划.md)
