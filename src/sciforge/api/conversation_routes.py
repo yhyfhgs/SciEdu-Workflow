@@ -2094,7 +2094,7 @@ def _render_qgen_result(result: Any, *, output_type: str) -> str:
     status = "通过" if generated.verification.passed else "未通过"
     solution_text = generated.solution.solution_latex or generated.solution.solution_plain
     markdown = (
-        f"## 题目\n\n{generated.question.content}\n\n"
+        f"## 题目\n\n{generated.question.render_problem()}\n\n"
         f"## 解答\n\n{solution_text}\n\n"
         f"难度：{generated.difficulty_score.overall:.1f}/10 · 验证：{status}"
     )
@@ -2102,7 +2102,7 @@ def _render_qgen_result(result: Any, *, output_type: str) -> str:
         markdown,
         payload,
         output_type=output_type,
-        question_content=generated.question.content,
+        question_content=generated.question.render_problem(),
         learning_goal=f"掌握 {generated.question.subject or '目标主题'} 的建模与推理方法。",
     )
 
@@ -2124,7 +2124,7 @@ def _render_solution_result(
         markdown,
         payload,
         output_type=output_type,
-        question_content=question.content,
+        question_content=question.render_problem(),
         learning_goal=f"理解 {question.subject or '该题'} 的完整求解路径。",
     )
 
@@ -2153,7 +2153,7 @@ def _render_evaluation(
         markdown,
         payload,
         output_type=output_type,
-        question_content=question.content,
+        question_content=question.render_problem(),
         learning_goal="理解题目、解答与验证证据之间的对应关系。",
     )
 

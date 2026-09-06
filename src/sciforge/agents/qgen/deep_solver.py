@@ -87,7 +87,7 @@ class DeepSolveEngine:
     ) -> Solution | None:
         """对题目做深度求解；解不出返回 None。"""
         user = self._user_template.format(
-            question_latex=question.content,
+            question_latex=question.render_problem(),
             knowledge_context=_kp_context(context),
         )
 
@@ -99,7 +99,7 @@ class DeepSolveEngine:
             code = str(call.arguments.get("code", ""))
             res = await self.sandbox.arun_python(
                 code,
-                trust_policy=self.sandbox_trust_policy,
+                trust_policy=TrustPolicy.CONTAINER_REQUIRED,
             )
             out = (res.stdout or "")[:2000]
             if res.stderr:

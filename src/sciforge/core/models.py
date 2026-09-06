@@ -294,6 +294,17 @@ class Question(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
 
+    def render_problem(self) -> str:
+        """Render all solving inputs without revealing the proposed answer key."""
+        parts = [self.content]
+        if self.question_form:
+            parts.append(f"Question form: {self.question_form}")
+        if self.options:
+            parts.append("Options:\n" + "\n".join(self.options))
+        if self.blanks is not None:
+            parts.append(f"Number of blanks: {self.blanks}")
+        return "\n\n".join(parts)
+
     @model_validator(mode="after")
     def _derive_numbering(self) -> Question:
         """从原文 number 自动派生 number_canonical + seq_*（仅当未显式提供时）。"""

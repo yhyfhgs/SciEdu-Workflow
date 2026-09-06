@@ -29,7 +29,7 @@ class DifficultyAnnotator:
         sketch = solution.solution_latex[:300] if solution.solution_latex else "无解答"
 
         prompt = self._scoring_template.format(
-            question_latex=question.content,
+            question_latex=question.render_problem(),
             solution_sketch=sketch,
         )
 

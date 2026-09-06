@@ -146,7 +146,7 @@ class QuestionGenerator:
         if req.source_question is not None:
             return self._variant_template.format(
                 subject=subject_text,
-                source_question_latex=req.source_question.content,
+                source_question_latex=req.source_question.render_problem(),
                 strategy_instruction=self._strategy_templates.get(req.strategy, req.strategy.value),
                 target_difficulty=req.difficulty_target,
                 difficulty_calibration=difficulty_cal,

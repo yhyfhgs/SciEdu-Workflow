@@ -866,7 +866,7 @@ def _print_generated(gq: object) -> None:
     table.add_row("id", gq.question.id[:12])
     table.add_row("题型", str(gq.question.question_type))
     table.add_row("难度", f"{gq.difficulty_score.overall}/10")
-    table.add_row("内容", gq.question.content[:400])
+    table.add_row("内容", gq.question.render_problem()[:400])
     table.add_row("解答", (gq.solution.solution_latex or "")[:400])
     table.add_row(
         "验证",

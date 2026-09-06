@@ -407,3 +407,25 @@ def test_pre_v8_still_requires_restart(tmp_path: Path) -> None:
     _make_old_db(db, version=7)
     with pytest.raises(SchemaVersionMismatch):
         SQLiteStorageBackend(db)
+
+
+def test_migration_backup_restores_pre_upgrade_schema_and_rows(tmp_path: Path) -> None:
+    """A SQLite backup preserves the old schema for code rollback after migration."""
+    source = tmp_path / "source.db"
+    backup = tmp_path / "before-upgrade.db"
+    restored = tmp_path / "restored.db"
+    _make_old_db(source, version=8)
+    with sqlite3.connect(source) as before, sqlite3.connect(backup) as saved:
+        before.backup(saved)
+        original_rows = before.execute("SELECT * FROM questions").fetchall()
+        original_columns = before.execute("PRAGMA table_info(questions)").fetchall()
+    upgraded = SQLiteStorageBackend(source)
+    assert upgraded._conn.execute("PRAGMA user_version").fetchone()[0] == 14
+    assert upgraded.load_question("q-old").content == "旧题内容"
+    upgraded.close()
+    with sqlite3.connect(backup) as saved, sqlite3.connect(restored) as recovered:
+        saved.backup(recovered)
+        assert recovered.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert recovered.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert recovered.execute("SELECT * FROM questions").fetchall() == original_rows
+        assert recovered.execute("PRAGMA table_info(questions)").fetchall() == original_columns

@@ -257,7 +257,7 @@ async def _run_batch(
                 questions.append(
                     {
                         "id": gq.question.id,
-                        "content": gq.question.content,
+                        "content": gq.question.render_problem(),
                         "solution": gq.solution.solution_latex,
                         "difficulty": gq.difficulty_score.overall,
                         "verified": gq.verification.passed,
@@ -327,7 +327,7 @@ def _assemble_paper_items(
         return [
             PaperItem(
                 id=q.id,
-                content=q.content,
+                content=q.render_problem(),
                 difficulty=q.difficulty,
                 question_type=str(q.question_type),
                 question_form=q.question_form,
@@ -525,7 +525,7 @@ def create_app(
             rounds_used=result.rounds_used,
             question=GeneratedQuestionOut(
                 id=gq.question.id,
-                content=gq.question.content,
+                content=gq.question.render_problem(),
                 solution=gq.solution.solution_latex,
                 difficulty=gq.difficulty_score.overall,
                 question_type=str(gq.question.question_type),

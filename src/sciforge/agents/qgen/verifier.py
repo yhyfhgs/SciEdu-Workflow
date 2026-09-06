@@ -314,9 +314,17 @@ class VerificationPipeline:
     ) -> dict[str, object]:
         """独立审核题面与完整解答，避免只看题面的确认偏差。"""
         prompt = self._review_template.format(
-            question_latex=question.content,
+            question_latex=question.render_problem(),
             solution_latex=solution.solution_latex or solution.solution_plain,
         )
+        if question.correct_option is not None:
+            prompt += (
+                "\n\n# 待核对的候选答案键（不是已知正确答案）\n"
+                f"{question.correct_option}\n"
+                "独立检查该答案键与完整选项、题意和解答是否一致。"
+                "输出 JSON 必须包含布尔字段 answer_key_valid；"
+                "错误或无法确认时为 false，不得仅因提供了答案键而认定正确。"
+            )
         instruction = review_instruction.strip()[:2000]
         if instruction:
             prompt += (
@@ -328,9 +336,15 @@ class VerificationPipeline:
         try:
             result = await call_llm_json_with_retry(self.review_llm, prompt, max_attempts=2)
             verdict = str(result.get("verdict", "FAIL")).upper()
+            issues = list(result.get("issues") or [])
+            if question.correct_option is not None and result.get("answer_key_valid") is not True:
+                issues.append("候选答案键未获独立审核确认")
             return {
-                "passed": verdict == "PASS",
-                "issues": list(result.get("issues") or []),
+                "passed": verdict == "PASS" and (
+                    question.correct_option is None
+                    or result.get("answer_key_valid") is True
+                ),
+                "issues": issues,
                 "suggestions": str(result.get("suggestions") or ""),
                 # Phase 6c: 透传难度评分字段，由调用方决定是否使用
                 "difficulty_scores": result.get("difficulty_scores"),
@@ -345,7 +359,7 @@ class VerificationPipeline:
     ) -> VerificationEvidence:
         """G5：判断解答是否在尝试解这道题（方向/主题一致即可，不要求正确或完整）"""
         prompt = self._relevance_template.format(
-            question_latex=question.content,
+            question_latex=question.render_problem(),
             solution_latex=solution.solution_latex or solution.solution_plain,
         )
         try:
@@ -395,7 +409,7 @@ class VerificationPipeline:
     ) -> tuple[NumericalVerification, VerificationEvidence]:
         """生成数值检查并在显式信任策略的 sandbox 中执行。"""
         prompt = self._numerical_template.format(
-            question_latex=question.content,
+            question_latex=question.render_problem(),
             solution_sketch=solution.solution_latex or solution.solution_plain,
         )
         try:
@@ -422,7 +436,7 @@ class VerificationPipeline:
 
         sandbox_result = await self.sandbox.arun_python(
             code,
-            trust_policy=self.sandbox_trust_policy,
+            trust_policy=TrustPolicy.CONTAINER_REQUIRED,
         )
         stdout = sandbox_result.stdout or ""
         all_passed = "ALL_PASSED" in stdout
@@ -476,7 +490,7 @@ class VerificationPipeline:
         required: bool,
     ) -> VerificationEvidence:
         prompt = self._lean_template.format(
-            question_latex=question.content,
+            question_latex=question.render_problem(),
             solution_latex=solution.solution_latex or solution.solution_plain,
         )
         try:
@@ -502,7 +516,7 @@ class VerificationPipeline:
             )
         result = await self.sandbox.averify_lean(
             source,
-            trust_policy=self.sandbox_trust_policy,
+            trust_policy=TrustPolicy.CONTAINER_REQUIRED,
         )
         status = {
             SandboxStatus.SUCCEEDED: VerificationEvidenceStatus.PASSED,

@@ -30,3 +30,5 @@
   "methods_required": ["方法1", "方法2"],
   "estimated_difficulty": 6
 }}
+
+结构化题型必须在 JSON 中同时返回完整 options（选项列表）、correct_option（重新核验的答案键）和 blanks（空位数；不适用时为 null）。题干放 content_latex，不能遗漏或沿用已经不适配的选项与答案。

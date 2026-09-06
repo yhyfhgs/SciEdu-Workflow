@@ -238,3 +238,10 @@ uv run pytest
 恢复测试必须证明已完成节点没有再次调用 LLM；沙箱测试必须覆盖 unavailable/error；策略测试
 必须覆盖 formal 非适用拒绝和 strict/formal required fail-closed；浏览器 smoke test 必须覆盖 SSE
 重连、暂停/恢复、四态证据和生成题继续变式。
+
+
+## 2026-09-06 验证边界修复
+
+求解、深度求解、审核、相关性、数值与 Lean 验证使用同一完整题面表示，包含题干、题型、选项和空位数。独立求解不接收候选答案键；审核将候选答案键作为待核验数据，并要求 `answer_key_valid=true`，缺失或否定均阻止通过。演化必须重新输出结构化字段，不能把修改后的题干与过期选项或答案键拼接交付。
+
+模型生成的 Python、Lean 及深度求解工具代码固定使用 `container_required`，即使旧配置为 `trusted_local` 也不会取得本机信任。缺少容器时保留 `unavailable` 证据，required 检查阻止交付。底层 trusted-local 执行器仅供明确审核的静态可信代码直接调用；不能通过全局配置向生成链路授予信任。本次修复不改变数据库 schema。文本交付（对话、生成 API、组卷及导出）同样保留完整选项和空位数，不把候选答案键混入 question-only 输出。

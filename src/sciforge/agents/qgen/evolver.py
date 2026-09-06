@@ -119,12 +119,12 @@ class Evolver:
         """按失败类型选模板，并以模板真实占位符 .format 注入。"""
         if failure_kind == "solver":
             return self._solver_template.format(
-                original_question_latex=candidate.content,
+                original_question_latex=candidate.render_problem(),
                 confidence="low",
                 solver_feedback=failure_detail,
             )
         return self._verification_template.format(
-            original_question_latex=candidate.content,
+            original_question_latex=candidate.render_problem(),
             passed_checks="",
             failed_checks=failure_detail,
             suggestions=failure_detail,
@@ -139,6 +139,21 @@ class Evolver:
         # 兼容新/旧 key：content_latex（模板输出）优先，content 兜底
         content = str(data.get("content_latex") or data.get("content") or "").strip()
         if not content:
+            return None
+
+        if candidate.options and (
+            not isinstance(data.get("options"), list)
+            or not data["options"]
+            or not data.get("correct_option")
+        ):
+            return None
+        if candidate.blanks is not None and (
+            not isinstance(data.get("blanks"), int)
+            or isinstance(data["blanks"], bool)
+            or data["blanks"] < 1
+        ):
+            return None
+        if candidate.correct_option is not None and not data.get("correct_option"):
             return None
 
         difficulty = self._coerce_difficulty(data.get("estimated_difficulty"), candidate.difficulty)

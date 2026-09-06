@@ -37,7 +37,7 @@ class SolveEngine:
             )
 
         prompt = self._solve_template.format(
-            question_latex=question.content,
+            question_latex=question.render_problem(),
             knowledge_context=kp_context,
         )
 

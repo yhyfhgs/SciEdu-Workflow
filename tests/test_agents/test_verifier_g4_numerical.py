@@ -1,15 +1,22 @@
 """VerificationPipeline G4 数值验证（generate_numerical_test + sandbox 集成）
 
-mock LLM 只负责返回验证代码；沙箱真实执行（用纯 print 代码验证解析逻辑，不依赖 sympy）。
+mock LLM 只负责返回验证代码；沙箱返回记录式执行结果，验证解析逻辑；不执行模型生成的代码。
 """
 
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
-from sciforge.agents.qgen.verification_sandbox import TrustPolicy, VerificationSandbox
+from sciforge.agents.qgen.verification_sandbox import (
+    IsolationLevel,
+    SandboxStatus,
+    TrustPolicy,
+    VerificationExecutionResult,
+    VerificationSandbox,
+)
 from sciforge.agents.qgen.verifier import VerificationPipeline
 from sciforge.core.models import (
     Discipline,
@@ -36,6 +43,30 @@ class _LLM:
         pass
 
 
+def _sandbox(code: str) -> VerificationSandbox:
+    stdout = {
+        'print("PASS")\nprint("PASS")\nprint("PASS")\nprint("ALL_PASSED")': (
+            "PASS\nPASS\nPASS\nALL_PASSED"
+        ),
+        'print("FAIL: counterexample x=2")\nprint("SOME_FAILED: 1/3")': (
+            "FAIL: counterexample x=2\nSOME_FAILED: 1/3"
+        ),
+        'print("ALL_PASSED")': "ALL_PASSED",
+    }.get(code, "")
+    container = MagicMock()
+    container.run.return_value = VerificationExecutionResult(
+        status=SandboxStatus.SUCCEEDED if stdout else SandboxStatus.FAILED,
+        backend="fixture:container",
+        isolation=IsolationLevel.RESTRICTED_CONTAINER,
+        trust_policy=TrustPolicy.CONTAINER_REQUIRED,
+        stdout=stdout,
+        exit_code=0 if stdout else 1,
+    )
+    local = MagicMock()
+    local.run.side_effect = AssertionError("Generated code must never run locally")
+    return VerificationSandbox(container_python=container, local_python=local)
+
+
 def _q() -> Question:
     return Question(
         discipline=Discipline.MATH,
@@ -54,7 +85,7 @@ async def test_g4_all_passed() -> None:
         review_llm=_LLM({"verification_code": code}),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
         enable_numerical_verification=True,
-        sandbox=VerificationSandbox(),
+        sandbox=_sandbox(code),
         sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
     )
     result = await pipe.verify(_q(), _sol())
@@ -72,7 +103,7 @@ async def test_g4_some_failed_rejects() -> None:
         review_llm=_LLM({"verification_code": code}),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
         enable_numerical_verification=True,
-        sandbox=VerificationSandbox(),
+        sandbox=_sandbox(code),
         sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
     )
     result = await pipe.verify(_q(), _sol())
@@ -90,7 +121,7 @@ async def test_g4_exec_error_is_explicit_optional_evidence_not_fake_pass() -> No
         review_llm=_LLM({"verification_code": code}),  # type: ignore[arg-type]
         discipline=Discipline.MATH,
         enable_numerical_verification=True,
-        sandbox=VerificationSandbox(),
+        sandbox=_sandbox(code),
         sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
     )
     result = await pipe.verify(_q(), _sol())
@@ -109,7 +140,7 @@ async def test_g4_required_exec_error_blocks_publication() -> None:
         discipline=Discipline.MATH,
         enable_numerical_verification=True,
         require_numerical_verification=True,
-        sandbox=VerificationSandbox(),
+        sandbox=_sandbox("raise RuntimeError('boom')"),
         sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
     )
 
@@ -137,7 +168,7 @@ async def test_g4_required_plain_only_solution_is_not_skipped() -> None:
         review_llm=_LLM({"verification_code": code}),  # type: ignore[arg-type]
         enable_numerical_verification=True,
         require_numerical_verification=True,
-        sandbox=VerificationSandbox(),
+        sandbox=_sandbox(code),
         sandbox_trust_policy=TrustPolicy.TRUSTED_LOCAL,
     )
     solution = Solution(solution_plain="The derivative at 3 equals 6.", confidence="high")
