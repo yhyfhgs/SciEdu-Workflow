@@ -212,3 +212,19 @@ uv run --extra dev mypy src/sciforge/core src/sciforge/pipeline src/sciforge/sto
 ## License
 
 Private — All Rights Reserved.
+
+
+## 自动验证与升级恢复
+
+PR 与 `main` 的 GitHub Actions 使用锁文件在 Python 3.12 上运行 Ruff、Mypy 和全量 pytest；
+本地对应命令为 `uv sync --frozen --extra all --extra compute --extra docx`，然后
+`uv run --no-sync ruff check src/ tests/`、`uv run --no-sync mypy`、`uv run --no-sync pytest -q`。
+测试使用合成数据和模拟模型，不代表真实模型正确率或生产部署验收。
+
+内容库打开时会执行受支持版本的增量迁移。部署升级前先停止写入，使用 SQLite backup API
+分别备份内容、会话、执行与 SaaS 四库，并保存与备份对应的代码版本；WAL 模式不能只复制主
+`.db` 文件。恢复时保持服务停止，将备份恢复至单独路径，核验 `PRAGMA integrity_check`、
+`user_version` 与关键行后，再以备份对应的代码版本切换数据库路径。升级后产生的新数据需先
+单独保全和安排重放，代码 revert 不能撤销 schema 迁移或自动恢复这些数据。
+合成 v8 内容库的备份、迁移至 v14、恢复旧 schema 与原有行由
+`tests/test_storage/test_schema_migration.py` 覆盖；真实四库备份与恢复属于部署前独立验收。
