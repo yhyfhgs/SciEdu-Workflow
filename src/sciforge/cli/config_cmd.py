@@ -7,6 +7,11 @@
 - `sciforge config validate [--llm-config PATH]`
     遍历 KNOWN_TASKS，对每个 task 调用 LLMConfig.from_app_config 并报告最终配置，
     若任意 task 解析失败则 exit 1。
+
+- `sciforge config doctor --task TASK [--llm-config PATH]`
+    v11 §I.3 provider capability 自检（真实 API 调用，产生少量 token 成本）：
+    探测目标 task 的 provider 是否真支持 tool_use（C9）/ output_config（C1）；
+    multiturn tool_result 格式（C8）为静态判断（Messages 系 provider 才支持）。
 """
 
 from __future__ import annotations
@@ -159,3 +164,96 @@ def config_validate(
         error("部分 task 配置解析失败")
         raise typer.Exit(1)
     success("所有 task 配置解析成功")
+
+
+@config_app.command("doctor")
+def config_doctor(
+    task: str = typer.Option("extract_and_classify", "--task", help="要探测的 task 名"),
+    llm_config: Path | None = typer.Option(
+        Path("config/sciforge.toml"),
+        "--llm-config",
+        help="LLM TOML 配置文件路径",
+    ),
+) -> None:
+    """v11 §I.3 provider capability 自检——真实调用探测，产生少量 token 成本。
+
+    探测项：
+    - tool_use（C9）：发一个带最小工具定义的请求，确认 provider/网关是否
+      支持 tool calling（不支持时 backend 通常抛 ToolCallError 或 SDK 异常）
+    - output_config（C1）：发一个带 output_config.format 的请求，确认
+      provider/网关是否接受该参数而不报错（不代表严格遵循 schema，只确认
+      请求本身不被拒绝）
+    - multiturn tool_result 格式（C8）：静态判断——仅 Anthropic /
+      anthropic_compatible 走原生 Messages tool_result 格式，OpenAI/Gemini
+      不支持（``generate_multiturn`` 硬编码 Anthropic 格式，见 client.py）
+    """
+    import asyncio
+
+    from sciforge.llm.config import LLMConfig, LLMProvider
+
+    app = _load_config(llm_config)
+    try:
+        cfg = LLMConfig.from_app_config(app, task)
+    except Exception as exc:
+        error(f"task {task!r} 配置解析失败: {exc}")
+        raise typer.Exit(1) from exc
+
+    from sciforge.llm.client import LLMClient
+
+    client = LLMClient(cfg)
+
+    table = Table(title=f"Capability 自检: task={task} provider={cfg.provider.value}")
+    table.add_column("能力", style="cyan")
+    table.add_column("结果")
+    table.add_column("说明", style="dim")
+
+    # multiturn 格式（C8）：静态判断，不需要真实调用
+    supports_multiturn = cfg.provider in (
+        LLMProvider.ANTHROPIC,
+        LLMProvider.ANTHROPIC_COMPATIBLE,
+    )
+    table.add_row(
+        "multiturn tool_result 格式",
+        "[green]支持[/]" if supports_multiturn else "[yellow]不支持[/]",
+        "Messages 系原生格式" if supports_multiturn else "generate_multiturn 会失败，退单轮",
+    )
+
+    async def _probe_tool_use() -> tuple[bool, str]:
+        from sciforge.llm.tool_definitions import EXECUTE_PYTHON_TOOL
+
+        try:
+            await client.generate_with_tools(
+                [{"role": "user", "content": "只需返回 done，不要调用任何工具。"}],
+                tools=[EXECUTE_PYTHON_TOOL],
+                max_tokens=16,
+            )
+            return True, "请求成功"
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)[:100]
+
+    async def _probe_output_config() -> tuple[bool, str]:
+        try:
+            await client.generate(
+                "只需返回 {}",
+                max_tokens=16,
+                output_config={"format": {"type": "json_schema", "schema": {"type": "object"}}},
+            )
+            return True, "请求未报错"
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)[:100]
+
+    tool_ok, tool_detail = asyncio.run(_probe_tool_use())
+    table.add_row(
+        "tool_use（C9）",
+        "[green]支持[/]" if tool_ok else "[red]不支持[/]",
+        tool_detail,
+    )
+
+    output_config_ok, output_config_detail = asyncio.run(_probe_output_config())
+    table.add_row(
+        "output_config（C1）",
+        "[green]支持[/]" if output_config_ok else "[yellow]不支持/未确认[/]",
+        output_config_detail,
+    )
+
+    console.print(table)

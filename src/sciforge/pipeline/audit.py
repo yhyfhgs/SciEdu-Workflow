@@ -196,7 +196,7 @@ def audit_directory(
                     total_expected += (total_pages + pages_per_batch - 1) // pages_per_batch
                 pdf_batches = [(ps, pe) for ps, pe, _ in batches]
                 per_file_complete.append(_is_batches_complete_for_pdf(pdf_batches, total_pages))
-            elif fmt in (DocumentFormat.MARKDOWN, DocumentFormat.TEX):
+            elif fmt in (DocumentFormat.MARKDOWN, DocumentFormat.TEX, DocumentFormat.IMAGE):
                 if total_expected is not None:
                     total_expected += 1
                 per_file_complete.append(len(batches) >= 1)

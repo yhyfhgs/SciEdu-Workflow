@@ -7,14 +7,39 @@ from typing import Any, cast
 
 import structlog
 
+from sciforge.core.models import ToolResult
 from sciforge.llm.backends.base import BaseBackend
 from sciforge.llm.config import LLMConfig, LLMProvider
+from sciforge.llm.tool_definitions import to_anthropic_format
 
 logger = structlog.get_logger()
 
-# system prompt 自动缓存阈值（字符）。低于此不主动缓存（Anthropic 对 <1024 token 块
-# 本就忽略 cache_control）；中文指令很密，>500 字基本已超最小可缓存粒度。
-_AUTO_CACHE_MIN_CHARS = 500
+# system prompt 自动缓存阈值（字符），按模型家族路由。Anthropic 对低于最小 token
+# 门槛的 block 会**静默忽略** cache_control（Opus/Sonnet 系 1024 tok、Haiku 系
+# 4096 tok），且每请求只有 4 个缓存断点，不应浪费在缓存不了的短 block 上。
+# 取 ~2× token 门槛的字符数作安全边际（中文约 0.5–1 tok/字，2048 字中文
+# ≈ 1000–2000 tok）；未知模型（兼容网关等）取保守默认。显式 config.cache_control
+# 不受阈值限制（_system_param 中优先）。
+_AUTO_CACHE_MIN_CHARS_DEFAULT = 2048
+_AUTO_CACHE_MIN_CHARS_BY_FAMILY: dict[str, int] = {
+    "haiku": 8192,
+    "opus": 2048,
+    "sonnet": 2048,
+}
+
+
+def _auto_cache_min_chars(model: str) -> int:
+    """按模型家族返回自动加 cache_control 的最小 system 字符数。"""
+    lowered = model.lower()
+    for family, min_chars in _AUTO_CACHE_MIN_CHARS_BY_FAMILY.items():
+        if family in lowered:
+            return min_chars
+    return _AUTO_CACHE_MIN_CHARS_DEFAULT
+
+
+# REC-07：检测到 max_tokens 截断时，把 max_tokens 翻倍重抓一次的上限（避免静默丢尾部条目）。
+# 仅在原 max_tokens 有余量时触发；上限保守，避免超过模型输出上限触发 4xx。
+_TRUNCATION_REFETCH_CEILING = 32768
 
 
 class AnthropicBackend(BaseBackend):
@@ -59,12 +84,18 @@ class AnthropicBackend(BaseBackend):
           ``messages.create()`` 没有 ``thinking`` 形参会直接 TypeError；且 anthropic 兼容
           网关（MiniMax / Kimi 等）本就从请求 body 读 ``thinking``。extra_body 是 SDK 官方
           逃生通道，版本无关。典型用途：``thinking={"type":"disabled"}`` 关闭 MiniMax-M3 推理。
+        - output_config（v11 §G.3，C1）同理经 ``extra_body`` 透传：GA 原生 JSON Schema
+          输出通道尚新，不假设当前 anthropic SDK 版本原生支持该关键字参数。
         """
         params = {k: v for k, v in neutral.items() if k != "cache_control"}
         thinking = params.pop("thinking", None)
-        if thinking is not None:
+        output_config = params.pop("output_config", None)
+        if thinking is not None or output_config is not None:
             extra = dict(params.get("extra_body") or {})
-            extra.setdefault("thinking", thinking)
+            if thinking is not None:
+                extra.setdefault("thinking", thinking)
+            if output_config is not None:
+                extra.setdefault("output_config", output_config)
             params["extra_body"] = extra
         return params
 
@@ -80,14 +111,34 @@ class AnthropicBackend(BaseBackend):
         """
         if not system:
             return system
-        auto = (
-            self.config.provider == LLMProvider.ANTHROPIC
-            and len(system) >= _AUTO_CACHE_MIN_CHARS
+        # REC-08：纯 Anthropic 自动缓存；anthropic_compatible 需 supports_prompt_cache 显式放行。
+        cacheable_provider = self.config.provider == LLMProvider.ANTHROPIC or (
+            self.config.provider == LLMProvider.ANTHROPIC_COMPATIBLE
+            and getattr(self.config, "supports_prompt_cache", False)
         )
+        auto = cacheable_provider and len(system) >= _auto_cache_min_chars(self.config.model)
         if not (self.config.cache_control or auto):
             return system
         spec = self.config.cache_control or {"type": "ephemeral"}
         return [{"type": "text", "text": system, "cache_control": spec}]
+
+    @staticmethod
+    def _extract_usage(response: Any) -> dict[str, int]:
+        """读取真实 token usage（REC-08）：含 cache 命中量，供 llm_call_metrics 验证缓存收益。"""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        out: dict[str, int] = {}
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ):
+            val = getattr(usage, field, None)
+            if isinstance(val, int):
+                out[field] = val
+        return out
 
     def _maybe_inject_cache_control(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """（仅 vision 路径用）若 config.cache_control 非空，注入到最后一个 user message 末尾块。
@@ -123,6 +174,24 @@ class AnthropicBackend(BaseBackend):
                 messages=cast(Any, messages),
                 **sdk_params,
             )
+            # REC-07：max_tokens 截断 → 有余量时翻倍重抓一次（避免静默丢尾部条目/坏 JSON）
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                cur = int(sdk_params.get("max_tokens", self.config.max_tokens))
+                bumped = min(cur * 2, _TRUNCATION_REFETCH_CEILING)
+                if bumped > cur:
+                    logger.warning(
+                        "anthropic_truncation_refetch",
+                        old_max_tokens=cur,
+                        new_max_tokens=bumped,
+                        model=self.config.model,
+                    )
+                    response = await self.async_client.messages.create(
+                        model=self.config.model,
+                        system=cast(Any, self._system_param(system)),
+                        messages=cast(Any, messages),
+                        **{**sdk_params, "max_tokens": bumped},
+                    )
+            self.last_usage = self._extract_usage(response)
             return self._extract_text(response)
         except Exception as e:
             self._raise_mapped(e)
@@ -137,6 +206,7 @@ class AnthropicBackend(BaseBackend):
                 messages=cast(Any, messages),
                 **sdk_params,
             )
+            self.last_usage = self._extract_usage(response)
             return self._extract_text(response)
         except Exception as e:
             self._raise_mapped(e)
@@ -260,7 +330,7 @@ class AnthropicBackend(BaseBackend):
                 model=self.config.model,
                 system=system,
                 messages=cast(Any, messages),
-                tools=cast(Any, tools),
+                tools=cast(Any, to_anthropic_format(tools)),
                 **sdk_params,
             )
             return self._parse_tool_response(response)
@@ -280,7 +350,7 @@ class AnthropicBackend(BaseBackend):
                 model=self.config.model,
                 system=system,
                 messages=cast(Any, messages),
-                tools=cast(Any, tools),
+                tools=cast(Any, to_anthropic_format(tools)),
                 **sdk_params,
             )
             return self._parse_tool_response(response)
@@ -291,21 +361,117 @@ class AnthropicBackend(BaseBackend):
     def _parse_tool_response(response: Any) -> dict[str, Any]:
         """将 Anthropic 响应解析为统一格式"""
         content = ""
-        tool_calls = []
+        tool_calls: list[dict[str, Any]] = []
         for block in response.content:
             if block.type == "text":
                 content += block.text
             elif block.type == "tool_use":
-                tool_calls.append(
-                    {
-                        "id": block.id,
-                        "name": block.name,
-                        "arguments": block.input,
-                    }
-                )
+                raw_input = block.input
+                call: dict[str, Any] = {
+                    "id": block.id,
+                    "name": block.name,
+                    "arguments": raw_input if isinstance(raw_input, dict) else {},
+                }
+                if not isinstance(raw_input, dict):
+                    call["arguments_error"] = (
+                        "Anthropic tool_use.input 必须是 JSON object，"
+                        f"实际为 {type(raw_input).__name__}"
+                    )
+                tool_calls.append(call)
+        raw_assistant_message = {"role": "assistant", "content": response.content}
         return {
             "content": content,
             "tool_calls": tool_calls,
             "stop_reason": response.stop_reason,
             "raw_content": response.content,
+            "raw_assistant_message": raw_assistant_message,
         }
+
+    @staticmethod
+    def build_tool_result_messages(
+        response: dict[str, Any],
+        tool_results: list[ToolResult],
+    ) -> list[dict[str, Any]]:
+        """按 Anthropic Messages 协议回放 assistant + user/tool_result。"""
+        assistant = response.get("raw_assistant_message")
+        if not isinstance(assistant, dict):
+            # 兼容自定义/mock backend 的旧统一结果；真实 Anthropic 响应始终走
+            # raw_assistant_message，从而完整保留 text/tool_use block 顺序。
+            content: list[dict[str, Any]] = []
+            text = response.get("content")
+            if isinstance(text, str) and text:
+                content.append({"type": "text", "text": text})
+            for call in response.get("tool_calls", []):
+                content.append(
+                    {
+                        "type": "tool_use",
+                        "id": call.get("id", ""),
+                        "name": call.get("name", ""),
+                        "input": call.get("arguments", {}),
+                    }
+                )
+            assistant = {"role": "assistant", "content": content}
+
+        result_blocks = [
+            {
+                "type": "tool_result",
+                "tool_use_id": result.call_id,
+                "content": result.output,
+                "is_error": result.is_error,
+            }
+            for result in tool_results
+        ]
+        return [assistant, {"role": "user", "content": result_blocks}]
+
+    # ── Message Batches API（REC-23：异步批处理，约半价）────────────────
+    # 适合**非交互式批处理**（如 parse run-book / 目录批量重标）：把彼此独立的调用
+    # 收集成一个 batch 一次提交、轮询取回。流式 Producer-Consumer 主路径不走这里。
+
+    def _batches_api(self) -> Any:
+        batches = getattr(getattr(self.async_client, "messages", None), "batches", None)
+        if batches is None:
+            raise RuntimeError(
+                "当前 anthropic SDK 不支持 Message Batches API（请升级 anthropic SDK）"
+            )
+        return batches
+
+    async def submit_message_batch(self, requests: list[dict[str, Any]]) -> str:
+        """提交一批独立请求，返回 batch_id。
+
+        requests 每项：``{"custom_id": str, "prompt": str, "system"?: str, "max_tokens"?: int}``。
+        """
+        sdk_params = self._to_sdk_params(self._resolve_params())
+        body: list[dict[str, Any]] = []
+        for r in requests:
+            params: dict[str, Any] = dict(sdk_params)
+            params["model"] = self.config.model
+            params["max_tokens"] = int(
+                r.get("max_tokens") or sdk_params.get("max_tokens") or self.config.max_tokens
+            )
+            params["messages"] = [{"role": "user", "content": r["prompt"]}]
+            if r.get("system"):
+                params["system"] = r["system"]
+            body.append({"custom_id": r["custom_id"], "params": params})
+        batch = await self._batches_api().create(requests=body)
+        return str(batch.id)
+
+    async def get_message_batch_status(self, batch_id: str) -> str:
+        """返回 batch 处理状态（in_progress / ended / ...）。"""
+        batch = await self._batches_api().retrieve(batch_id)
+        return str(getattr(batch, "processing_status", "unknown"))
+
+    async def fetch_message_batch_results(self, batch_id: str) -> dict[str, str]:
+        """取回结果：``{custom_id: text}``。失败/拒答条目映射为空串。"""
+        out: dict[str, str] = {}
+        async for entry in await self._batches_api().results(batch_id):
+            cid = str(getattr(entry, "custom_id", ""))
+            result = getattr(entry, "result", None)
+            text = ""
+            if result is not None and getattr(result, "type", None) == "succeeded":
+                msg = getattr(result, "message", None)
+                blocks = getattr(msg, "content", []) or []
+                text = "".join(
+                    getattr(b, "text", "") for b in blocks if getattr(b, "type", None) == "text"
+                )
+            out[cid] = text
+        return out

@@ -9,6 +9,7 @@ from sciforge import __version__
 from sciforge.cli.config_cmd import config_app
 from sciforge.cli.generate import generate_app
 from sciforge.cli.parse import parse_app
+from sciforge.cli.serve import serve_app
 from sciforge.config.logging import setup_logging
 
 app = typer.Typer(
@@ -49,3 +50,4 @@ def main(
 app.add_typer(parse_app)
 app.add_typer(generate_app)
 app.add_typer(config_app)
+app.add_typer(serve_app)

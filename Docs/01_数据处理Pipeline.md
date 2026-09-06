@@ -1,7 +1,21 @@
 # 数据处理 Pipeline
 
-> 版本: v8.1 | 日期: 2026-05-31
+> 版本: v8.2 | 日期: 2026-06-15
 > 架构: **5 阶段并发 Producer-Consumer**（Task0 + 5 Stage + 4 queue + asyncio.gather）
+>
+> **2026-06-15 优化批次（30 条 REC，详见 [PROGRESS.md](PROGRESS.md) §00；AGENTS.md 为权威开关清单）**：
+> - Task0：文本型 PDF 探测文字层走 fitz（0 LLM，REC-01，`--force-vlm` 覆盖）；VLM 批内 Semaphore 并发+保序+截断检测（REC-02）
+> - Stage1Extract：首块 `detect_genre` 书本/试卷/讲义→试卷/讲义关 fast-skip 提召回（REC-14）；
+>   文末 `force_extract` 兜底防漏（REC-12）；确定性章节边界注入提取 prompt（REC-20）；窗口管理点 `_sync_state` 节流（REC-17）
+> - Stage1Review：**风险信号制**条件跳过（REC-06，取代"高危类型一律强审"）
+> - Stage2Annotate：**批量打标**（同 block N 条合 1 次 LLM，REC-04）；读 **tag_tree 只读快照**（REC-09）；默认并发 4（REC-03）
+> - Stage2Review：**默认关闭**（REC-05，职责交 Stage3 确定性规则）
+> - Stage3Persist：**批量入库** + `count_existing_content` 去重（REC-10）；figures 图表抽取落库（REC-18）；
+>   options/correct_option/blanks 结构化直通（REC-19）；reconciliation 高置信自动纠正 opt-in（REC-15）
+> - 入库后：post-pass/目录预扫 `to_thread` 化（REC-17）；`parse relink` 跨文档题答联动（REC-29）
+> - LLM 层：兼容网关 prompt cache opt-in + 真实 usage 采集（REC-08）、thinking 默认 + 分级模型路由（REC-13）、
+>   截断翻倍重抓（REC-07）、Message Batches API（REC-23）、JSON mode 默认（REC-07）
+> - 一本 300 页书 LLM 调用 ~1930→~390；schema 升至 **v10**（增量迁移）
 >
 > v7→v8 变更要点：
 > - 三段式（Task0+Task1+Task2）→ **5 阶段**（Task0 + Stage1Extract + Stage1Review + Stage2Annotate + Stage2Review + Stage3Persist），共 6 个 `asyncio.Task` 并发
@@ -29,7 +43,11 @@
 
 ### 1.2 通用数据
 
-任意 PDF / DOCX / MD / TeX / PPTX / EPUB / CSV 教材、讲义、试卷。多卷文件（`*_part_1_3.pdf` 命名约定）会被自动按页码合并为单个 logical_document。
+支持 PDF / DOCX / PPTX / MD / TeX / CSV / TSV / XLSX / HTML / EPUB / JSON /
+JSONL / TXT / RST / PNG / JPEG / WebP / GIF。CSV、表格、HTML、EPUB、JSON 与纯文本
+先由确定性 adapter 转换为带 source locator 的 Markdown block（0 LLM）；单图片和
+无可用文字层的扫描文档才走 VLM。多卷文件（`*_part_1_3.pdf` 命名约定）
+会自动合并为单个 logical_document。
 
 ---
 
@@ -53,14 +71,15 @@
 ```
 logical_document (单文件 or *_part_N_M 多分卷)
        │
-       ▼  Task0 Producer (vlm / pymupdf / markdown)
-            每 5 页一批 → page_NNN-NNN.md (1-based)
+       ▼  Task0 Producer (adapter / vlm / pymupdf / markdown)
+            每 5 页或每结构块一批 → page_NNN-NNN.md (1-based)
             失败 batch → state.failed_batches；不推入 queue
        │
        ▼  q_md (maxsize=pipeline_queue_size，FIFO)
        │
        ▼  Stage1Extract (LLM 调用 1)
-            行缓冲 + 500 行窗口；0 条则扩 500 → 上限 3000；达 max 后连续 N 次空 → force consume
+            行缓冲 + 500 行窗口；0 条则扩 500 → 上限 3000；达 max 后连续 N 次空 →
+            终端无损兜底（非空/强 marker span 写 uncertain，占位后消费）
             每次输出 BatchItemExtractPayloadLLM：items[] + stop_reason + last_consumed_line
             为 items 连续分配 item_ids，滑窗到 last_consumed_line+1
             mirror → items/stage1/item_<id>.json
@@ -144,9 +163,11 @@ class BatchResult:
 
 | 类 | 适用格式 | 特点 |
 |---|---|---|
-| `VlmRecognizer` | PDF / DOCX | 多模态视觉识别（最高精度），保留 LaTeX 公式与图片裁剪 |
+| `VlmRecognizer` | 扫描 PDF / DOCX / PPTX | 多模态视觉识别，保留 LaTeX 公式与图片裁剪 |
 | `PyMuPdfRecognizer` | PDF | 纯文本提取，无 LLM，速度最快 |
 | `MarkdownRecognizer` | MD / TeX | 整文件单 batch |
+| `AdapterRecognizer` | CSV/TSV/XLSX/HTML/EPUB/JSON/JSONL/TXT/RST | 确定性结构转换，0 LLM |
+| `ImageRecognizer` | PNG/JPEG/WebP/GIF | 单图一次受限 VLM 转写，checkpoint 命中时 0 调用 |
 
 ### 3.3 落盘约定
 
@@ -442,28 +463,38 @@ class FileExtractionState(BaseModel):
 | `extract_window_lines` | 500 | Stage1Extract 初始窗口 |
 | `extract_max_window_lines` | 3000 | 扩窗口上限 |
 | `extract_window_expand_step` | 500 | 每次扩窗口步长 |
-| `extract_empty_force_limit` | 2 | 达 max 后连续 N 次空 → force consume |
+| `extract_empty_force_limit` | 2 | 达 max 后连续 N 次空 → 构造 uncertain 无损兜底后消费 |
 | `stage1_extract_max_retries` | 3 | Stage1Extract LLM retry |
 | `stage1_review_enabled` | True | Stage1Review 是否启用 |
 | `stage1_review_max_retries` | 2 | Stage1Review LLM retry |
 | `stage2_annotate_max_retries` | 3 | Stage2Annotate LLM retry |
-| `stage2_review_enabled` | True | Stage2Review 是否启用 |
+| `stage2_review_enabled` | **False** | Stage2Review 是否启用（REC-05：与 Stage3 确定性规则重叠，默认关，opt-in） |
 | `stage2_review_max_retries` | 2 | Stage2Review LLM retry |
 | `retry_feedback_enabled` | True | retry 时把 error 注入 prompt |
 | `empty_window_fast_skip` | True | 无条目标记窗口零成本跳过 |
 | `review_conditional_enabled` | True | Stage1/Stage2 低风险 review 条件化跳过 |
-| `stage2_annotate_concurrency` | 1 | Stage2Annotate worker 数（>1 启用 ReorderBuffer） |
-| `stage2_review_concurrency` | 1 | Stage2Review worker 数（>1 启用 ReorderBuffer） |
+| `stage2_annotate_concurrency` | **4** | Stage2Annotate worker 数（REC-03，>1 启用 ReorderBuffer） |
+| `stage2_review_concurrency` | **2** | Stage2Review worker 数（REC-03，>1 启用 ReorderBuffer） |
 | `pipeline_queue_size` | 4 | Task0 → Stage1Extract q_md 大小 |
-| `pipeline_stage_queue_size` | 2 | 各 stage 间 queue 大小 |
-| `extract_retry_base_delay` | 2.0 | LLM retry 指数退避基础秒数 |
+| `pipeline_stage_queue_size` | **8** | 各 stage 间 queue 大小（REC-03：2→8 平滑 LLM 延迟抖动） |
+| `extract_retry_base_delay` | 2.0 | LLM retry 指数退避基础秒数（+±25% jitter，REC-24） |
 | `tag_tree_max_depth` | 4 | tag_tree 注入 prompt 深度上限 |
 | `tag_tree_max_nodes` | 200 | tag_tree 注入 prompt 节点上限 |
+| `tag_tree_snapshot_refresh_gap` | 16 | Stage2 只读 tag_tree 快照刷新间隔（条；REC-09） |
 | `checkpoint_flush_interval` | 3.0 | state.json 节流保存秒数 |
-| `pages_per_batch` | 5 | Task0 每批页数 |
+| `pages_per_batch` | 5 | Task0 每批页数（生产 TOML 常设 10；REC-30 audit 与 run 同源） |
 | `vlm_max_retries` | 3 | Task0 batch 重试次数 |
-| `max_concurrent_files` | 4 | 目录模式并发 logical_document 数 |
-| `max_concurrent_llm_calls` | 5 | 全局 LLM 并发上限 |
+| `vlm_auto_text_detect` | True | 文字层 PDF 自动降级 fitz 走 0-LLM 提取（REC-01；`--force-vlm` 关闭） |
+| `max_concurrent_files` | **8** | 目录模式并发 logical_document 数（REC-30 统一，原形参 4） |
+| `max_concurrent_llm_calls` | **8** | 全局 LLM 并发上限（REC-03，≥并发 worker 总和） |
+| `stage2_annotate_batch` | True | 批量打标：同 block N 条合 1 次 LLM（REC-04，降级逐条） |
+| `stage2_annotate_batch_size` | 8 | 单次批量打标最多合并条数（REC-04） |
+| `stage3_persist_batch_size` | 16 | Stage3 攒批入库的批大小（REC-10，executemany+单次 commit） |
+| `reconciliation_autofix` | False | post-pass 确定性自动纠正（REC-15，保守：仅高置信 kp_type 回改 DB） |
+
+> 完整开关（含 `intra_doc_parallel_extract` 单文档并行、`answer_linking_enabled` /
+> `relation_inference_enabled` / `reconciliation_enabled` post-pass、`pipeline_prompt_cache_enabled`
+> 等）见 [AGENTS.md](../AGENTS.md) 的「Pipeline 优化开关」与 `src/sciforge/config/settings.py`。
 
 ---
 
@@ -504,7 +535,7 @@ uv run sciforge parse run <path> [options]
 | `--extract-expand-step` | 500 | 每次扩窗口步长 |
 | `--max-retries` | 3 | LLM/VLM 重试次数 |
 | `--max-files, -j` | 4 | 目录模式并发 |
-| `--restart` | False | 忽略 checkpoint 从头开始（DB schema < v7 时必需） |
+| `--restart` | False | 忽略 checkpoint 从头开始（DB schema < v8 或 checkpoint 不兼容时必需） |
 | `--dry-run` | False | 不写 DB |
 | `--skip-llm` | False | 跳过 LLM 调用（仅识别，整条 pipeline drain） |
 | `--llm-config` | `config/sciforge.toml` | TOML 配置 |
@@ -515,7 +546,10 @@ uv run sciforge parse run <path> [options]
 
 ## 14. 数据模型
 
-### 14.1 KnowledgePoint / Question（DB schema v8，详见 Docs/05 顶部 v8 变更）
+### 14.1 KnowledgePoint / Question（DB schema v14）
+
+条目完整性、分学科/题型规则、concept graph、评价门禁与存储性能契约详见
+[`Docs/21_知识库构建标准与数据契约.md`](21_知识库构建标准与数据契约.md)。
 
 ```python
 class KnowledgePoint(BaseModel):
@@ -533,8 +567,11 @@ class KnowledgePoint(BaseModel):
     source_file: str                   # 源 logical_document 文件路径（用于追溯）
     start_line: int
     end_line: int
+    start_char: int
+    end_char: int
+    page: int | None
     order_index: int                   # = item_id（跨文件全局递增）
-    # 相对 v5 删除：source_chapter
+    ingestion_status: Literal["accepted", "uncertain", "needs_patch", "rejected"]
 
 class Question(BaseModel):
     # 类似 KP，但有 question_type / solution_content
@@ -574,9 +611,9 @@ ls data/checkpoint/<file_hash>/recognize/file_000_*/
 # 3. DB 统计
 uv run sciforge parse db-stats data/sciforge.db
 
-# 4. order_index 单调递增 + schema v8 确认
-sqlite3 data/sciforge.db "PRAGMA user_version"  # 应为 8
-sqlite3 data/sciforge.db ".schema knowledge_points"  # 含 number_canonical/seq_*/content_hash
+# 4. order_index 单调递增 + schema v14 确认
+sqlite3 data/sciforge.db "PRAGMA user_version"  # 应为 14
+sqlite3 data/sciforge.db ".schema knowledge_points"  # 含 locator/ingestion_status
 
 # 5. 入库后只读体检（提取量/类型双维度/题答绑定/编号/去重/知识图谱边）
 uv run sciforge parse validate data/sciforge.db
@@ -620,6 +657,6 @@ sqlite3 data/sciforge.db "SELECT tags FROM knowledge_points LIMIT 5"
 | `src/sciforge/prompts/templates/pipeline/annotate_stage2_review.txt` | Stage2Review prompt |
 | `src/sciforge/prompts/templates/pipeline/vlm_convert.txt` | Task0 VLM prompt |
 | `src/sciforge/storage/sqlite_backend.py` | SQLite 存储 + SchemaVersionMismatch |
-| `src/sciforge/storage/schema.sql` | DB schema v7 |
+| `src/sciforge/storage/schema.sql` | DB schema v14（核心条目 + concept/evaluation/review + ingestion governance） |
 | `src/sciforge/cli/parse.py` | CLI 入口 |
 | `config/sciforge.toml` | LLM + pipeline TOML 配置 |

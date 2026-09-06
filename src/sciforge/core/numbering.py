@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 # 全角数字 → 半角
 _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
@@ -44,8 +45,12 @@ _PREFIX_RE = re.compile(rf"^\s*(?:{_PREFIX_KEYWORDS})\s*", re.IGNORECASE)
 _NUMERIC_SEQ_RE = re.compile(r"[0-9]+(?:\.[0-9]+)*")
 
 
+@lru_cache(maxsize=8192)
 def canonicalize_number(raw: str) -> str:
     """把原始题号规范化为 ``"3.2"`` / ``"1"`` / ``"3.2.1"`` 形态。
+
+    REC-26：纯函数（仅依赖 raw），按入参记忆化——每条目构造/赋值都会调用，
+    且 parse_number_components 内部再调一次；缓存消除重复正则扫描（幂等不受影响）。
 
     步骤：全角→半角 → 剥离条目关键字前缀 → 处理"第N题"包装 →
     统一分隔符为 '.' → 提取第一个数字序列。无数字则返回 ""。
@@ -84,6 +89,7 @@ def canonicalize_number(raw: str) -> str:
     return m.group(0).rstrip(".")
 
 
+@lru_cache(maxsize=8192)
 def parse_number_components(raw: str) -> tuple[int | None, int | None, int | None]:
     """解析题号为 ``(chapter, section, index)`` 三元组，供编号连续性 audit。
 

@@ -1,16 +1,46 @@
 """DisciplineRegistry / DisciplineSpec 单元测试"""
 
+import pytest
+
 from sciforge.core.models import Discipline
 from sciforge.disciplines import DISCIPLINE_REGISTRY, DisciplineRegistry, DisciplineSpec
 
 
-def test_default_registry_has_math_and_physics():
-    assert DISCIPLINE_REGISTRY.has(Discipline.MATH)
-    assert DISCIPLINE_REGISTRY.has(Discipline.PHYSICS)
-    assert set(DISCIPLINE_REGISTRY.list_disciplines()) == {
-        Discipline.MATH,
-        Discipline.PHYSICS,
-    }
+def test_default_registry_has_every_stable_top_level_discipline():
+    assert set(DISCIPLINE_REGISTRY.list_disciplines()) == set(Discipline)
+
+
+@pytest.mark.parametrize(
+    ("discipline", "tag_root", "kp_type", "question_type"),
+    [
+        (Discipline.MATH, "math:数学", "theorem", "proof"),
+        (Discipline.PHYSICS, "physics:物理", "law", "calculation"),
+        (Discipline.CHEMISTRY, "chemistry:化学", "reaction", "mechanism_analysis"),
+        (Discipline.BIOLOGY, "biology:生物", "process", "data_analysis"),
+        (Discipline.OTHER, "other:其他", "fact", "analysis"),
+    ],
+)
+def test_each_discipline_has_executable_contract(
+    discipline: Discipline,
+    tag_root: str,
+    kp_type: str,
+    question_type: str,
+) -> None:
+    spec = DISCIPLINE_REGISTRY.get(discipline)
+    assert spec.tag_root == tag_root
+    assert kp_type in spec.allowed_kp_types
+    assert question_type in spec.allowed_question_types
+    assert spec.prompt_vars["discipline_taxonomy_root"] == discipline.value
+    assert spec.prompt_vars["discipline_document_expert"]
+    assert spec.prompt_vars["discipline_vlm_expert"]
+
+
+@pytest.mark.parametrize("discipline", list(Discipline))
+def test_each_discipline_has_controlled_taxonomy_root(discipline: Discipline) -> None:
+    from sciforge.pipeline.taxonomy_validator import TaxonomyValidator
+
+    validator = TaxonomyValidator()
+    assert validator.has_path(discipline.value)
 
 
 def test_math_spec_fields():

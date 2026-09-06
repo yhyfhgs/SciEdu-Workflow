@@ -37,7 +37,7 @@ class SolveEngine:
             )
 
         prompt = self._solve_template.format(
-            question_latex=question.content,
+            question_latex=question.render_problem(),
             knowledge_context=kp_context,
         )
 
@@ -64,5 +64,19 @@ class SolveEngine:
             question_id=question.id,
             solution_latex=solution_text,
             methods_used=list(result.get("methods_used") or []),
+            step_count=_non_negative_int(result.get("step_count")),
+            self_check=str(result.get("self_check") or ""),
             confidence=confidence_raw,  # type: ignore[arg-type]
         )
+
+
+def _non_negative_int(value: object) -> int:
+    """Parse an optional model count without letting malformed JSON fail solving."""
+    if isinstance(value, bool):
+        return 0
+    if not isinstance(value, (int, float, str)):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0

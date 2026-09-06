@@ -1,0 +1,26 @@
+你是一位 Lean 4 形式化专家。把下面的数学题与候选解答转换为一个**自包含、可编译**的
+Lean 4 文件，用于验证候选结论。形式化必须忠实保留题目的量词、定义域、前提与结论。
+
+# 题目
+
+{question_latex}
+
+# 候选解答
+
+{solution_latex}
+
+# 约束
+
+1. 只使用 Lean 4 / Mathlib 中明确可用的定义和定理。
+2. 禁止 `sorry`、`admit`、`axiom`、`unsafe` 以及绕过证明的占位符。
+3. 如果自然语言到 Lean 的翻译需要额外选择（例如端点、非零条件、有限性），在
+   `translation_assumptions` 中逐条说明；不要悄悄加强题目条件。
+4. `lean_source` 必须包含 import、theorem 声明和完整 proof。
+
+# 输出 JSON（不要 markdown 代码块）
+
+{{
+  "lean_source": "import Mathlib\n\ntheorem ... := by\n  ...",
+  "translation_assumptions": ["自然语言与形式化之间的明确对应"],
+  "formalized_claim": "一句话说明实际编译验证的命题"
+}}

@@ -105,6 +105,78 @@ def test_pdftotext_recognizer_batches(monkeypatch, tmp_path: Path) -> None:
     assert (output_dir / "page_001-002.md").read_text(encoding="utf-8") == "pages 1-2"
 
 
+def test_get_recognizer_pdf_autodowngrades_to_pymupdf_when_text_layer(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """REC-01：探测到文字层的 PDF（默认 vlm_auto_text_detect=True）自动走 PyMuPdf（0 LLM）。"""
+    pdf_path = tmp_path / "ebook.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    monkeypatch.setattr(recognizer_mod, "_has_fitz", lambda: True)
+    monkeypatch.setattr(recognizer_mod, "pdf_has_extractable_text_layer", lambda *a, **k: True)
+
+    recognizer = recognizer_mod.get_recognizer(
+        DocumentFormat.PDF,
+        backend="vlm",
+        llm_client=_VisionLLM(),
+        config=AppConfig(),
+        discipline=Discipline.MATH,
+        file_path=pdf_path,
+    )
+
+    assert isinstance(recognizer, recognizer_mod.PyMuPdfRecognizer)
+
+
+def test_get_recognizer_pdf_force_vlm_skips_text_layer_probe(monkeypatch, tmp_path: Path) -> None:
+    """REC-01：vlm_auto_text_detect=False（--force-vlm）时即便有文字层仍走 VLM。"""
+    pdf_path = tmp_path / "ebook.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    monkeypatch.setattr(recognizer_mod, "_has_fitz", lambda: True)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("force-vlm 时不应探测文字层")
+
+    monkeypatch.setattr(recognizer_mod, "pdf_has_extractable_text_layer", _boom)
+
+    recognizer = recognizer_mod.get_recognizer(
+        DocumentFormat.PDF,
+        backend="vlm",
+        llm_client=_VisionLLM(),
+        config=AppConfig(vlm_auto_text_detect=False),
+        discipline=Discipline.MATH,
+        file_path=pdf_path,
+    )
+
+    assert isinstance(recognizer, recognizer_mod.VlmRecognizer)
+
+
+def test_get_recognizer_pdf_scanned_keeps_vlm(monkeypatch, tmp_path: Path) -> None:
+    """REC-01：无文字层（扫描件）探测返回 False → 保留 VLM。"""
+    pdf_path = tmp_path / "scan.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    monkeypatch.setattr(recognizer_mod, "_has_fitz", lambda: True)
+    monkeypatch.setattr(recognizer_mod, "pdf_has_extractable_text_layer", lambda *a, **k: False)
+
+    recognizer = recognizer_mod.get_recognizer(
+        DocumentFormat.PDF,
+        backend="vlm",
+        llm_client=_VisionLLM(),
+        config=AppConfig(),
+        discipline=Discipline.MATH,
+        file_path=pdf_path,
+    )
+
+    assert isinstance(recognizer, recognizer_mod.VlmRecognizer)
+
+
+def test_pdf_has_extractable_text_layer_false_without_fitz(monkeypatch) -> None:
+    """fitz 不可用时保守返回 False（不误判扫描件，继续走 VLM）。"""
+    monkeypatch.setattr(recognizer_mod, "_has_fitz", lambda: False)
+    assert recognizer_mod.pdf_has_extractable_text_layer(Path("/tmp/x.pdf")) is False
+
+
 def test_vlm_converter_uses_poppler_renderer_without_fitz() -> None:
     converter = VlmConverter.__new__(VlmConverter)
     converter.dpi = 144

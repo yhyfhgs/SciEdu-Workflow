@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 1000" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="pipeline-title pipeline-desc" font-family="-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif">
+  <title id="pipeline-title">SciForge 数据处理 Pipeline 当前数据流与重审边界</title>
+  <desc id="pipeline-desc">展示 Task0、Stage1 到 Stage3、四个队列和确定性 post-pass，强调运行身份、资源预算、稳定条目身份、来源映射与规范存储问题。</desc>
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#0369a1"/></marker>
+    <marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#dc2626"/></marker>
+    <style>
+      .tb{font-size:15px;font-weight:600;fill:#0f172a}.t{font-size:12px;fill:#1e293b}.ts{font-size:10.5px;fill:#475569}
+      .stage{fill:#fff;stroke:#0284c7;stroke-width:1.5}.q{fill:#fef9c3;stroke:#ca8a04;stroke-width:1.2}
+      .llm{fill:#dbeafe;stroke:#2563eb;stroke-width:1.2}.crit{stroke:#dc2626;stroke-width:2.5}
+      .flag{font-size:10px;fill:#dc2626;font-weight:600}.good{font-size:10px;fill:#16a34a;font-weight:600}
+      .pp{fill:#f0fdf4;stroke:#16a34a;stroke-width:1.2}
+    </style>
+  </defs>
+  <rect width="1320" height="1000" fill="#fdfdfd"/>
+  <text x="40" y="40" class="tb" font-size="21">数据处理 Pipeline 内部组件与数据流（现状）</text>
+  <text x="40" y="62" class="ts">6 asyncio Task + 4 stage queue（背压）· FIFO + ReorderBuffer 但允许 gap/倒退日志后写 · 7 类 LLM 调用点 · 调用量随输入/重试变化</text>
+
+  <!-- Task0 -->
+  <rect x="40" y="85" width="250" height="200" class="stage" rx="6"/>
+  <text x="52" y="107" class="tb">Task0 Producer（识别）</text>
+  <rect x="54" y="118" width="222" height="40" class="llm"/><text x="62" y="134" class="t">① VLM 当前10页/批（LLM）</text><text x="62" y="150" class="ts">敏感整批失败→逐页回退</text>
+  <rect x="54" y="164" width="222" height="34" class="stage"/><text x="62" y="184" class="t">fitz 文字层（REC-01，0-LLM）</text>
+  <rect x="54" y="204" width="222" height="34" class="stage"/><text x="62" y="224" class="t">format adapter（0-LLM）</text>
+  <text x="52" y="256" class="flag">IS-02 VLM截断丢批尾 · IS-03 混合PDF空提取</text>
+  <text x="52" y="272" class="flag">DP-08 并发乘法无全局 pixel/byte 预算</text>
+
+  <!-- q_md -->
+  <rect x="320" y="150" width="60" height="70" class="q" rx="4"/><text x="330" y="180" class="ts">q_md</text><text x="330" y="196" class="ts">max4</text>
+  <line x1="290" y1="185" x2="318" y2="185" stroke="#0369a1" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- Stage1 Extract -->
+  <rect x="410" y="85" width="290" height="230" class="stage crit" rx="6"/>
+  <text x="422" y="107" class="tb">Stage1 Extract（滑窗提取）</text>
+  <rect x="424" y="116" width="262" height="46" class="llm"/><text x="432" y="133" class="t">② _extract_batch 一窗一次（LLM）</text><text x="432" y="150" class="ts">500→3000行 · 行号前缀 · harness 包裹</text>
+  <rect x="424" y="168" width="262" height="30" class="stage"/><text x="432" y="188" class="t">fast-skip 预检（0-LLM regex）</text>
+  <rect x="424" y="202" width="262" height="30" class="llm"/><text x="432" y="222" class="t">③ micro_extract 局部补抽（LLM，默认开）</text>
+  <rect x="424" y="236" width="262" height="26" class="stage"/><text x="432" y="254" class="t">三层防御 + REC-12 终端兜底</text>
+  <text x="422" y="280" class="flag">DP-05 位置数组/null丢条目 · DP-06 locator丢失</text>
+  <text x="422" y="296" class="flag">PC-11 扩窗全量重发~3.5x · PC-20 无字节上限</text>
+
+  <rect x="410" y="330" width="316" height="34" class="llm"/><text x="422" y="351" class="t" font-size="10">④ extract_evaluator（LLM · 默认关 · 结论未消费 PC-16）</text>
+
+  <!-- q_raw -->
+  <rect x="730" y="180" width="56" height="60" class="q" rx="4"/><text x="738" y="206" class="ts">q_raw</text><text x="738" y="222" class="ts">max8</text>
+  <line x1="700" y1="200" x2="728" y2="200" stroke="#0369a1" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- Stage1 Review -->
+  <rect x="816" y="85" width="270" height="150" class="stage crit" rx="6"/>
+  <text x="828" y="107" class="tb">Stage1 Review（条件复核）</text>
+  <rect x="830" y="116" width="242" height="46" class="llm"/><text x="838" y="133" class="t" font-size="10.5">⑤ _review_batch（LLM · 风险信号）</text><text x="838" y="150" class="ts">窗口全文+items JSON（内容发两遍）</text>
+  <text x="828" y="182" class="ts">位置1:1；None → 条目直接丢弃</text>
+  <text x="828" y="200" class="flag">DP-05 reorder/insert 无稳定 item_uid</text>
+  <text x="828" y="216" class="flag">PC-11 窗口内容重复发送</text>
+
+  <!-- q_rev -->
+  <rect x="1116" y="130" width="56" height="60" class="q" rx="4"/><text x="1124" y="156" class="ts">q_rev</text><text x="1124" y="172" class="ts">max8</text>
+  <line x1="1086" y1="160" x2="1114" y2="160" stroke="#0369a1" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- Stage2 Annotate -->
+  <rect x="816" y="270" width="356" height="150" class="stage crit" rx="6"/>
+  <text x="828" y="292" class="tb">Stage2 Annotate（批量标注，4 worker）</text>
+  <rect x="830" y="302" width="328" height="46" class="llm"/><text x="838" y="319" class="t">⑥ _annotate_batch_llm ≤8条/组（LLM）</text><text x="838" y="335" class="ts">tags/难度/taxonomy · 1:1校验 · 降级逐条→兜底</text>
+  <text x="828" y="368" class="flag">PA-04 fallback subject 硬编码"实分析"</text>
+  <text x="828" y="384" class="flag">PA-11 长度不符不retry付1+N · PA-12 难度无一致性</text>
+  <text x="828" y="400" class="flag">PC-13 worker异常skip整组丢失(叠加PC-02)</text>
+  <line x1="1144" y1="190" x2="1144" y2="268" stroke="#0369a1" stroke-width="2" marker-end="url(#a)"/>
+  <text x="1150" y="242" class="ts">q_rev</text>
+  <line x1="994" y1="420" x2="994" y2="438" stroke="#0369a1" stroke-width="2" marker-end="url(#a)"/>
+  <text x="1002" y="435" class="ts" font-size="9">q_ann</text>
+
+  <!-- Stage2 Review -->
+  <rect x="816" y="440" width="356" height="60" class="stage" rx="6"/>
+  <text x="828" y="462" class="tb">Stage2 Review（⑦ LLM，默认关闭）</text>
+  <text x="828" y="482" class="ts">直通但仍全量过流+全量mirror（PC-12 no-op开销）</text>
+
+  <!-- Stage3 Persist -->
+  <rect x="410" y="440" width="356" height="130" class="stage" rx="6"/>
+  <text x="422" y="462" class="tb">Stage3 Persist（合并入库，无 LLM，单协程）</text>
+  <rect x="424" y="470" width="328" height="30" class="stage"/><text x="432" y="490" class="t">tag词表统一 · taxonomy校验 · tag_tree.insert</text>
+  <rect x="424" y="504" width="328" height="30" class="stage"/><text x="432" y="524" class="t" font-size="11">count_existing · save_batch INSERT OR IGNORE</text>
+  <text x="422" y="552" class="flag">DP-03 先到版本胜出 · DP-10 倒序只日志仍写</text>
+  <line x1="816" y1="470" x2="768" y2="470" stroke="#0369a1" stroke-width="2" marker-end="url(#a)"/>
+  <text x="772" y="462" class="ts">q_done</text>
+
+  <!-- post-pass -->
+  <rect x="40" y="610" width="1132" height="200" class="pp" rx="8"/>
+  <text x="52" y="634" class="tb">确定性 post-pass（无 LLM · DP-04 异常仅 warning 后仍可 completed）</text>
+  <rect x="54" y="646" width="205" height="70" class="pp"/><text x="64" y="666" class="t">10.5 numbering_audit</text><text x="64" y="684" class="ts">编号连续性→报告</text><text x="64" y="704" class="ts">seq三元组解析</text>
+  <rect x="269" y="646" width="215" height="70" class="pp crit"/><text x="279" y="666" class="t">10.6 answer_linker</text><text x="279" y="684" class="ts">题答回填+删除</text><text x="279" y="704" class="flag">PA-01 误绑/删题 Critical</text>
+  <rect x="494" y="646" width="215" height="70" class="pp"/><text x="504" y="666" class="t">10.7 relation_inference</text><text x="504" y="684" class="ts">corollary_of/tests/successor</text><text x="504" y="704" class="flag">PA-09 就近启发式错/漏</text>
+  <rect x="719" y="646" width="215" height="70" class="pp"/><text x="729" y="666" class="t">10.8 concept_linker</text><text x="729" y="684" class="ts">concept 四表 + part_of</text><text x="729" y="704" class="flag">PA-05 悬挂链接治理倒置</text>
+  <rect x="944" y="646" width="218" height="70" class="pp"/><text x="954" y="666" class="t" font-size="10">10.9 evaluation · 10.10 reconcile</text><text x="954" y="684" class="ts">item_evaluations + review_queue</text><text x="954" y="704" class="flag">PA-10 review 只进不出</text>
+  <text x="52" y="740" class="ts" font-weight="600">知识图谱产物：</text>
+  <text x="52" y="758" class="flag">PA-08 全部查询接口零消费方（QGen/推荐/组卷均不读图）· 仅 4 种边 · RelationType 枚举 11 种从未产出 · 无 prerequisite</text>
+  <text x="52" y="778" class="flag">PA-02 math taxonomy.json 仅覆盖 5/26 主分支 → 非覆盖分支分类塌缩 + 被门禁永久排除（治理连锁）</text>
+  <text x="52" y="796" class="flag">DP-03 body hash不是身份/来源 · DP-06 accepted/uncertain 应 100% 可回源 · 现有兜底不能证明端到端无损</text>
+
+  <!-- resume -->
+  <rect x="40" y="830" width="620" height="145" fill="#fff" stroke="#94a3b8" rx="6"/>
+  <text x="52" y="852" class="tb">断点恢复（state.json + 四层 mirror 重放）</text>
+  <text x="52" y="874" class="flag">DP-01 checkpoint 不绑定 sink/config/model/prompt/schema/mode；新 DB 可假完成</text>
+  <text x="52" y="896" class="flag">PC-02 max-id watermark 并发乱序中间条目丢失</text>
+  <text x="52" y="914" class="flag">PC-03 空batch block_index 不对称 → resume 成段跳过</text>
+  <text x="52" y="932" class="flag">DP-09 重试成功不清失败账 · PC-09 replay 早亡挂死</text>
+  <text x="52" y="954" class="ts">目标：SourceManifest + CacheKey + RunManifest + sink commit ledger</text>
+
+  <!-- LLM 效率 -->
+  <rect x="680" y="830" width="492" height="145" fill="#fff" stroke="#94a3b8" rx="6"/>
+  <text x="692" y="852" class="tb">LLM 效率现状</text>
+  <text x="692" y="874" class="ts">static/dynamic split 接口存在；cache 命中须按 provider usage 实测</text>
+  <text x="692" y="892" class="good">✓ 0-LLM adapter/文字层 · 批量标注 · 条件 review · fast-skip</text>
+  <text x="692" y="912" class="flag">PC-11 扩窗全量重发~3.5x · Review 内容发两遍</text>
+  <text x="692" y="930" class="flag">PA-11 批量失败付1+N · PC-12 每item镜像整窗</text>
+  <text x="692" y="950" class="flag">失败 token 不可见 · DP-08 资源预算晚于图像渲染</text>
+
+  <!-- 图例 -->
+  <text x="692" y="972" class="ts">① – ⑦ = 7 个 LLM 调用点 · 黄=队列 · 蓝=LLM · 白描边=stage · 绿=post-pass</text>
+</svg>

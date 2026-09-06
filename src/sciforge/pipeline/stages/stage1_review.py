@@ -20,8 +20,13 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from sciforge.core.models import Discipline, ExtractedBatch, FileExtractionState, ReviewedItem
+from sciforge.core.numbering import parse_number_components
 from sciforge.core.sentinel import SENTINEL, _Sentinel
-from sciforge.pipeline.llm_schemas import BatchReviewPayloadLLM
+from sciforge.pipeline.llm_schemas import (
+    _EXERCISE_LIKE_TYPES,
+    _NEAR_TAIL_MARGIN,
+    BatchReviewPayloadLLM,
+)
 from sciforge.pipeline.resume_state import save_state_locked
 from sciforge.pipeline.retry import (
     RetryExhausted,
@@ -38,16 +43,6 @@ if TYPE_CHECKING:
     from sciforge.llm.client import LLMClient
 
 logger = structlog.get_logger()
-
-# 高危 item_type：容易遗漏证明/解答/论证，必须经过 Review
-_HIGH_RISK_TYPES = frozenset({
-    # 可能遗漏证明
-    "theorem", "lemma", "corollary", "proposition",
-    # 可能遗漏解答
-    "exercise", "example", "problem",
-    # 可能遗漏论证/推导
-    "property", "formula",
-})
 
 
 class Stage1Review:
@@ -76,15 +71,9 @@ class Stage1Review:
         )
         self.max_retries: int = int(getattr(config, "stage1_review_max_retries", 2))
         self.retry_base_delay: float = float(getattr(config, "extract_retry_base_delay", 2.0))
-        self.conditional_skip: bool = bool(
-            getattr(config, "review_conditional_enabled", True)
-        )
-        self.rate_limit_base_sleep: float = float(
-            getattr(config, "rate_limit_base_sleep", 300.0)
-        )
-        self.rate_limit_max_sleep: float = float(
-            getattr(config, "rate_limit_max_sleep", 1800.0)
-        )
+        self.conditional_skip: bool = bool(getattr(config, "review_conditional_enabled", True))
+        self.rate_limit_base_sleep: float = float(getattr(config, "rate_limit_base_sleep", 300.0))
+        self.rate_limit_max_sleep: float = float(getattr(config, "rate_limit_max_sleep", 1800.0))
         self.rate_limit_total_budget: float = float(
             getattr(config, "rate_limit_total_budget", 21600.0)
         )
@@ -230,53 +219,60 @@ class Stage1Review:
         return list(reviewed)
 
     def _should_skip_review(self, batch: ExtractedBatch) -> bool:
-        """判断 batch 是否足够低风险可以跳过 review。
+        """风险信号制（REC-06）：仅在**无任何风险信号**时跳过 LLM review。
 
-        全部条件同时满足才返回 True：
-        1. 所有 item 的 item_type 不在 _HIGH_RISK_TYPES 中
-        2. stop_reason == "all_complete"（干净提取，无截断风险）
-        3. 所有 item 的 solution_status 一致
-        4. batch 内 items ≤ 3（小 batch 排序错误概率低）
-        5. items 之间 number 无跳号（相邻编号连续）
+        旧实现把 theorem/lemma/exercise 等几乎所有实质条目列为"高危类型"一律强审，
+        使条件化跳过在真实教材上近乎失效。改为只在以下风险信号出现时才 review：
+
+        1. 截断/不完整提取：``stop_reason != "all_complete"``（可能有内容被切走）
+        2. 习题/例题声称源中无解且贴近窗口末尾：解答可能被切到下一窗口（漏解防线）
+        3. 编号跳号：用确定性 ``parse_number_components`` 解析（原生支持中文前缀/全角），
+           替换旧的 ``float(number.split('.')[-1])``（对"第1题"/"例5"/选项 A 一律误判）
+
+        纯定义/定理/知识点 + 干净提取 + 编号连续 → 跳过（不再因类型一律强审）。
         """
         items = batch.items
         if not items:
             return True  # 空 batch 无需 review
 
-        # 1. 高危类型检查
-        for it in items:
-            if (it.item_type or "").lower() in _HIGH_RISK_TYPES:
-                return False
-
-        # 2. 干净提取（LLM 报告 stop_reason=all_complete）
-        if getattr(batch, "stop_reason", "") != "all_complete":
+        # 风险信号 1：提取不完整/截断
+        if getattr(batch, "stop_reason", "all_complete") != "all_complete":
             return False
 
-        # 3. solution_status 一致
-        statuses = {it.solution_status for it in items}
-        if len(statuses) > 1:
+        # 风险信号 2：习题/例题贴近窗口末尾且声称源中无解（解答可能在下一窗口）
+        window_last = getattr(batch, "window_last_line", 0) or 0
+        if window_last > 0:
+            for it in items:
+                if (
+                    (it.item_type or "").lower() in _EXERCISE_LIKE_TYPES
+                    and it.solution_status == "no_solution_in_source"
+                    and window_last - it.end_line < _NEAR_TAIL_MARGIN
+                ):
+                    return False
+
+        # 风险信号 3：编号跳号（确定性解析）
+        if self._has_numbering_gap(items):
             return False
-
-        # 4. 小 batch
-        if len(items) > 3:
-            return False
-
-        # 5. 编号连续性（简单检查：无法做完整连续性检测，但检查有无明显跳号）
-        # 跳号检查通过 number 字段的最后一个数字部分
-        numbers: list[float] = []
-        for it in items:
-            try:
-                # 取编号最后的数字部分，如 "3.2.1" → 1, "例 5" → 5
-                parts = it.number.replace(" ", "").split(".")
-                numbers.append(float(parts[-1]))
-            except (ValueError, IndexError):
-                return False  # 无法解析编号，保守不跳
-
-        for i in range(1, len(numbers)):
-            if numbers[i] - numbers[i - 1] > 1.5:
-                return False  # 跳号
 
         return True
+
+    @staticmethod
+    def _has_numbering_gap(items: list[Any]) -> bool:
+        """用确定性 numbering 解析检查相邻条目 index 是否漏号。
+
+        只比较能解析出 index 的条目；index 递减视为跨章重置（非漏号），
+        递增 >1 视为漏号。无法解析编号（如选项 A/B/C、无编号要点）的条目跳过，
+        不再像旧实现那样因解析失败一律强审。
+        """
+        indices: list[int] = []
+        for it in items:
+            _, _, idx = parse_number_components(getattr(it, "number", "") or "")
+            if idx is not None:
+                indices.append(idx)
+        for i in range(1, len(indices)):
+            if indices[i] - indices[i - 1] > 1:
+                return True
+        return False
 
     def _mirror_item(self, reviewed: ReviewedItem, state: FileExtractionState) -> None:
         if self.checkpoint_root is None or not state.file_hash:

@@ -103,8 +103,18 @@ def get_tools_for_task(task: str) -> list[ToolSpec]:
 
 
 def to_anthropic_format(tools: list[ToolSpec]) -> list[ToolSpec]:
-    """转换工具定义为 Anthropic API 格式"""
-    return tools  # Anthropic 原生格式即为 name/description/input_schema
+    """转换中性工具定义为 Anthropic API 格式。
+
+    仓库早期同时出现过 ``input_schema``（Anthropic 命名）与
+    ``parameters``（OpenAI 命名）。统一入口接受两者，避免同一工具在某个
+    provider 上被悄悄下发为空 schema。
+    """
+    result: list[ToolSpec] = []
+    for tool in tools:
+        converted = {key: value for key, value in tool.items() if key != "parameters"}
+        converted["input_schema"] = _tool_input_schema(tool)
+        result.append(converted)
+    return result
 
 
 def to_openai_format(tools: list[ToolSpec]) -> list[ToolSpec]:
@@ -117,8 +127,16 @@ def to_openai_format(tools: list[ToolSpec]) -> list[ToolSpec]:
                 "function": {
                     "name": tool["name"],
                     "description": tool["description"],
-                    "parameters": tool.get("input_schema", {}),
+                    "parameters": _tool_input_schema(tool),
                 },
             }
         )
     return result
+
+
+def _tool_input_schema(tool: ToolSpec) -> dict[str, Any]:
+    """读取工具参数 schema，并拒绝会在 provider 侧产生歧义的非对象值。"""
+    schema = tool.get("input_schema", tool.get("parameters", {}))
+    if not isinstance(schema, dict):
+        raise TypeError(f"工具 {tool.get('name', '<unknown>')} 的参数 schema 必须是对象")
+    return schema

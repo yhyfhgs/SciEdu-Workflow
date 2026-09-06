@@ -48,12 +48,8 @@ base_url = "https://api.z.ai/api/coding/paas/v4/anthropic"
             "zai",
         }
         assert app.providers["anthropic_official"].type == LLMProvider.ANTHROPIC
-        assert (
-            app.providers["openrouter"].base_url == "https://openrouter.ai/api/v1"
-        )
-        assert (
-            app.providers["zai"].type == LLMProvider.ANTHROPIC_COMPATIBLE
-        )
+        assert app.providers["openrouter"].base_url == "https://openrouter.ai/api/v1"
+        assert app.providers["zai"].type == LLMProvider.ANTHROPIC_COMPATIBLE
 
     def test_default_provider_ref_loaded(self, tmp_path):
         toml_path = _write_toml(
@@ -138,6 +134,23 @@ thinking = { type = "enabled", budget_tokens = 16384 }
             "budget_tokens": 16384,
         }
 
+    def test_unknown_task_parameter_fails_instead_of_silent_fallback(self, tmp_path):
+        toml_path = _write_toml(
+            tmp_path,
+            """
+[providers.local]
+type = "openai_compatible"
+api_key = "test"
+
+[tasks.tag]
+provider_ref = "local"
+max_token = 999999
+""",
+        )
+
+        with pytest.raises(ValueError, match="max_token"):
+            AppConfig(llm_config_file=toml_path)
+
 
 # ── 环境变量插值 ────────────────────────────────────────
 
@@ -187,9 +200,7 @@ extra_body = { provider = { order = ["${ROUTING_PROVIDER}"] } }
 """,
         )
         app = AppConfig(llm_config_file=toml_path)
-        assert app.task_llm["vlm_convert"].extra_body == {
-            "provider": {"order": ["z-ai"]}
-        }
+        assert app.task_llm["vlm_convert"].extra_body == {"provider": {"order": ["z-ai"]}}
 
 
 # ── Pipeline / Logging 段 ──────────────────────────────
@@ -230,8 +241,8 @@ llm_log_dir = "custom/llm_logs"
         assert app.llm_log_interval == 5
         assert app.llm_log_dir == Path("custom/llm_logs")
 
-    def test_unknown_field_ignored_with_warning(self, tmp_path, caplog):
-        """未知字段被忽略并打 warning（不 crash）"""
+    def test_unknown_pipeline_field_fails_fast(self, tmp_path):
+        """未知字段必须阻止启动，避免 typo 静默继承默认值。"""
         toml_path = _write_toml(
             tmp_path,
             """
@@ -240,8 +251,8 @@ pages_per_batch = 5
 nonexistent_field = "foo"
 """,
         )
-        app = AppConfig(llm_config_file=toml_path)
-        assert app.pages_per_batch == 5
+        with pytest.raises(ValueError, match="nonexistent_field"):
+            AppConfig(llm_config_file=toml_path)
 
 
 # ── from_app_config 与 TOML 的集成 ─────────────────────
@@ -356,9 +367,7 @@ class TestLegacyEnvPrefixWarning:
 
     def test_no_warning_when_clean_env(self, monkeypatch, caplog):
         # 确保无 MATHFORGE_ 变量
-        for k in list(
-            k for k in __import__("os").environ.keys() if k.startswith("MATHFORGE_")
-        ):
+        for k in list(k for k in __import__("os").environ.keys() if k.startswith("MATHFORGE_")):
             monkeypatch.delenv(k, raising=False)
         # 不报错即可
         AppConfig(llm_config_file=None)
@@ -372,9 +381,7 @@ class TestCliProviderResolution:
         from sciforge.cli.parse import _resolve_provider_override
 
         assert _resolve_provider_override("anthropic") == {"provider": "anthropic"}
-        assert _resolve_provider_override("openai_compatible") == {
-            "provider": "openai_compatible"
-        }
+        assert _resolve_provider_override("openai_compatible") == {"provider": "openai_compatible"}
 
     def test_alias_detected(self):
         from sciforge.cli.parse import _resolve_provider_override
@@ -382,9 +389,7 @@ class TestCliProviderResolution:
         assert _resolve_provider_override("anthropic_official") == {
             "provider_ref": "anthropic_official"
         }
-        assert _resolve_provider_override("openrouter") == {
-            "provider_ref": "openrouter"
-        }
+        assert _resolve_provider_override("openrouter") == {"provider_ref": "openrouter"}
 
     def test_empty_returns_empty(self):
         from sciforge.cli.parse import _resolve_provider_override
@@ -396,9 +401,7 @@ class TestCliProviderResolution:
         from sciforge.cli.generate import _resolve_provider_override
 
         assert _resolve_provider_override("anthropic") == {"provider": "anthropic"}
-        assert _resolve_provider_override("openrouter") == {
-            "provider_ref": "openrouter"
-        }
+        assert _resolve_provider_override("openrouter") == {"provider_ref": "openrouter"}
 
 
 if __name__ == "__main__":

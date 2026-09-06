@@ -5,7 +5,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from sciforge.core.models import KnowledgePoint, Question
+    from sciforge.core.models import (
+        ConceptLinkBatch,
+        ConceptRelation,
+        EvaluationBatch,
+        Figure,
+        ItemEvaluation,
+        KnowledgePoint,
+        Question,
+    )
 
 
 @runtime_checkable
@@ -39,3 +47,104 @@ class BatchStorageBackend(StorageBackend, Protocol):
     ) -> int: ...
 
     def find_duplicates(self, content: str, item_type: str = "all") -> list[str]: ...
+
+    def count_existing_content(
+        self, contents: list[str], scope: str, tenant_id: str = ""
+    ) -> int: ...
+
+    def resolve_content_ids(
+        self, contents: list[str], scope: str, tenant_id: str = ""
+    ) -> dict[str, str]: ...
+
+    def save_figures(self, figures: list[Figure]) -> int: ...
+
+
+@runtime_checkable
+class ConceptGraphStorageBackend(BatchStorageBackend, Protocol):
+    """支持 schema v12 稳定概念图的存储能力。"""
+
+    def concept_link_rows(
+        self,
+        source_files: str | list[str],
+        discipline: str | None = None,
+    ) -> list[dict[str, object]]: ...
+
+    def load_concept_aliases(self, discipline: str) -> dict[tuple[str, str], str]: ...
+
+    def save_concept_graph(self, batch: ConceptLinkBatch) -> dict[str, int]: ...
+
+    def save_concept_relations(self, edges: list[ConceptRelation]) -> int: ...
+
+    def concept_relation_evidence_rows(self, discipline: str) -> list[dict[str, object]]: ...
+
+
+@runtime_checkable
+class EvaluationStorageBackend(ConceptGraphStorageBackend, Protocol):
+    """支持 schema v13 版本化评价与人工复核队列的存储能力。"""
+
+    def evaluation_rows(
+        self,
+        source_files: str | list[str],
+        discipline: str | None = None,
+    ) -> list[dict[str, object]]: ...
+
+    def save_evaluation_batch(self, batch: EvaluationBatch) -> dict[str, int]: ...
+
+    def load_item_evaluation(
+        self,
+        item_id: str,
+        *,
+        rubric_version: str = "v1",
+        source: str = "pipeline_auto",
+    ) -> ItemEvaluation: ...
+
+
+@runtime_checkable
+class MultiTenantStorageBackend(BatchStorageBackend, Protocol):
+    """多租户题库存储协议（产品化 / 共享云端后端用）。
+
+    在 BatchStorageBackend 基础上加三类能力，**不破坏单租户实现**：
+
+    1. **tenant_id 行级隔离检索**：租户仅可见自己的题（``tenant_id == 租户``）
+       + 公共题库（``tenant_id == ''``，全局只读）。跨租户查询一律拒绝。
+    2. **语义向量检索**：给定 query embedding 返回 (item_id, 相似度)；
+       SQLite 实现可线性 cosine 扫描，PostgreSQL/pgvector 实现下推到 DB。
+    3. **embedding 写入**：将题目/知识点的向量持久化，供语义检索。
+
+    领域约定：**题目（Question）是租户私有产物**（生成题归属租户），按 tenant_id 隔离；
+    **知识点（KnowledgePoint）是共享公共语料**（教材抽取），无租户归属，经基类
+    ``search_knowledge`` 全局访问，其向量恒为公共（tenant_id=''）。
+
+    用户 / 租户 / API Key / 计费等**账户元数据由 SaasStore 独立管理**，
+    不在本协议内（题库与 SaaS 元数据解耦，契合私有化交付）。
+    """
+
+    def search_questions_for_tenant(
+        self,
+        filters: dict[str, object],
+        *,
+        tenant_id: str,
+        include_public: bool = True,
+    ) -> list[str]:
+        """租户作用域内的题目检索（含公共题库，除非 include_public=False）。"""
+        ...
+
+    def count_questions_for_tenant(self, tenant_id: str, *, include_public: bool = True) -> int:
+        """租户可见题目计数（计费 / 统计用）。"""
+        ...
+
+    def save_embedding(self, item_id: str, vector: list[float], *, kind: str = "question") -> None:
+        """持久化某题目/知识点的向量（kind ∈ {question, knowledge_point}）。"""
+        ...
+
+    def semantic_search(
+        self,
+        query_embedding: list[float],
+        *,
+        tenant_id: str = "",
+        kind: str = "question",
+        limit: int = 10,
+        include_public: bool = True,
+    ) -> list[tuple[str, float]]:
+        """向量语义检索，返回按相似度降序的 (item_id, cosine) 列表。"""
+        ...

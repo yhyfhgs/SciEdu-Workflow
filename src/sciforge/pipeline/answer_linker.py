@@ -60,9 +60,7 @@ def link_answers(questions: list[Question]) -> LinkResult:
             continue
         answers = [q for q in members if looks_like_answer(q.content)]
         problems = [
-            q
-            for q in members
-            if q not in answers and not (q.solution_content or "").strip()
+            q for q in members if q not in answers and not (q.solution_content or "").strip()
         ]
         # 仅当恰好一条题目型 + 至少一条答案型时回填（保守）
         if len(problems) != 1 or not answers:

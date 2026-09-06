@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from sciforge.core.models import ToolResult
 
 
 @runtime_checkable
@@ -37,6 +40,8 @@ class ToolCallingBackend(Protocol):
                     {"id": str, "name": str, "arguments": dict}
                 ],
                 "stop_reason": str,       # "end_turn" | "tool_use"
+                "raw_assistant_message": object,
+                    # 可原样回放到该 provider 的 assistant 消息
             }
         """
         ...
@@ -49,6 +54,20 @@ class ToolCallingBackend(Protocol):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """同步 tool calling，返回格式同上"""
+        ...
+
+    def build_tool_result_messages(
+        self,
+        response: dict[str, Any],
+        tool_results: list[ToolResult],
+    ) -> list[dict[str, Any]]:
+        """把一轮 assistant 工具请求与本地结果编码为 provider 线协议。
+
+        OpenAI Chat Completions 使用 ``assistant.tool_calls`` 后接若干
+        ``role=tool``；Anthropic Messages 使用含原始 ``tool_use`` blocks 的
+        assistant 消息，后接含 ``tool_result`` blocks 的 user 消息。该步骤
+        必须由后端完成，客户端不能用一种 provider 的格式猜测另一种。
+        """
         ...
 
 

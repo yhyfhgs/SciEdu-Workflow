@@ -7,8 +7,14 @@ from sciforge.pipeline.reconciliation import reconcile
 
 def _row(id_, kind, type_, head, nc="", subj="real_analysis:实分析", ch=3, sec=2):
     return {
-        "id": id_, "kind": kind, "type": type_, "number_canonical": nc,
-        "subject": subj, "seq_chapter": ch, "seq_section": sec, "content_head": head,
+        "id": id_,
+        "kind": kind,
+        "type": type_,
+        "number_canonical": nc,
+        "subject": subj,
+        "seq_chapter": ch,
+        "seq_section": sec,
+        "content_head": head,
     }
 
 

@@ -11,8 +11,13 @@ from sciforge.storage.sqlite_backend import SQLiteStorageBackend
 
 def _row(id_, kind, type_, oi, subject="real_analysis:实分析", ch=3, sec=2):
     return {
-        "id": id_, "kind": kind, "type": type_, "subject": subject,
-        "seq_chapter": ch, "seq_section": sec, "order_index": oi,
+        "id": id_,
+        "kind": kind,
+        "type": type_,
+        "subject": subject,
+        "seq_chapter": ch,
+        "seq_section": sec,
+        "order_index": oi,
     }
 
 
@@ -83,14 +88,36 @@ def test_no_self_loops_and_dedup() -> None:
 def test_backend_save_load_relations_idempotent(tmp_path: Path) -> None:
     db = SQLiteStorageBackend(tmp_path / "rel.db")
     db.save_batch(
-        [KnowledgePoint(id="t1", content="定理", kp_type="theorem",
-                        source_file="f.md", order_index=0, discipline=Discipline.MATH)],
-        [Question(id="q1", content="题", question_type="calculation",
-                  source_file="f.md", order_index=1, discipline=Discipline.MATH)],
+        [
+            KnowledgePoint(
+                id="t1",
+                content="定理",
+                kp_type="theorem",
+                source_file="f.md",
+                order_index=0,
+                discipline=Discipline.MATH,
+            )
+        ],
+        [
+            Question(
+                id="q1",
+                content="题",
+                question_type="calculation",
+                source_file="f.md",
+                order_index=1,
+                discipline=Discipline.MATH,
+            )
+        ],
     )
     edges = [
-        {"src_id": "q1", "dst_id": "t1", "relation_type": "tests",
-         "confidence": 0.6, "source": "structural", "note": ""},
+        {
+            "src_id": "q1",
+            "dst_id": "t1",
+            "relation_type": "tests",
+            "confidence": 0.6,
+            "source": "structural",
+            "note": "",
+        },
     ]
     added1 = db.save_relations(edges, "math")
     added2 = db.save_relations(edges, "math")  # 重复写
@@ -105,10 +132,28 @@ def test_backend_save_load_relations_idempotent(tmp_path: Path) -> None:
 def test_backend_relation_rows_ordered(tmp_path: Path) -> None:
     db = SQLiteStorageBackend(tmp_path / "rows.db")
     db.save_batch(
-        [KnowledgePoint(id="k1", content="def", kp_type="definition", number="3.1",
-                        source_file="f.md", order_index=0, discipline=Discipline.MATH)],
-        [Question(id="q1", content="q", question_type="proof", number="3.2",
-                  source_file="f.md", order_index=1, discipline=Discipline.MATH)],
+        [
+            KnowledgePoint(
+                id="k1",
+                content="def",
+                kp_type="definition",
+                number="3.1",
+                source_file="f.md",
+                order_index=0,
+                discipline=Discipline.MATH,
+            )
+        ],
+        [
+            Question(
+                id="q1",
+                content="q",
+                question_type="proof",
+                number="3.2",
+                source_file="f.md",
+                order_index=1,
+                discipline=Discipline.MATH,
+            )
+        ],
     )
     rows = db.relation_rows("f.md", "math")
     assert [r["id"] for r in rows] == ["k1", "q1"]  # 按 order_index 升序

@@ -119,12 +119,14 @@ async def test_rate_limit_does_not_count_as_attempt(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("sciforge.pipeline.retry.asyncio.sleep", fake_sleep)
 
     # 前 3 次 429，第 4 次成功
-    llm = _ScriptedLLM([
-        LLMRateLimitError("hit 1"),
-        LLMRateLimitError("hit 2"),
-        LLMRateLimitError("hit 3"),
-        {"value": 42},
-    ])
+    llm = _ScriptedLLM(
+        [
+            LLMRateLimitError("hit 1"),
+            LLMRateLimitError("hit 2"),
+            LLMRateLimitError("hit 3"),
+            {"value": 42},
+        ]
+    )
 
     result = await call_llm_json_with_schema_retry_with_feedback(
         llm,  # type: ignore[arg-type]
@@ -157,10 +159,12 @@ async def test_rate_limit_respects_retry_after(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr("sciforge.pipeline.retry.asyncio.sleep", fake_sleep)
 
-    llm = _ScriptedLLM([
-        LLMRateLimitError("hit", retry_after_seconds=120.0),
-        {"value": 1},
-    ])
+    llm = _ScriptedLLM(
+        [
+            LLMRateLimitError("hit", retry_after_seconds=120.0),
+            {"value": 1},
+        ]
+    )
 
     result = await call_llm_json_with_schema_retry_with_feedback(
         llm,  # type: ignore[arg-type]
@@ -187,10 +191,12 @@ async def test_rate_limit_max_sleep_caps(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr("sciforge.pipeline.retry.asyncio.sleep", fake_sleep)
 
-    llm = _ScriptedLLM([
-        LLMRateLimitError("hit", retry_after_seconds=99999.0),  # 妄图睡大
-        {"value": 1},
-    ])
+    llm = _ScriptedLLM(
+        [
+            LLMRateLimitError("hit", retry_after_seconds=99999.0),  # 妄图睡大
+            {"value": 1},
+        ]
+    )
 
     await call_llm_json_with_schema_retry_with_feedback(
         llm,  # type: ignore[arg-type]

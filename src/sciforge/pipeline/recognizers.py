@@ -4,9 +4,11 @@
 按 N 页一批 yield BatchResult，每个 batch 同时落盘到 page_NNN-NNN.md。
 
 已支持的格式:
-- VLM (PDF / DOCX): 多模态 LLM 高精度识别
+- VLM (PDF / DOCX / PPTX / image): 多模态 LLM 高精度识别
 - PyMuPDF (PDF): 纯文本提取，无 LLM
 - Markdown / Tex: 整文件单 batch
+- CSV / TSV / XLSX / HTML / EPUB / JSON / JSONL / TXT / RST:
+  确定性结构适配，无 LLM
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from sciforge.core.models import Discipline, DocumentFormat
 if TYPE_CHECKING:
     from sciforge.config.settings import AppConfig
     from sciforge.llm.client import LLMClient
+    from sciforge.pipeline.format_adapters import FormatAdapter
 
 logger = structlog.get_logger()
 
@@ -153,6 +156,47 @@ def pdf_page_count(file_path: Path) -> int | None:
     return None
 
 
+def pdf_has_extractable_text_layer(
+    file_path: Path,
+    *,
+    min_chars_per_page: int = 100,
+    sample_pages: int = 5,
+) -> bool:
+    """探测 PDF 是否含可用的可提取文字层（REC-01）。
+
+    用 fitz 抽样前 ``sample_pages`` 页 ``get_text``，当平均字符/页 ≥
+    ``min_chars_per_page`` 且乱码（U+FFFD 替换符）占比低时判为有文字层。
+    用于把电子版教材 PDF 自动降级到 0-LLM 的 PyMuPdfRecognizer，扫描件
+    （文字层缺失或纯乱码）则保留 VLM。fitz 不可用或读取失败时返回 False
+    （保守：不误判扫描件，继续走 VLM）。
+    """
+    if not _has_fitz():
+        return False
+    try:
+        import fitz
+
+        with fitz.open(str(file_path)) as doc:
+            total = int(doc.page_count)
+            if total <= 0:
+                return False
+            n = min(sample_pages, total)
+            total_chars = 0
+            garbled = 0
+            for pn in range(n):
+                text = doc[pn].get_text("text")
+                total_chars += len(text)
+                garbled += text.count("�")
+    except Exception:
+        logger.debug("pdf_text_layer_probe_failed", file=str(file_path), exc_info=True)
+        return False
+
+    if total_chars <= 0:
+        return False
+    avg_chars = total_chars / max(1, n)
+    garbled_ratio = garbled / total_chars
+    return avg_chars >= min_chars_per_page and garbled_ratio < 0.05
+
+
 # ── 共享数据结构 ───────────────────────────────────────
 
 
@@ -213,9 +257,7 @@ class VlmRecognizer:
             discipline=discipline,
             rate_limit_base_sleep=float(getattr(config, "rate_limit_base_sleep", 300.0)),
             rate_limit_max_sleep=float(getattr(config, "rate_limit_max_sleep", 1800.0)),
-            rate_limit_total_budget=float(
-                getattr(config, "rate_limit_total_budget", 21600.0)
-            ),
+            rate_limit_total_budget=float(getattr(config, "rate_limit_total_budget", 21600.0)),
         )
 
     async def recognize_in_batches(
@@ -338,6 +380,146 @@ class MarkdownRecognizer:
         )
 
 
+class AdapterRecognizer:
+    """运行确定性 ``FormatAdapter``，每个结构块对应一个 checkpoint batch。"""
+
+    def __init__(self, adapter: FormatAdapter) -> None:
+        self._adapter = adapter
+
+    async def recognize_in_batches(
+        self,
+        file_path: Path,
+        *,
+        batch_pages: int,  # 适配器使用 rows_per_block 等自身结构阈值
+        output_dir: Path,
+        already_done: list[tuple[int, int]],
+        max_retries: int = 3,  # 纯本地转换，无重试副作用
+    ) -> AsyncIterator[BatchResult]:
+        del batch_pages, max_retries
+        adapter = self._adapter
+        # ``FormatAdapter`` Protocol 不是 runtime-checkable；显式检查所需方法。
+        if not callable(getattr(adapter, "to_markdown_blocks", None)):
+            raise TypeError("adapter 必须实现 to_markdown_blocks")
+
+        blocks = await asyncio.to_thread(lambda: list(adapter.to_markdown_blocks(file_path)))
+        if not blocks:
+            raise RuntimeError(f"格式适配未产生任何内容块: {file_path}")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        done_set = {tuple(pair) for pair in already_done}
+        for sequence, block in enumerate(blocks, 1):
+            cache_path = output_dir / f"page_{sequence:03d}-{sequence:03d}.md"
+            if (sequence, sequence) in done_set or cache_path.exists():
+                markdown = cache_path.read_text(encoding="utf-8") if cache_path.exists() else ""
+            else:
+                markdown = block.markdown
+                cache_path.write_text(markdown, encoding="utf-8")
+            if not markdown.strip():
+                logger.warning(
+                    "adapter_empty_block",
+                    file=file_path.name,
+                    block=sequence,
+                    locator=block.source_locator,
+                )
+                continue
+            logger.info(
+                "adapter_block_done",
+                file=file_path.name,
+                block=sequence,
+                locator=block.source_locator,
+                md_length=len(markdown),
+            )
+            yield BatchResult(sequence, sequence, markdown, cache_path)
+
+
+class ImageRecognizer:
+    """单图片 VLM 转 Markdown；仅图像格式需要一次视觉模型调用。"""
+
+    _MEDIA_TYPES = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }
+
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        config: AppConfig,
+        discipline: Discipline,
+    ) -> None:
+        from sciforge.disciplines import DISCIPLINE_REGISTRY
+        from sciforge.prompts.templates import get_vlm_prompt_template
+
+        self._llm = llm_client
+        self._max_bytes = int(getattr(config, "adapter_max_input_bytes", 64 << 20))
+        self._max_tokens = int(getattr(config, "vlm_image_max_tokens", 8192))
+        expert = DISCIPLINE_REGISTRY.get(discipline).prompt_vars["discipline_vlm_expert"]
+        self._system = (
+            f"你是一位{expert}，负责把单张教材、讲义或题目图像精确转写为 "
+            "Markdown+LaTeX。只输出可见正文，保留标题、题号、选项、公式和答案结构。"
+        )
+        self._prompt = get_vlm_prompt_template(discipline).format(
+            page_number="单张图像",
+            total_pages=1,
+            previous_context="",
+            figure_hint="不要输出 FIGURE 坐标占位符；只转写图中可读内容。",
+        )
+
+    async def recognize_in_batches(
+        self,
+        file_path: Path,
+        *,
+        batch_pages: int,
+        output_dir: Path,
+        already_done: list[tuple[int, int]],
+        max_retries: int = 3,
+    ) -> AsyncIterator[BatchResult]:
+        del batch_pages, already_done
+        output_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = output_dir / "page_001-001.md"
+        if cache_path.exists():
+            markdown = cache_path.read_text(encoding="utf-8")
+            if markdown.strip():
+                yield BatchResult(1, 1, markdown, cache_path)
+                return
+
+        size = file_path.stat().st_size
+        if size > self._max_bytes:
+            raise RuntimeError(f"图像过大: {size} bytes > limit {self._max_bytes}")
+        media_type = self._MEDIA_TYPES.get(file_path.suffix.lower())
+        if media_type is None:
+            raise RuntimeError(f"不支持的图像编码: {file_path.suffix}")
+        image_data = await asyncio.to_thread(file_path.read_bytes)
+
+        last_error: Exception | None = None
+        for attempt in range(1, max(1, max_retries) + 1):
+            try:
+                markdown = await self._llm.generate_with_image(
+                    prompt=self._prompt,
+                    image_data=image_data,
+                    image_media_type=media_type,
+                    system=self._system,
+                    temperature=0.0,
+                    max_tokens=self._max_tokens,
+                )
+                if markdown.strip():
+                    cache_path.write_text(markdown, encoding="utf-8")
+                    yield BatchResult(1, 1, markdown, cache_path)
+                    return
+                raise RuntimeError("VLM 返回空图像转写")
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "image_recognize_retry",
+                    file=file_path.name,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+        raise RuntimeError(f"图像识别失败: {last_error}") from last_error
+
+
 class PdfToTextRecognizer:
     """基于 poppler `pdftotext` 的纯文本 PDF 识别器（不依赖 fitz）"""
 
@@ -431,6 +613,7 @@ def get_recognizer(
     llm_client: LLMClient | None,
     config: AppConfig,
     discipline: Discipline = Discipline.MATH,
+    file_path: Path | None = None,
 ) -> Recognizer:
     """根据文件格式 + backend 选择 Recognizer
 
@@ -439,12 +622,45 @@ def get_recognizer(
         backend: 'vlm' / 'pymupdf' / 'auto'
         llm_client: vlm 后端必需
         discipline: 学科（仅 VLM 后端使用，用于参数化 VLM prompt）
+        file_path: 待识别文件路径；提供后可对 PDF 探测文字层（REC-01），
+            电子版 PDF 自动降级走 0-LLM 的 PyMuPdfRecognizer
     """
     if fmt in (DocumentFormat.MARKDOWN, DocumentFormat.TEX):
         return MarkdownRecognizer()
 
+    from sciforge.pipeline.format_adapters import get_format_adapter
+
+    adapter = get_format_adapter(fmt, config)
+    if adapter is not None:
+        return AdapterRecognizer(adapter)
+
+    if fmt == DocumentFormat.IMAGE:
+        if llm_client is None or not llm_client.supports_vision:
+            raise RuntimeError("图像输入需要支持 vision 的 vlm_convert provider")
+        return ImageRecognizer(llm_client, config, discipline)
+
     if fmt == DocumentFormat.PDF:
         if backend == "vlm" and llm_client is not None and llm_client.supports_vision:
+            # REC-01：探测到可提取文字层（电子版教材）→ 自动走 0-LLM 文本提取，
+            # VLM 仅保留给扫描件/图表密集件。--force-vlm 关闭探测时跳过本分支。
+            if (
+                getattr(config, "vlm_auto_text_detect", False)
+                and file_path is not None
+                and _has_fitz()
+                and pdf_has_extractable_text_layer(
+                    file_path,
+                    min_chars_per_page=getattr(config, "vlm_text_layer_min_chars_per_page", 100),
+                    sample_pages=getattr(config, "vlm_text_layer_sample_pages", 5),
+                )
+            ):
+                logger.info(
+                    "recognizer_pdf_text_layer_autodowngrade",
+                    file=file_path.name,
+                    reason="extractable_text_layer_detected",
+                    backend_requested=backend,
+                    chosen="pymupdf",
+                )
+                return PyMuPdfRecognizer()
             if not _has_pdf_image_renderer():
                 logger.warning(
                     "recognizer_pdf_vlm_fallback",

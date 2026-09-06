@@ -19,7 +19,13 @@
 from sciforge.agents.base import AgentError, BaseAgent
 from sciforge.agents.doc_agent import DocAssemblyAgent, DocInput, DocOutput
 from sciforge.agents.graph import END, CompiledGraph, StateGraph
-from sciforge.agents.qgen import QGenAgent, QGenInput, QGenOutput
+from sciforge.agents.qgen import (
+    DurableQGenHarness,
+    QGenAgent,
+    QGenGraphSnapshot,
+    QGenInput,
+    QGenOutput,
+)
 from sciforge.agents.solve_agent import SolveAgent, SolveInput, SolveOutput
 from sciforge.agents.state import AgentState
 from sciforge.agents.stub_agents import (
@@ -42,6 +48,8 @@ __all__ = [
     "StateGraph",
     # Agent 2: QGen (complete)
     "QGenAgent",
+    "DurableQGenHarness",
+    "QGenGraphSnapshot",
     "QGenInput",
     "QGenOutput",
     # Agent 3: Solve (complete)

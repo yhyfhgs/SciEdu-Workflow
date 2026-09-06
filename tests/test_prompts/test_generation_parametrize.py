@@ -11,16 +11,12 @@ from sciforge.prompts.templates import get_generation_prompt_template
 
 class TestFreeGenerationPrompt:
     def test_math_default(self):
-        tpl = get_generation_prompt_template(
-            "generation/free_generation.txt", Discipline.MATH
-        )
+        tpl = get_generation_prompt_template("generation/free_generation.txt", Discipline.MATH)
         assert "资深大学数学教育专家" in tpl
         assert "物理" not in tpl  # math 版本不应含其他学科
 
     def test_physics(self):
-        tpl = get_generation_prompt_template(
-            "generation/free_generation.txt", Discipline.PHYSICS
-        )
+        tpl = get_generation_prompt_template("generation/free_generation.txt", Discipline.PHYSICS)
         assert "资深大学物理教育专家" in tpl
         assert "原创物理题" in tpl
         # 最后的兜底替换应把剩余"数学"改成"物理"
@@ -37,9 +33,7 @@ class TestFreeGenerationPrompt:
         assert "数学严谨性" not in tpl
 
     def test_chemistry(self):
-        tpl = get_generation_prompt_template(
-            "generation/free_generation.txt", Discipline.CHEMISTRY
-        )
+        tpl = get_generation_prompt_template("generation/free_generation.txt", Discipline.CHEMISTRY)
         assert "化学" in tpl
         assert "资深大学数学教育专家" not in tpl
 
@@ -57,9 +51,7 @@ class TestSolvePrompt:
 
 class TestReviewPrompt:
     def test_physics_review(self):
-        tpl = get_generation_prompt_template(
-            "verification/review.txt", Discipline.PHYSICS
-        )
+        tpl = get_generation_prompt_template("verification/review.txt", Discipline.PHYSICS)
         assert "物理审稿人" in tpl or "物理" in tpl
         # 核心占位符不应被替换坏
         assert "{question_latex}" in tpl

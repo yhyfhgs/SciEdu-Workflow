@@ -1,262 +1,171 @@
-# Web 前端设计
+# Web 前端设计与当前契约
 
-> 版本: v2.0 | 日期: 2026-03-31 | 阶段: Phase 7 (Post-MVP)
->
-> ⚠️ **未实现**：MVP 只有 CLI。本文档为 Post-MVP 蓝图，供后续参考。
+> 状态：零构建 Chatbox 工作台已实现，入口为 `/app/`。
+> 实现文件：`src/sciforge/api/static/index.html`、`styles.css`、`app.js`。
+> 本文先描述可运行事实，再单列尚未实现的产品路线；旧版 Next.js 蓝图不代表当前代码。
 
-## 1. 技术栈
+## 1. 产品定位
 
-| 组件 | 选型 | 理由 |
-|------|------|------|
-| 框架 | Next.js 15 (App Router) | SSR/SSG、API Routes、成熟生态 |
-| UI 库 | shadcn/ui + Tailwind CSS | 高度可定制、现代设计 |
-| 数学渲染 | KaTeX (行内) + MathJax (完整) | 快速渲染 LaTeX 公式 |
-| Markdown | react-markdown + rehype-katex | 数学公式嵌入的 Markdown 渲染 |
-| 状态管理 | Zustand | 轻量、TypeScript 友好 |
-| 图表 | Recharts / Nivo | 能力雷达图、趋势图 |
-| 桌面端 | Tauri v2 | 可选，比 Electron 轻量 |
+当前前端是 FastAPI 同源托管的专业出题工作台，而不是独立的 Next.js 应用。它以聊天流为
+主界面，把约束配置、知识检索、运行进度、验证证据和恢复操作放在同一任务上下文中。
 
----
-
-## 2. 页面结构
-
-```
-App
-├── / (Dashboard)
-│   ├── 学习概览面板（按学科展示正确率趋势、薄弱专题雷达图）
-│   ├── 今日推荐（AI 推荐题目卡片，多学科混合）
-│   ├── 学科快捷入口（数学/物理/CS/...）
-│   └── 最近学习的学科+知识点
-│
-├── /subjects (学科导航)
-│   ├── 学科卡片列表（数学/物理/CS/化学/...）
-│   ├── 学段切换（高中/大学）
-│   └── 学科详情页（概览+子领域+统计）
-│
-├── /knowledge (知识库)
-│   ├── 学科+学段筛选器
-│   ├── 书籍列表 → 知识点树状浏览
-│   ├── 知识点详情（LaTeX 渲染 + 关联题目 + 跨学科关联）
-│   └── 知识图谱可视化（d3-force，支持跨学科链接）
-│
-├── /questions (题库)
-│   ├── 筛选面板（学科/学段/专题/难度/题型）
-│   ├── 题目列表（卡片视图 / 列表视图）
-│   ├── 题目详情（题干 + 解答折叠 + 变式历史树）
-│   └── 做题模式（逐题呈现 + 计时 + 提交答案）
-│
-├── /generate (AI 生成)
-│   ├── 学科+学段选择器
-│   ├── 变式生成（选择源题 → 配置参数 → 实时预览）
-│   ├── 批量生成（配置面板 → 进度条 → 结果列表）
-│   ├── 讲义生成（指定专题 → AI 组织大纲 → 生成讲义）
-│   └── 文档生成（模板选择 → 参数配置 → 预览 → 下载）
-│
-├── /documents (文档中心)
-│   ├── 已生成文档列表（按学科分类）
-│   ├── 模板管理
-│   └── PDF 预览 / 下载
-│
-├── /profile (个人中心)
-│   ├── 多学科学习记录 & 错题本
-│   ├── 能力画像（各学科独立雷达图 + 综合概览）
-│   ├── 个性化设置（关注学科、学段偏好）
-│   └── 推荐历史
-│
-└── /admin (管理后台, teacher/admin)
-    ├── 用户管理
-    ├── 学科管理（新增/编辑学科、标签体系）
-    ├── 知识库管理（上传/审核，按学科分类）
-    ├── 题目审核
-    └── 系统设置
+```text
+左栏                         中央 Chatbox                         右栏
+会话历史                     七种任务模式                         运行时间线
+内置模板        ←→           消息流 + 参数面板          ←→       验证证据
+快捷工具                     知识引用 + 发送器                    知识检索
 ```
 
----
+零构建的含义是浏览器直接加载原生 HTML/CSS/JavaScript，不需要 Node.js、打包器或前端构建
+步骤。优点是部署简单、与 `/v1/*` 契约同版本；代价是当前富文本、组件生态和复杂状态管理
+能力有限。
 
-## 3. 核心组件
+## 2. 已实现界面
 
-### 3.1 LaTeX 渲染器
+### 2.1 三栏响应式布局
 
-```typescript
-// frontend/components/math/LatexRenderer.tsx
+- 顶栏：当前会话、连接状态、账户/API Key/开放模式入口；
+- 左栏：创建会话、最近会话、七个后端 action template、快速生成/求解/组卷/推荐入口；
+- 中栏：ChatGPT 风格消息流、七模式工具条、可折叠生成约束和消息输入框；
+- 右栏：运行、验证、知识三个 tab；在窄屏上变为可关闭的 overlay rail；
+- 可访问性：skip link、ARIA tab/toolbar/log、键盘 `Cmd/Ctrl + Enter` 发送、焦点可达的
+  dialog 与移动端 rail。
 
-interface LatexRendererProps {
-  content: string;        // LaTeX 或 Markdown+LaTeX 混合内容
-  mode: 'inline' | 'block' | 'markdown';
-}
+### 2.2 七种真实模式
 
-// 使用 KaTeX 做行内快速渲染
-// 使用 MathJax 做完整渲染（支持更多宏）
-// react-markdown + rehype-katex 做 Markdown 模式
+| UI 模式 | API `mode` | 输入约束 | 后端语义 |
+|---|---|---|---|
+| 出新题 | `new` | `topics` 或 `content` | B1 主题生成，走 QGen 检索、候选、求解、验证、难度标注 |
+| 自进化 | `evolve` | `topics` 或 `content` | 开启失败诊断、有限 evolve 回边和候选池选择 |
+| 微调变式 | `variant` | `source_question_id` | 显式选择 A1/A2/A3/A6 变式策略 |
+| 深入推演 | `deepen` | `source_question_id` | B2 跨主题策略并启用 deep solve |
+| 调整难度 | `adjust_difficulty` | 源题 + 显式目标难度 | 目标更高走 A4、更低走 A5、相同走 A1 |
+| 评估题目 | `evaluate` | `source_question_id` | 准备完整解答后运行 independent reviewer 与选定证据策略 |
+| 独立求解 | `solve` | 源题 ID 或完整题面 | 只执行 SolveAgent；策略固定为 `fast`，置信度不等于独立验证 |
+
+领域、题型和题面形式不是任意字符串。前端随领域更新题型选项，后端再次按
+`DisciplineSpec.allowed_question_types/allowed_question_forms` 校验。当前注册领域为数学、物理、
+化学、生物和其他领域。
+
+### 2.3 生成约束
+
+参数面板已支持：
+
+- 领域、科目、知识主题；
+- 领域专属题型与题面形式；
+- 目标难度 1–10；
+- 源题 ID 与 A1/A2/A3/A6 变式策略；
+- 输出类型：题目+解答、仅题目、结构化 JSON、讲义片段；
+- 内置模板和 `fast/balanced/strict/formal` 验证策略；
+- 后端 run budget（当前 UI 使用固定默认上限；暂停后可通过 dialog 增量扩容）。
+
+`formal` 只对数学证明类题型可选，且后端要求 Lean 证据；领域或题型不适用时，前端禁用
+该选项，后端仍会以 422 拒绝非法组合。`solve` 不提供 independent review，前端固定选择
+`fast`；要验证现有题目应使用 `evaluate`。
+
+### 2.4 会话与持久运行
+
+前端通过以下真实端点工作：
+
+1. 创建/读取会话与历史消息；
+2. `POST /v1/conversations/{id}/messages` 提交命令并立即取得稳定 `run_id`；
+3. `GET /v1/runs/{id}/events` 以带鉴权 header 的流式 `fetch` 消费 SSE；
+4. 保存最后 sequence，并在重连时发送 `Last-Event-ID` 补发遗漏事件；
+5. 终态后读取 run 与消息，恢复最终产物和用量；
+6. 运行中可 cooperative cancel；预算暂停后可增量增加 step/LLM/token/wall-time 上限并继续。
+
+刷新页面不会重新执行已完成任务：会话消息保存在 `conversations.db`，运行状态、事件与
+checkpoint 保存在 `qgen_runtime.db`。QGen 恢复到最近完成节点后的 cursor，详见
+`Docs/22_QGen_Harness_架构与验证协议.md`。
+
+多轮上下文不是无限拼接：服务在当前命令落盘前快照最近最多 8 条消息，每条最多 1200 字符、
+总计最多 6000 字符，并把快照写进 durable `GenerationRequest`。恢复时使用同一份快照；历史
+只作为不可信约束/指代上下文，不能覆盖 system、验证策略或沙箱边界。
+
+### 2.5 运行与验证检视器
+
+运行 tab 展示 `run.*`、`step.*` 和 `qgen.progress` 的安全摘要，包括当前图节点、轮次、
+候选数、LLM 调用、token 和累计执行时间。验证 tab 展示结构化 evidence：
+
+- `passed`：该检查产生肯定证据；
+- `failed`：检查得到了明确反例或否定结论；
+- `unavailable`：所需后端/编译器/容器不可用；
+- `error`：验证执行或结果解析出错。
+
+前端不把 `unavailable/error` 美化为通过，也不展示模型私有 raw chain-of-thought。聊天区只
+呈现可审计的题目、结构化解题步骤、方法摘要、验证结论和修正记录。
+
+### 2.6 知识库联动
+
+知识 tab 调用 `GET /v1/knowledge/search`，按领域、canonical 科目、文本和知识质量门禁检索
+公共知识条目。结果返回 `source_file/page/start_line/end_line/start_char/end_char`，界面展示可读
+来源 locator。用户选择后保存稳定 `knowledge_ids`；显式 pin 仍由服务端检查领域、摄取状态、
+概念状态、review queue 与当前 rubric，不因用户点选而绕过门禁。
+
+QGen 成功并通过验证后，后端把题目和 `solution_content` materialize 到当前 tenant 题库，发出
+`question.persisted`。前端记住稳定 question id，切换到变式、深入、调难或评估模式时自动填入
+源题，不要求用户手抄 ID。知识搜索仍不是题库通用 CRUD，也不允许浏览其他租户私有题目。
+
+## 3. 前后端状态映射
+
+浏览器不维护第二套任务状态机；服务端 durable run 是唯一执行事实来源。
+
+| 服务端事实 | 前端用途 |
+|---|---|
+| `AgentRunOut.status` | pending/running/paused/succeeded/failed/cancelled 状态徽标 |
+| `usage` / `budget` | 调用、token、运行时间与恢复预算 |
+| `step.started` / `step.succeeded` 等 | 时间线步骤 |
+| `qgen.progress` | QGen 阶段、安全摘要、验证 evidence |
+| `evaluation.solution_ready` / `evaluation.verified` | 评估模式解答与证据 |
+| `assistant.final/error/cancelled/paused` | 聊天流最终交付状态 |
+| `Last-Event-ID` | 断线补发游标；不触发 Agent 重跑 |
+
+前端对 SSE sequence 去重；网络重连只补读 append-only event。取消是安全边界协作取消，
+不是浏览器强杀后端进程。
+
+## 4. 认证与安全
+
+- 开放模式：仅用于可信本地服务，不发送凭据；
+- Bearer：登录/注册后 token 保存在 `sessionStorage`；
+- API Key：同样只保存在当前浏览器 session，并放入 `X-API-Key` header；
+- 所有渲染使用 DOM `textContent` 和受限 Markdown 结构，不把服务端字符串直接写入
+  `innerHTML`；
+- hosted 模式的会话、run、消息和源题访问都由后端按 tenant 校验，前端隐藏不是授权边界。
+
+生产环境仍应使用 HTTPS、明确 CORS origin、正式密钥管理和更完整的 token 生命周期。
+
+## 5. 当前真实限制
+
+以下能力尚未实现，不能从界面文案推断其存在：
+
+- 消息渲染只支持安全的标题、列表和段落；没有 KaTeX/MathJax、代码高亮、表格或完整
+  CommonMark；
+- 已持久化 artifact 尚无独立浏览/下载 API 和前端 artifact 中心；
+- 会话重命名、删除、搜索、分支和分享尚未开放，当前“重命名”按钮保持禁用；
+- 知识库是搜索与引用入口，不是可视知识图谱、上传/审核或通用 CRUD 工作台；
+- 快捷“组卷/推荐”主要提示现有 REST 能力，尚未与 Chatbox 产物形成完整拖拽式编排；
+- 没有文件上传、手写输入、流式 token 文本或离线 PWA；SSE 传输的是持久化运行事件；
+- 前端没有独立自动化测试工程，当前回归主要依赖 API 测试与真实浏览器 smoke test。
+
+## 6. Next：独立前端演进路线
+
+只有当产品复杂度超过零构建工作台承载能力时，才迁移到独立 TypeScript 前端；迁移必须
+复用现有 `/v1/*` 和 event contract，不能再造运行状态机。建议顺序：
+
+1. 增加 KaTeX/MathJax、代码块、表格、可复制结构化产物；
+2. 提供 artifact 列表/详情/导出，并把当前自动延续源题扩展为可视版本谱系；
+3. 增加用户可查看/裁剪的有界多轮 context inspector；
+4. 完成会话管理、题库浏览、知识图谱和组卷编排；
+5. 再评估 React/Next.js、组件库、端到端测试和可选 Tauri 包装。
+
+## 7. 验收
+
+前端相关变更至少验证：
+
+```bash
+uv run pytest tests/test_api/test_console.py tests/test_api/test_conversations.py
+uv run pytest tests/test_api/test_run_recovery.py
 ```
 
-### 3.2 题目卡片
-
-```
-┌─────────────────────────────────────────────┐
-│ [数学] [数学分析] [极限] [ε-δ语言]  难度: ★★★★☆  │
-│                                             │
-│  设 $f: \R \to \R$ 在 $x_0$ 处连续，        │
-│  且 $f(x_0) > 0$。                          │
-│  证明：存在 $\delta > 0$，使得对所有          │
-│  $x \in (x_0 - \delta, x_0 + \delta)$，    │
-│  有 $f(x) > 0$。                            │
-│                                             │
-│ ┌───────┐ ┌────────┐ ┌──────────────────┐  │
-│ │ 查看解答│ │ 生成变式│ │ 标记: ✓正确 ✗错误│  │
-│ └───────┘ └────────┘ └──────────────────┘  │
-└─────────────────────────────────────────────┘
-```
-
-### 3.3 文档生成配置器
-
-```
-┌─────────────────────────────────────────────┐
-│  📄 生成试卷                                 │
-│                                             │
-│  模板:  [标准考试卷 ▼]                        │
-│  科目:  [高等代数 ▼]                          │
-│  专题:  [✓线性空间] [✓线性映射] [□特征值]      │
-│  难度:  [===●=======] 3-7                    │
-│  题数:  [10]                                 │
-│  题型分布:                                    │
-│    计算 [====●] 40%                          │
-│    证明 [======●] 50%                        │
-│    判断 [=●] 10%                             │
-│                                             │
-│  ☐ 包含答案卷                                │
-│  ☐ 包含评分标准                               │
-│                                             │
-│  [预览]  [生成 PDF]                           │
-└─────────────────────────────────────────────┘
-```
-
-### 3.4 做题模式
-
-- 逐题呈现，支持翻页或跳题
-- 计时器（可选）
-- 答案提交（文本输入 + 未来支持手写识别）
-- 即时反馈：正确/错误 + 解答展示 + AI 错因分析
-- 做完后统计面板
-
-### 3.5 知识图谱
-
-- d3-force 或 vis.js 可视化
-- 节点 = 知识点（按 kp_type 着色）
-- 边 = 前置依赖关系
-- 节点大小 = 关联题目数
-- 点击节点展开详情 + 关联题目
-
----
-
-## 4. 前端目录结构
-
-```
-frontend/
-├── package.json
-├── next.config.js
-├── tailwind.config.ts
-│
-├── app/
-│   ├── layout.tsx
-│   ├── page.tsx                  # Dashboard
-│   ├── subjects/
-│   │   ├── page.tsx              # 学科导航
-│   │   └── [domain]/page.tsx     # 学科详情
-│   ├── knowledge/
-│   │   ├── page.tsx              # 知识库浏览（学科筛选）
-│   │   └── [id]/page.tsx         # 知识点详情
-│   ├── questions/
-│   │   ├── page.tsx              # 题库列表（学科筛选）
-│   │   ├── [id]/page.tsx         # 题目详情
-│   │   └── practice/page.tsx     # 做题模式
-│   ├── generate/
-│   │   ├── variant/page.tsx      # 变式生成
-│   │   ├── batch/page.tsx        # 批量生成
-│   │   ├── handout/page.tsx      # 讲义生成
-│   │   └── document/page.tsx     # 文档生成
-│   ├── documents/
-│   │   └── page.tsx
-│   ├── profile/
-│   │   ├── page.tsx              # 多学科学习记录
-│   │   └── settings/page.tsx
-│   └── admin/
-│       ├── page.tsx
-│       └── subjects/page.tsx     # 学科管理
-│
-├── components/
-│   ├── ui/                       # shadcn/ui 组件
-│   ├── math/
-│   │   ├── LatexRenderer.tsx     # KaTeX/MathJax 渲染
-│   │   ├── QuestionCard.tsx      # 题目卡片
-│   │   └── SolutionBlock.tsx     # 解答折叠块
-│   ├── generate/
-│   │   ├── VariantConfig.tsx     # 变式配置
-│   │   └── DocBuilder.tsx        # 文档生成器
-│   └── charts/
-│       ├── RadarChart.tsx        # 能力雷达图
-│       └── TrendChart.tsx        # 趋势图
-│
-└── lib/
-    ├── api.ts                    # API 客户端 (fetch wrapper)
-    ├── store.ts                  # Zustand store
-    └── utils.ts
-```
-
----
-
-## 5. API 客户端
-
-```typescript
-// frontend/lib/api.ts
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-
-export const api = {
-  questions: {
-    list: (params: QuestionFilter) =>
-      fetch(`${API_BASE}/api/v1/questions?${new URLSearchParams(params)}`),
-    get: (id: string) =>
-      fetch(`${API_BASE}/api/v1/questions/${id}`),
-    search: (query: string) =>
-      fetch(`${API_BASE}/api/v1/questions/search?q=${query}`),
-  },
-  generate: {
-    free: (req: GenerateRequest) =>
-      fetch(`${API_BASE}/api/v1/generate/free`, {
-        method: 'POST', body: JSON.stringify(req),
-      }),
-    variant: (req: VariantRequest) =>
-      fetch(`${API_BASE}/api/v1/generate/variant`, {
-        method: 'POST', body: JSON.stringify(req),
-      }),
-  },
-  // ...
-};
-```
-
----
-
-## 6. 状态管理
-
-```typescript
-// frontend/lib/store.ts
-
-import { create } from 'zustand';
-
-interface AppState {
-  user: User | null;
-  filters: QuestionFilter;
-  setFilters: (f: Partial<QuestionFilter>) => void;
-  currentQuestion: Question | null;
-  setCurrentQuestion: (q: Question | null) => void;
-}
-
-export const useStore = create<AppState>((set) => ({
-  user: null,
-  filters: { subject: null, difficulty_min: 1, difficulty_max: 10 },
-  setFilters: (f) => set((s) => ({ filters: { ...s.filters, ...f } })),
-  currentQuestion: null,
-  setCurrentQuestion: (q) => set({ currentQuestion: q }),
-}));
-```
+并在真实浏览器检查桌面与窄屏：登录/开放连接、创建会话、七模式参数联动、SSE 重连、
+取消、预算暂停/恢复、验证四态、知识检索以及刷新后的历史恢复。

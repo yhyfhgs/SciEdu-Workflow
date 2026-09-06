@@ -70,6 +70,51 @@ class _MarkerLLM:
         pass
 
 
+class _EmptyThenForceLLM:
+    """普通段尾空结果；看到 force prompt 才返回最后一条。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate_json(self, prompt: str, **kw: Any) -> dict[str, Any]:
+        self.calls += 1
+        if "文档末尾强制提取" not in prompt:
+            return {
+                "items": [],
+                "stop_reason": "no_items_found",
+                "last_consumed_line": 0,
+                "issues": [],
+            }
+        return {
+            "items": [
+                {
+                    "category": "knowledge",
+                    "item_type": "theorem",
+                    "number": "1",
+                    "corrected_content": "定理 1 内容。",
+                    "corrected_proof": "证明。",
+                    "solution_status": "complete",
+                    "start_line": 1,
+                    "end_line": 2,
+                }
+            ],
+            "stop_reason": "all_complete",
+            "last_consumed_line": 2,
+            "issues": [],
+        }
+
+    def enable_pipeline_logging(self, *a: Any, **kw: Any) -> None:
+        pass
+
+
+class _FailingLLM:
+    async def generate_json(self, prompt: str, **kw: Any) -> dict[str, Any]:
+        raise ValueError("provider failed")
+
+    def enable_pipeline_logging(self, *a: Any, **kw: Any) -> None:
+        pass
+
+
 def _cfg(**over: Any) -> AppConfig:
     base: dict[str, Any] = dict(
         intra_doc_parallel_extract=True,
@@ -220,6 +265,83 @@ def test_parallel_resume_skips_when_completed(tmp_path: Path) -> None:
     assert llm.calls == 0  # 未调用 LLM
     assert [b for b in out if isinstance(b, ExtractedBatch)] == []
     assert out[-1] is SENTINEL
+
+
+def test_parallel_terminal_marker_uses_force_extract_instead_of_dropping() -> None:
+    block = MdBlockSource(
+        file_path="terminal.md",
+        page_start=1,
+        page_end=1,
+        md_path="terminal.md",
+        md_text="定理 1 内容。\n证明。\n",
+        block_index=0,
+        section_boundaries=[],
+    )
+    llm = _EmptyThenForceLLM()
+    state = FileExtractionState(file_path="terminal.md", file_hash="")
+    stage = Stage1Extract(
+        llm_client=llm,  # type: ignore[arg-type]
+        config=_cfg(empty_window_fast_skip=True),
+        checkpoint_root=None,
+        discipline=Discipline.MATH,
+    )
+
+    out = asyncio.run(_run(stage, block, state))
+    batches = [value for value in out if isinstance(value, ExtractedBatch)]
+
+    assert llm.calls == 2
+    assert [item.number for batch in batches for item in batch.items] == ["1"]
+    assert state.stage1_completed is True
+
+
+def test_parallel_retry_exhaustion_never_marks_stage_complete() -> None:
+    block = MdBlockSource(
+        file_path="failed.md",
+        page_start=1,
+        page_end=1,
+        md_path="failed.md",
+        md_text="定理 1 内容。\n证明。\n",
+        block_index=0,
+        section_boundaries=[],
+    )
+    state = FileExtractionState(file_path="failed.md", file_hash="")
+    stage = Stage1Extract(
+        llm_client=_FailingLLM(),  # type: ignore[arg-type]
+        config=_cfg(stage1_extract_max_retries=1, extract_retry_base_delay=0.0),
+        checkpoint_root=None,
+        discipline=Discipline.MATH,
+    )
+
+    with pytest.raises(Exception, match="retry exhausted"):
+        asyncio.run(_run(stage, block, state))
+
+    assert state.stage1_completed is False
+    assert any("parallel_extract_incomplete" in error for error in state.errors)
+
+
+def test_parallel_exam_genre_applies_same_fast_skip_policy_as_streaming() -> None:
+    block = MdBlockSource(
+        file_path="exam.md",
+        page_start=1,
+        page_end=1,
+        md_path="exam.md",
+        md_text="考试时间：120分钟\n满分：100分\n一、选择题\n1. 求值。\n",
+        block_index=0,
+        section_boundaries=[],
+    )
+    llm = _EmptyThenForceLLM()
+    state = FileExtractionState(file_path="exam.md", file_hash="")
+    stage = Stage1Extract(
+        llm_client=llm,  # type: ignore[arg-type]
+        config=_cfg(empty_window_fast_skip=True),
+        checkpoint_root=None,
+        discipline=Discipline.MATH,
+    )
+
+    asyncio.run(_run(stage, block, state))
+
+    assert stage._genre == "exam_paper"
+    assert stage.fast_skip_enabled is False
 
 
 if __name__ == "__main__":

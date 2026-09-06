@@ -1,12 +1,14 @@
 """ContextRetriever — QGen 第 1 阶段：从 SQLite 检索上下文
 
-相比参考实现的"内存列表"版本，这里改为 SQLiteStorageBackend 驱动：
-1. 按 discipline + tag 过滤知识点
-2. 按难度窗口进一步筛选
-3. FTS5 全文检索补充相关条目
-4. 难度锚点（一个偏简单 + 一个偏难）
+SQLiteStorageBackend 驱动的混合检索：
+1. 按 discipline + subject + 难度窗口过滤知识点 / 参考题
+2. 混合排序：标签重叠度为主 + TF-IDF 内容语义相似度为辅（复用 prefilter，无外部依赖）
+3. 难度锚点（一个偏简单 + 一个偏难）
 
 返回 ContextBundle 给 QuestionGenerator 用。
+
+注：语义排序当前用 TF-IDF cosine；真 embedding 向量检索（sqlite-vec / pgvector）
+作为后续升级，待 storage schema 稳定 + embedding 来源确定后接入。
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from sciforge.agents.qgen.prefilter import _tf_vector, cosine_similarity
 from sciforge.core.models import (
     ContextBundle,
     Discipline,
@@ -22,6 +25,7 @@ from sciforge.core.models import (
     KnowledgePoint,
     Question,
 )
+from sciforge.storage.query import QualityGateFilter
 
 if TYPE_CHECKING:
     from sciforge.storage.sqlite_backend import SQLiteStorageBackend
@@ -44,6 +48,11 @@ class ContextRetriever:
         max_kps: int | None = None,
         max_refs: int | None = None,
         max_negatives: int | None = None,
+        quality_gate_enabled: bool = True,
+        quality_rubric_version: str = "v1",
+        quality_extraction_min: float = 0.7,
+        quality_solution_min: float = 0.6,
+        quality_allow_legacy_unscored: bool = True,
     ) -> None:
         self.storage = storage
         self.MAX_KPS = int(max_kps) if max_kps is not None else self.DEFAULT_MAX_KPS
@@ -51,6 +60,34 @@ class ContextRetriever:
         self.MAX_NEGATIVES = (
             int(max_negatives) if max_negatives is not None else self.DEFAULT_MAX_NEGATIVES
         )
+        self.quality_gate_enabled = quality_gate_enabled
+        self.quality_rubric_version = quality_rubric_version
+        self.quality_extraction_min = quality_extraction_min
+        self.quality_solution_min = quality_solution_min
+        self.quality_allow_legacy_unscored = quality_allow_legacy_unscored
+
+    def _apply_quality_gate(self, filters: dict[str, object], item_kind: str) -> None:
+        if not self.quality_gate_enabled:
+            return
+        if item_kind not in {"knowledge", "question"}:
+            raise ValueError(f"unsupported quality-gate item kind: {item_kind}")
+        filters["quality_gate"] = QualityGateFilter(
+            item_kind=item_kind,  # type: ignore[arg-type]
+            rubric_version=self.quality_rubric_version,
+            extraction_min=self.quality_extraction_min,
+            solution_min=self.quality_solution_min,
+            allow_legacy_when_unscored=self.quality_allow_legacy_unscored,
+        )
+
+    @staticmethod
+    def _apply_question_contract(
+        filters: dict[str, object],
+        request: GenerationRequest,
+    ) -> None:
+        """将请求的题型契约应用到参考题、锚点与负样本查询。"""
+        filters["question_type"] = request.question_type
+        if request.question_form:
+            filters["question_form"] = request.question_form
 
     def build_context(
         self,
@@ -76,6 +113,29 @@ class ContextRetriever:
             negative_examples=negatives[: self.MAX_NEGATIVES],
         )
 
+    @staticmethod
+    def _query_text(req: GenerationRequest) -> str:
+        """语义检索 query：变式用源题内容，自由生成用 topics + subject。"""
+        if req.source_question is not None:
+            return req.source_question.content
+        return " ".join(req.topics) + " " + (req.subject or "")
+
+    @staticmethod
+    def _hybrid_sort(
+        items: list[KnowledgePoint], query_text: str, topics: list[str]
+    ) -> list[KnowledgePoint]:
+        """混合排序键 (标签重叠度, TF-IDF 内容相似度) 降序：标签匹配优先，同档按语义相似。"""
+        query_vec = _tf_vector(query_text)
+        topic_set = set(topics)
+        return sorted(
+            items,
+            key=lambda kp: (
+                len(topic_set & set(kp.tags)),
+                cosine_similarity(query_vec, _tf_vector(kp.content)),
+            ),
+            reverse=True,
+        )
+
     def _match_knowledge(
         self,
         req: GenerationRequest,
@@ -91,19 +151,31 @@ class ContextRetriever:
         }
         if req.subject:
             filters["subject"] = req.subject
+        self._apply_quality_gate(filters, "knowledge")
+
+        pinned_ids = list(dict.fromkeys(req.knowledge_ids))
+        pin_filters: dict[str, object] = {
+            "include_ids": pinned_ids,
+            "discipline": discipline.value,
+        }
+        self._apply_quality_gate(pin_filters, "knowledge")
+        eligible_pinned_ids = set(self.storage.search_knowledge(pin_filters))
+        pinned_by_id = {kp.id: kp for kp in self.storage.load_knowledge_by_ids(pinned_ids)}
+        pinned = [
+            pinned_by_id[kp_id]
+            for kp_id in pinned_ids
+            if kp_id in eligible_pinned_ids
+            and kp_id in pinned_by_id
+            and pinned_by_id[kp_id].discipline == discipline
+        ]
 
         ids = self.storage.search_knowledge(filters)
         kps = self.storage.load_knowledge_by_ids(ids)
 
-        # 按 tag 重叠度排序
-        if req.topics:
-            topic_set = set(req.topics)
-            kps.sort(
-                key=lambda kp: len(topic_set & set(kp.tags)),
-                reverse=True,
-            )
-
-        return kps
+        # 混合排序：标签重叠度为主 + TF-IDF 内容语义相似度为辅
+        ranked = self._hybrid_sort(kps, self._query_text(req), req.topics)
+        pinned_id_set = {kp.id for kp in pinned}
+        return pinned + [kp for kp in ranked if kp.id not in pinned_id_set]
 
     def _match_questions(
         self,
@@ -122,12 +194,20 @@ class ContextRetriever:
             filters["subject"] = req.subject
         if req.exclusion_ids:
             filters["exclude_ids"] = list(req.exclusion_ids)
+        self._apply_question_contract(filters, req)
+        self._apply_quality_gate(filters, "question")
 
         ids = self.storage.search_questions(filters)
         questions = self.storage.load_questions_by_ids(ids)
 
-        # 按难度接近目标排序
-        questions.sort(key=lambda q: abs(q.difficulty - req.difficulty_target))
+        # 难度接近为主 + 内容语义相似为辅（同难度档按 TF-IDF 相似度优先）
+        query_vec = _tf_vector(self._query_text(req))
+        questions.sort(
+            key=lambda q: (
+                abs(q.difficulty - req.difficulty_target),
+                -cosine_similarity(query_vec, _tf_vector(q.content)),
+            )
+        )
 
         # 难度锚点：一道偏简单 + 一道偏难
         anchors: list[Question] = []
@@ -137,6 +217,8 @@ class ContextRetriever:
         }
         if req.subject:
             easy_filter["subject"] = req.subject
+        self._apply_question_contract(easy_filter, req)
+        self._apply_quality_gate(easy_filter, "question")
         easy_ids = self.storage.search_questions(easy_filter)
         if easy_ids:
             easy_qs = self.storage.load_questions_by_ids(easy_ids[:1])
@@ -148,6 +230,8 @@ class ContextRetriever:
         }
         if req.subject:
             hard_filter["subject"] = req.subject
+        self._apply_question_contract(hard_filter, req)
+        self._apply_quality_gate(hard_filter, "question")
         hard_ids = self.storage.search_questions(hard_filter)
         if hard_ids:
             hard_qs = self.storage.load_questions_by_ids(hard_ids[:1])
@@ -166,9 +250,10 @@ class ContextRetriever:
 
         filters: dict[str, object] = {
             "discipline": discipline.value,
-            "question_type": req.source_question.question_type,
             "exclude_ids": {req.source_question.id},
         }
+        self._apply_question_contract(filters, req)
+        self._apply_quality_gate(filters, "question")
         ids = self.storage.search_questions(filters)
         if not ids:
             return []

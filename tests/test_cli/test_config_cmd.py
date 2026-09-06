@@ -53,9 +53,7 @@ base_url = "https://openrouter.ai/api/v1"
 provider_ref = "anthropic_official"
 """,
         )
-        result = runner.invoke(
-            config_app, ["show", "--llm-config", str(toml_path)]
-        )
+        result = runner.invoke(config_app, ["show", "--llm-config", str(toml_path)])
         assert result.exit_code == 0
         # 完整 API key 不出现在输出里
         assert "sk-ant-api03-0123456789abcdefghijk" not in result.output
@@ -85,9 +83,7 @@ thinking = { type = "enabled", budget_tokens = 8192 }
 top_p = 0.9
 """,
         )
-        result = runner.invoke(
-            config_app, ["show", "--llm-config", str(toml_path)]
-        )
+        result = runner.invoke(config_app, ["show", "--llm-config", str(toml_path)])
         assert result.exit_code == 0
         assert "solve_deep" in result.output
         assert "thinking" in result.output
@@ -111,9 +107,7 @@ base_url = "https://openrouter.ai/api/v1"
 default_model = "anthropic/claude-sonnet-4"
 """,
         )
-        result = runner.invoke(
-            config_app, ["validate", "--llm-config", str(toml_path)]
-        )
+        result = runner.invoke(config_app, ["validate", "--llm-config", str(toml_path)])
         assert result.exit_code == 0
         # 所有 KNOWN_TASKS 都应 OK
         from sciforge.config.settings import KNOWN_TASKS
@@ -134,9 +128,7 @@ api_key = "test"
 provider_ref = "nonexistent_provider"
 """,
         )
-        result = runner.invoke(
-            config_app, ["validate", "--llm-config", str(toml_path)]
-        )
+        result = runner.invoke(config_app, ["validate", "--llm-config", str(toml_path)])
         assert result.exit_code == 1
         assert "ERR" in result.output
         assert "nonexistent_provider" in result.output
@@ -165,9 +157,7 @@ default_model = "claude-sonnet-4-20250514"
 provider_ref = "anthropic_official"
 """,
         )
-        result = runner.invoke(
-            config_app, ["validate", "--llm-config", str(toml_path)]
-        )
+        result = runner.invoke(config_app, ["validate", "--llm-config", str(toml_path)])
         assert result.exit_code == 0
         assert "anthropic" in result.output
         assert "claude-sonnet-4-20250514" in result.output

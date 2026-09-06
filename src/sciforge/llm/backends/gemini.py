@@ -16,6 +16,15 @@ logger = structlog.get_logger()
 class GeminiBackend(BaseBackend):
     """Google Gemini API 后端，支持同步和异步"""
 
+    # 当前统一接口使用 provider-neutral ``dict`` 历史；Gemini 3 function calling
+    # 还要求原样回放带 thought_signature 的 Content/Part。若只转成通用
+    # name/arguments 会丢失签名并产生无效请求，因此在实现无损 Content 回放前
+    # 明确降级为“不支持”，绝不伪装成 OpenAI/Anthropic 消息格式。
+    tool_calling_unavailable_reason = (
+        "Gemini 多轮 function calling 需要无损保留 Content/Part 与 thought_signature；"
+        "当前统一消息接口尚不具备该能力"
+    )
+
     def __init__(self, config: LLMConfig):
         super().__init__(config)
         try:

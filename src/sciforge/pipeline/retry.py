@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json_mod
+import random
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -38,12 +39,16 @@ class RetryExhausted(Exception):  # noqa: N818 — 语义为"重试已用尽"，
 
 
 def _compute_retry_delay(base_delay: float, attempt: int, exc: BaseException) -> float:
-    """根据错误类型计算下一次重试等待时间。"""
+    """根据错误类型计算下一次重试等待时间（含抖动）。
+
+    REC-24：加 +0~25% 随机抖动，避免目录并发（max_concurrent_files）下多个失败请求在
+    同一时刻齐刷刷重试形成 thundering herd、加剧限流。
+    """
     delay = float(base_delay * (2 ** (attempt - 1)))
     msg = str(exc).lower()
     if "429" in msg or "rate limit" in msg or "rate_limit" in msg:
-        return float(delay * 2.0)
-    return delay
+        delay *= 2.0
+    return float(delay * (1.0 + random.uniform(0.0, 0.25)))
 
 
 # ── 429 / 速率限制专用等待策略 ───────────────────────────────
@@ -310,12 +315,15 @@ async def call_llm_json_with_schema_retry_with_feedback(
             kw: dict[str, Any] = {"system": system}
             if max_tokens is not None:
                 kw["max_tokens"] = max_tokens
-            raw = await llm.generate_json(prompt, **kw)
+            # v11 §G.3：传 schema_model 供 opt-in 的严格 JSON Schema 输出（默认关闭时无影响）
+            raw = await llm.generate_json(prompt, schema_model=model, **kw)
             if not isinstance(raw, dict):
                 raise ValueError(f"llm returned non-dict: {type(raw).__name__}")
             result = model.model_validate(raw, context=validation_context)
             # 成功时记录 prompt/output 指标
             output_text = _json_mod.dumps(raw, ensure_ascii=False)
+            # REC-08：优先用 backend 上报的真实 token usage（含 cache 命中），回退 chars//4 估算
+            usage = getattr(llm, "last_usage", None) or {}
             logger.info(
                 "llm_call_metrics",
                 stage=stage_name,
@@ -324,6 +332,10 @@ async def call_llm_json_with_schema_retry_with_feedback(
                 prompt_tokens_est=prompt_chars // 4,
                 output_chars=len(output_text),
                 output_tokens_est=len(output_text) // 4,
+                input_tokens=usage.get("input_tokens"),
+                output_tokens=usage.get("output_tokens"),
+                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
                 model_schema=model.__name__,
                 success=True,
                 rate_limit_hits=rate_limit_hits,

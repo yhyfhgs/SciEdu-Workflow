@@ -26,8 +26,10 @@ _SECTION_DELIM_RE = re.compile(r"━{3,}\n#\s*\d+\.\s*([^\n]*)\n━{3,}")
 
 _VLM_TEMPLATE_RAW = load_prompt("pipeline/vlm_convert.txt")
 _EXTRACT_STAGE1_INITIAL_RAW = load_prompt("pipeline/extract_stage1_initial.txt")
+_EXTRACT_ANCHORS_ADDENDUM_RAW = load_prompt("pipeline/extract_anchors_addendum.txt")
 _EXTRACT_STAGE1_REVIEW_RAW = load_prompt("pipeline/extract_stage1_review.txt")
 _ANNOTATE_STAGE2_INITIAL_RAW = load_prompt("pipeline/annotate_stage2_initial.txt")
+_ANNOTATE_STAGE2_BATCH_RAW = load_prompt("pipeline/annotate_stage2_batch.txt")
 _ANNOTATE_STAGE2_REVIEW_RAW = load_prompt("pipeline/annotate_stage2_review.txt")
 
 
@@ -91,6 +93,15 @@ def build_pipeline_prompt_io(
     return None, full_template
 
 
+def get_extract_anchors_addendum() -> str:
+    """v11 II.4（M1）锚点输出附加指令（仅 extract_char_span_enabled 时拼进 prompt）。
+
+    返回最终文本（无占位符）：拼进已 ``.format()`` 的 system 时直接追加；
+    拼进未 format 的合并 user 模板时调用方须先做 ``{``→``{{`` 转义。
+    """
+    return _EXTRACT_ANCHORS_ADDENDUM_RAW.strip()
+
+
 def get_extract_stage1_initial_parts(discipline: Discipline) -> tuple[str, str]:
     """Stage1Extract 的 (静态 system, 动态 user) 模板。
 
@@ -115,6 +126,20 @@ def get_annotate_stage2_initial_parts(discipline: Discipline) -> tuple[str, str]
     `{source_genre_hint}` / `{retry_feedback}`。
     """
     return split_static_dynamic(_inject_discipline_vars(_ANNOTATE_STAGE2_INITIAL_RAW, discipline))
+
+
+def get_annotate_stage2_batch_parts(discipline: Discipline) -> tuple[str, str]:
+    """Stage2Annotate 批量（REC-04）的 (静态 system, 动态 user)。
+
+    user 占位符：`{items_json}` / `{tag_subtree}` / `{taxonomy_tree}` /
+    `{source_genre_hint}` / `{retry_feedback}`。输出 schema：BatchAnnotationLLM。
+    """
+    return split_static_dynamic(_inject_discipline_vars(_ANNOTATE_STAGE2_BATCH_RAW, discipline))
+
+
+def get_annotate_stage2_batch_template(discipline: Discipline) -> str:
+    """Stage2Annotate 批量标注 prompt（合并回退路径用）。"""
+    return _inject_discipline_vars(_ANNOTATE_STAGE2_BATCH_RAW, discipline)
 
 
 def get_annotate_stage2_review_parts(discipline: Discipline) -> tuple[str, str]:
@@ -209,6 +234,15 @@ _GENERATION_PROMPT_SUBSTITUTIONS: dict[Discipline, list[tuple[str, str]]] = {
         ("原创数学题", "原创生物题"),
         ("数学题", "生物题"),
         ("数学", "生物"),
+    ],
+    Discipline.OTHER: [
+        ("资深大学数学教育专家", "资深跨领域教育专家"),
+        ("数学教育评估专家", "跨领域教育评估专家"),
+        ("数学教育评审专家", "跨领域教育评审专家"),
+        ("数学家", "领域专家"),
+        ("原创数学题", "原创领域问题"),
+        ("数学题", "领域问题"),
+        ("数学", "本领域"),
     ],
 }
 

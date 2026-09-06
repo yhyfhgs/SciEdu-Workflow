@@ -382,13 +382,12 @@ class VlmConverter:
             (page_start_1based, page_end_1based, md_text, md_path, is_failed)
             is_failed=True 表示该 batch 重试耗尽，md_text 为空，md_path 指向未写入的缓存路径
         """
-        from sciforge.pipeline.retry import RetryExhausted, with_retry
-
         output_dir.mkdir(parents=True, exist_ok=True)
-        done_set = {tuple(p) for p in already_done}
+        done_set: set[tuple[int, int]] = {(p[0], p[1]) for p in already_done}
 
         doc = self._open_document(file_path)
-        prev_md_tail = ""
+        # fitz Document 非线程安全：渲染/裁图都访问 doc，须串行化（VLM 网络调用在锁外并发）。
+        doc_lock = asyncio.Lock()
 
         try:
             total_pages = doc.page_count
@@ -399,128 +398,201 @@ class VlmConverter:
                 file=file_path.name,
                 total_pages=total_pages,
                 batch_pages=batch_pages,
+                max_concurrent=self.max_concurrent,
             )
 
+            # 预先按顺序枚举所有 batch（page_start_1based, page_end_1based, page_nums_0based）
+            specs: list[tuple[int, int, list[int]]] = []
             page_idx = 0
             while page_idx < total_pages:
-                batch_end_excl = min(page_idx + batch_pages, total_pages)
-                page_start_1based = page_idx + 1
-                page_end_1based = batch_end_excl
+                end_excl = min(page_idx + batch_pages, total_pages)
+                specs.append((page_idx + 1, end_excl, list(range(page_idx, end_excl))))
+                page_idx = end_excl
 
-                # checkpoint 快速路径
-                cache_path = output_dir / f"page_{page_start_1based:03d}-{page_end_1based:03d}.md"
-                if (page_start_1based, page_end_1based) in done_set or cache_path.exists():
-                    md_text = cache_path.read_text(encoding="utf-8") if cache_path.exists() else ""
-                    if md_text.strip():
-                        logger.info(
-                            "recognize_cached",
-                            file=file_path.name,
-                            pages=f"{page_start_1based}-{page_end_1based}",
-                        )
-                        prev_md_tail = self._tail_lines(md_text)
-                        yield (page_start_1based, page_end_1based, md_text, cache_path, False)
-                    page_idx = batch_end_excl
-                    continue
-
-                # 收集本批次图像 — get_pixmap 放后台线程避免阻塞主协程
-                batch_page_nums_0based: list[int] = list(range(page_idx, batch_end_excl))
-                batch_images: list[bytes] = await asyncio.to_thread(
-                    self._render_batch_images, doc, batch_page_nums_0based
-                )
-
-                # 调用 VLM (含 retry)
-                async def _call() -> str:
-                    return await self._convert_batch(
-                        page_nums=batch_page_nums_0based,
-                        images=batch_images,
+            if self.max_concurrent <= 1:
+                # 串行：保留 prev_context 跨批续接（identical to 旧行为）
+                prev_md_tail = ""
+                for ps, pe, nums in specs:
+                    for tup in await self._process_one_batch(
+                        doc=doc,
+                        doc_lock=doc_lock,
+                        page_start=ps,
+                        page_end=pe,
+                        page_nums_0based=nums,
                         total_pages=total_pages,
+                        output_dir=output_dir,
+                        assets_dir=assets_dir,
+                        file_path=file_path,
                         prev_context=prev_md_tail,
-                    )
+                        done_set=done_set,
+                        max_retries=max_retries,
+                    ):
+                        if not tup[4] and tup[2].strip():
+                            prev_md_tail = self._tail_lines(tup[2])
+                        yield tup
+            else:
+                # REC-02：批内有界并发 + 滑动窗口保序 yield。Semaphore 在渲染前获取，
+                # 故在途图像 ≤ max_concurrent（内存可控）；并发模式放弃 prev_context
+                # （接受轻微跨批续接损失，换取墙钟数倍提速）。
+                sem = asyncio.Semaphore(self.max_concurrent)
 
-                try:
-                    raw_md = await with_retry(
-                        _call,
-                        max_attempts=max_retries,
-                        base_delay=2.0,
-                        on_retry=lambda i, e: logger.warning(
-                            "vlm_batch_retry",
-                            file=file_path.name,
-                            pages=f"{page_start_1based}-{page_end_1based}",
-                            attempt=i,
-                            error=str(e)[:200],
-                        ),
-                        rate_limit_base_sleep=self.rate_limit_base_sleep,
-                        rate_limit_max_sleep=self.rate_limit_max_sleep,
-                        rate_limit_total_budget=self.rate_limit_total_budget,
-                    )
-                except RetryExhausted as exc:
-                    err_str = str(getattr(exc, "last_exc", "") or "")
-                    # MiniMax 等 provider 的内容审核**误判**（单张图触发 1026/new_sensitive）：
-                    # 整批失败会把整批页全丢 → 回退**逐页识别**，只损失被误判的那一页。
-                    is_content_flag = any(
-                        s in err_str.lower() for s in ("sensitive", "new_sensitive", "1026")
-                    )
-                    if is_content_flag and len(batch_page_nums_0based) > 1:
-                        logger.warning(
-                            "vlm_batch_sensitive_fallback_perpage",
-                            file=file_path.name,
-                            pages=f"{page_start_1based}-{page_end_1based}",
-                            detail=err_str[:160],
-                        )
-                        async for tup in self._recognize_pages_individually(
+                async def run_spec(
+                    ps: int, pe: int, nums: list[int]
+                ) -> list[tuple[int, int, str, Path, bool]]:
+                    async with sem:
+                        return await self._process_one_batch(
                             doc=doc,
-                            page_nums_0based=batch_page_nums_0based,
+                            doc_lock=doc_lock,
+                            page_start=ps,
+                            page_end=pe,
+                            page_nums_0based=nums,
                             total_pages=total_pages,
                             output_dir=output_dir,
-                            prev_md_tail=prev_md_tail,
-                            file_path=file_path,
                             assets_dir=assets_dir,
+                            file_path=file_path,
+                            prev_context="",
+                            done_set=done_set,
                             max_retries=max_retries,
-                        ):
-                            if not tup[4] and tup[2].strip():
-                                prev_md_tail = self._tail_lines(tup[2])
+                        )
+
+                tasks = [asyncio.create_task(run_spec(ps, pe, nums)) for ps, pe, nums in specs]
+                try:
+                    for t in tasks:
+                        for tup in await t:
                             yield tup
-                        page_idx = batch_end_excl
-                        continue
-
-                    logger.error(
-                        "vlm_batch_failed",
-                        file=file_path.name,
-                        pages=f"{page_start_1based}-{page_end_1based}",
-                        attempts=exc.attempts,
-                    )
-                    # 关键修复：不再内部吞并失败，yield is_failed=True 让上游 Producer
-                    # 记入 state.failed_batches 并标记 producer_had_error=True，避免
-                    # task0_completed 被误置为 True 后走缓存直通模式
-                    yield (page_start_1based, page_end_1based, "", cache_path, True)
-                    page_idx = batch_end_excl
-                    continue
-
-                md_text = self._crop_figures_from_md(
-                    raw_md, doc, batch_page_nums_0based, file_path.stem, assets_dir
-                )
-
-                cache_path.write_text(md_text, encoding="utf-8")
-                prev_md_tail = self._tail_lines(md_text)
-
-                logger.info(
-                    "recognize_batch_done",
-                    file=file_path.name,
-                    pages=f"{page_start_1based}-{page_end_1based}",
-                    total=total_pages,
-                    md_length=len(md_text),
-                )
-
-                yield (page_start_1based, page_end_1based, md_text, cache_path, False)
-                page_idx = batch_end_excl
-
+                finally:
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
         finally:
             doc.close()
+
+    async def _process_one_batch(
+        self,
+        *,
+        doc: Any,
+        doc_lock: asyncio.Lock,
+        page_start: int,
+        page_end: int,
+        page_nums_0based: list[int],
+        total_pages: int,
+        output_dir: Path,
+        assets_dir: Path,
+        file_path: Path,
+        prev_context: str,
+        done_set: set[tuple[int, int]],
+        max_retries: int,
+    ) -> list[tuple[int, int, str, Path, bool]]:
+        """识别单个 batch，返回 yield 元组列表（正常 1 个；内容审核误判逐页回退时 N 个）。
+
+        doc 访问（渲染/裁图）在 ``doc_lock`` 内串行化；VLM 网络调用在锁外（可并发）。
+        注：max_tokens 截断检测（stop_reason）由 REC-07 在 LLM 层统一接入后再补到此处。
+        """
+        from sciforge.pipeline.retry import RetryExhausted, with_retry
+
+        cache_path = output_dir / f"page_{page_start:03d}-{page_end:03d}.md"
+        # checkpoint 快速路径
+        if (page_start, page_end) in done_set or cache_path.exists():
+            md_text = cache_path.read_text(encoding="utf-8") if cache_path.exists() else ""
+            if md_text.strip():
+                logger.info(
+                    "recognize_cached",
+                    file=file_path.name,
+                    pages=f"{page_start}-{page_end}",
+                )
+                return [(page_start, page_end, md_text, cache_path, False)]
+            return []
+
+        async with doc_lock:
+            batch_images = await asyncio.to_thread(self._render_batch_images, doc, page_nums_0based)
+
+        async def _call() -> str:
+            return await self._convert_batch(
+                page_nums=page_nums_0based,
+                images=batch_images,
+                total_pages=total_pages,
+                prev_context=prev_context,
+            )
+
+        try:
+            raw_md = await with_retry(
+                _call,
+                max_attempts=max_retries,
+                base_delay=2.0,
+                on_retry=lambda i, e: logger.warning(
+                    "vlm_batch_retry",
+                    file=file_path.name,
+                    pages=f"{page_start}-{page_end}",
+                    attempt=i,
+                    error=str(e)[:200],
+                ),
+                rate_limit_base_sleep=self.rate_limit_base_sleep,
+                rate_limit_max_sleep=self.rate_limit_max_sleep,
+                rate_limit_total_budget=self.rate_limit_total_budget,
+            )
+        except RetryExhausted as exc:
+            err_str = str(getattr(exc, "last_exc", "") or "")
+            # MiniMax 等 provider 的内容审核**误判**（单张图触发 1026/new_sensitive）：
+            # 整批失败会把整批页全丢 → 回退**逐页识别**，只损失被误判的那一页。
+            is_content_flag = any(
+                s in err_str.lower() for s in ("sensitive", "new_sensitive", "1026")
+            )
+            if is_content_flag and len(page_nums_0based) > 1:
+                logger.warning(
+                    "vlm_batch_sensitive_fallback_perpage",
+                    file=file_path.name,
+                    pages=f"{page_start}-{page_end}",
+                    detail=err_str[:160],
+                )
+                results: list[tuple[int, int, str, Path, bool]] = []
+                async for tup in self._recognize_pages_individually(
+                    doc=doc,
+                    doc_lock=doc_lock,
+                    page_nums_0based=page_nums_0based,
+                    total_pages=total_pages,
+                    output_dir=output_dir,
+                    prev_md_tail=prev_context,
+                    file_path=file_path,
+                    assets_dir=assets_dir,
+                    max_retries=max_retries,
+                ):
+                    results.append(tup)
+                return results
+
+            logger.error(
+                "vlm_batch_failed",
+                file=file_path.name,
+                pages=f"{page_start}-{page_end}",
+                attempts=exc.attempts,
+            )
+            # yield is_failed=True 让上游 Producer 记入 state.failed_batches，避免缓存直通误判
+            return [(page_start, page_end, "", cache_path, True)]
+
+        async with doc_lock:
+            md_text = await asyncio.to_thread(
+                self._crop_figures_from_md,
+                raw_md,
+                doc,
+                page_nums_0based,
+                file_path.stem,
+                assets_dir,
+            )
+
+        cache_path.write_text(md_text, encoding="utf-8")
+        logger.info(
+            "recognize_batch_done",
+            file=file_path.name,
+            pages=f"{page_start}-{page_end}",
+            total=total_pages,
+            md_length=len(md_text),
+        )
+        return [(page_start, page_end, md_text, cache_path, False)]
 
     async def _recognize_pages_individually(
         self,
         *,
         doc: Any,
+        doc_lock: asyncio.Lock,
         page_nums_0based: list[int],
         total_pages: int,
         output_dir: Path,
@@ -546,7 +618,8 @@ class VlmConverter:
                     yield (p1, p1, md_cached, cache_path, False)
                     continue
 
-            images = await asyncio.to_thread(self._render_batch_images, doc, [pno])
+            async with doc_lock:
+                images = await asyncio.to_thread(self._render_batch_images, doc, [pno])
 
             async def _call(_imgs: list[bytes] = images, _p: int = pno) -> str:
                 return await self._convert_batch(
@@ -583,9 +656,10 @@ class VlmConverter:
                 yield (p1, p1, "", cache_path, True)
                 continue
 
-            md_text = self._crop_figures_from_md(
-                raw_md, doc, [pno], file_path.stem, assets_dir
-            )
+            async with doc_lock:
+                md_text = await asyncio.to_thread(
+                    self._crop_figures_from_md, raw_md, doc, [pno], file_path.stem, assets_dir
+                )
             cache_path.write_text(md_text, encoding="utf-8")
             prev_md_tail = self._tail_lines(md_text)
             yield (p1, p1, md_text, cache_path, False)

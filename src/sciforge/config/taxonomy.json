@@ -147,5 +147,51 @@
         "mobius": ["mobius_transformation"]
       }
     }
+  },
+  "physics": {
+    "mechanics": {"_label": "力学", "fundamentals": ["kinematics", "newton_laws", "energy", "momentum"]},
+    "thermodynamics": {"_label": "热力学", "fundamentals": ["temperature", "first_law", "second_law", "entropy"]},
+    "electromagnetism": {"_label": "电磁学", "fundamentals": ["electric_field", "magnetic_field", "maxwell_equations", "circuits"]},
+    "optics": {"_label": "光学", "fundamentals": ["geometric_optics", "interference", "diffraction", "polarization"]},
+    "quantum_mechanics": {"_label": "量子力学", "fundamentals": ["state", "observable", "schrodinger_equation", "measurement"]},
+    "relativity": {"_label": "相对论", "fundamentals": ["lorentz_transformation", "spacetime", "energy_momentum"]},
+    "statistical_mechanics": {"_label": "统计力学", "fundamentals": ["ensemble", "partition_function", "distribution"]},
+    "solid_state": {"_label": "固体物理", "fundamentals": ["crystal", "band_theory", "semiconductor"]},
+    "fluid_dynamics": {"_label": "流体力学", "fundamentals": ["continuity_equation", "navier_stokes", "bernoulli"]},
+    "acoustics": {"_label": "声学", "fundamentals": ["wave_equation", "resonance", "sound_intensity"]},
+    "atomic_physics": {"_label": "原子物理", "fundamentals": ["atomic_structure", "spectrum", "transition"]},
+    "nuclear_physics": {"_label": "核物理", "fundamentals": ["nucleus", "decay", "reaction"]},
+    "particle_physics": {"_label": "粒子物理", "fundamentals": ["standard_model", "symmetry", "interaction"]},
+    "astrophysics": {"_label": "天体物理", "fundamentals": ["stellar_structure", "galaxy", "cosmology"]}
+  },
+  "chemistry": {
+    "physical_chemistry": {"_label": "物理化学", "fundamentals": ["thermodynamics", "kinetics", "equilibrium", "spectroscopy"]},
+    "organic_chemistry": {"_label": "有机化学", "fundamentals": ["structure", "reaction_type", "mechanism", "synthesis"]},
+    "inorganic_chemistry": {"_label": "无机化学", "fundamentals": ["bonding", "coordination", "solid_state", "reactivity"]},
+    "analytical_chemistry": {"_label": "分析化学", "fundamentals": ["titration", "separation", "instrumental_analysis", "uncertainty"]},
+    "biochemistry": {"_label": "生物化学", "fundamentals": ["protein", "enzyme", "metabolism", "nucleic_acid"]},
+    "materials_chemistry": {"_label": "材料化学", "fundamentals": ["structure", "property", "synthesis", "characterization"]},
+    "environmental_chemistry": {"_label": "环境化学", "fundamentals": ["pollutant", "cycle", "remediation"]},
+    "electrochemistry": {"_label": "电化学", "fundamentals": ["cell", "potential", "electrolysis", "corrosion"]},
+    "thermochemistry": {"_label": "热化学", "fundamentals": ["enthalpy", "hess_law", "calorimetry"]},
+    "kinetics": {"_label": "化学动力学", "fundamentals": ["rate_law", "activation_energy", "catalysis"]},
+    "quantum_chemistry": {"_label": "量子化学", "fundamentals": ["orbital", "molecular_orbital", "electronic_structure"]}
+  },
+  "biology": {
+    "molecular_biology": {"_label": "分子生物学", "fundamentals": ["dna", "rna", "gene_expression", "regulation"]},
+    "cell_biology": {"_label": "细胞生物学", "fundamentals": ["membrane", "organelle", "cell_cycle", "signaling"]},
+    "genetics": {"_label": "遗传学", "fundamentals": ["inheritance", "mutation", "linkage", "population_genetics"]},
+    "evolution": {"_label": "进化生物学", "fundamentals": ["selection", "drift", "speciation", "phylogeny"]},
+    "ecology": {"_label": "生态学", "fundamentals": ["population", "community", "ecosystem", "biodiversity"]},
+    "physiology": {"_label": "生理学", "fundamentals": ["homeostasis", "circulation", "respiration", "endocrine"]},
+    "microbiology": {"_label": "微生物学", "fundamentals": ["bacteria", "virus", "growth", "pathogenesis"]},
+    "biochemistry": {"_label": "生物化学", "fundamentals": ["protein", "enzyme", "metabolism", "bioenergetics"]},
+    "developmental_biology": {"_label": "发育生物学", "fundamentals": ["differentiation", "patterning", "morphogenesis"]},
+    "neuroscience": {"_label": "神经科学", "fundamentals": ["neuron", "synapse", "circuit", "behavior"]},
+    "bioinformatics": {"_label": "生物信息学", "fundamentals": ["sequence", "alignment", "genomics", "network"]},
+    "immunology": {"_label": "免疫学", "fundamentals": ["innate_immunity", "adaptive_immunity", "antibody", "tolerance"]}
+  },
+  "other": {
+    "general": {"_label": "通用", "fundamentals": ["definition", "principle", "method", "model", "evidence"]}
   }
 }

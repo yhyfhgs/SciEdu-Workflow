@@ -225,8 +225,7 @@ async def test_qgen_agent_end_to_end_mock(temp_db):
         if "content_latex" in prompt or "solution_sketch" in prompt:
             return {
                 "content_latex": (
-                    "设 $f$ 在 $[0,1]$ 上连续且非负，"
-                    "证明 $\\int_0^1 f(x) dx \\geq 0$。"
+                    "设 $f$ 在 $[0,1]$ 上连续且非负，证明 $\\int_0^1 f(x) dx \\geq 0$。"
                 ),
                 "estimated_difficulty": 4,
                 "knowledge_points_used": ["单调性"],

@@ -97,9 +97,7 @@ def test_must_not_match(text: str) -> None:
     """这些不应被 regex 匹配（对应 fast-skip 会跳过，节省 LLM 调用）"""
     # 注意：我们的策略是宁可 false-positive，所以这些 test 较保守
     # （只检查明确的非条目文本）
-    assert _ITEM_MARKER_RE.search(text) is None, (
-        f"误匹配了非条目文本，会浪费 LLM 调用：{text!r}"
-    )
+    assert _ITEM_MARKER_RE.search(text) is None, f"误匹配了非条目文本，会浪费 LLM 调用：{text!r}"
 
 
 # ── 整段文本测试：确保能从 500 行窗口中找到标记 ──────────────

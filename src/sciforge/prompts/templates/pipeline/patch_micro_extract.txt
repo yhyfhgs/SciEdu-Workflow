@@ -1,0 +1,21 @@
+# 局部补抽（micro extraction）
+
+你正在对一份数学教材/习题/讲义做**局部补抽**：下面这一小段正文中，确定性扫描发现了一个疑似被遗漏的条目起始标记，但尚未被提取。请只提取这**一条**条目（不是整段里的全部内容）。
+
+## 疑似遗漏的标记
+- 类型：{expected_kind}
+- 附近原文（已按行标注全局行号，`NNNNNNN | 正文`）：
+
+{context_text}
+
+## 输出要求
+以 JSON 输出，schema：
+```
+{{"extracted": {{"category": "knowledge|question", "item_type": "...", "number": "...",
+  "corrected_content": "...", "corrected_proof": null, "corrected_solution": null,
+  "solution_status": "complete|no_solution_in_source|solution_deferred",
+  "start_line": <int>, "end_line": <int>}}, "issues": []}}
+```
+- 若该段确实包含一条完整条目：填 `extracted`，`start_line`/`end_line` 用上方标注的全局行号
+- 若判断这不是一条独立条目（如仅是正文引用、无实际遗漏）：`extracted` 设为 `null`，`issues` 里简述原因
+- 不要编造原文没有的内容；证明/解答如原文没有就留 null 并选对应 solution_status

@@ -214,6 +214,14 @@ def parse_run(
     output: Path = typer.Option(Path("data"), "--output", "-o", help="输出目录"),
     db: Path = typer.Option(Path("data/sciforge.db"), "--db", help="SQLite 数据库路径"),
     backend: str = typer.Option("vlm", "--backend", "-b", help="文档识别后端 (vlm/pymupdf)"),
+    force_vlm: bool = typer.Option(
+        False,
+        "--force-vlm",
+        help=(
+            "关闭文字层自动探测，强制所有 PDF 全页走 VLM（默认会把含文字层的"
+            "电子版 PDF 自动降级到 0-LLM 文本提取；脏文字层的扫描件用本开关强制 VLM）"
+        ),
+    ),
     pages_per_batch: int | None = typer.Option(
         None, "--pages-per-batch", help="Task0 每批页数（默认读 TOML，fallback 5）"
     ),
@@ -306,6 +314,8 @@ def parse_run(
         overrides["intra_doc_parallel_extract"] = True
     if segment_concurrency is not None:
         overrides["intra_doc_segment_concurrency"] = segment_concurrency
+    if force_vlm:
+        overrides["vlm_auto_text_detect"] = False
     if debug:
         overrides["pipeline_debug"] = True
 
@@ -491,14 +501,23 @@ def parse_audit(
         "-o",
         help="报告落盘路径",
     ),
-    pages_per_batch: int = typer.Option(5, "--pages-per-batch", help="预估 PDF 批次数的每批页数"),
+    pages_per_batch: int | None = typer.Option(
+        None,
+        "--pages-per-batch",
+        help="预估 PDF 批次数的每批页数（默认读 AppConfig/TOML，与真实 run 一致；REC-30）",
+    ),
 ) -> None:
     """盘点 Raw Data 下所有 logical_document 的 pipeline 处理进度"""
+    from sciforge.config.settings import AppConfig
     from sciforge.pipeline.audit import (
         audit_directory,
         format_audit_report,
         print_audit_table,
     )
+
+    # REC-30：与真实 run 用同一来源（AppConfig/TOML），消除硬编码 5 vs 实际 10 的盘点偏差
+    if pages_per_batch is None:
+        pages_per_batch = AppConfig().pages_per_batch
 
     if not raw_data_dir.exists():
         error(f"Raw Data 目录不存在：{raw_data_dir}")
@@ -656,6 +675,88 @@ def _display_result(result: object) -> None:
     console.print(table)
 
 
+@parse_app.command("relink")
+def parse_relink(
+    db: Path = typer.Argument(..., help="SQLite 数据库路径", exists=True),
+    discipline: str = typer.Option("math", "--discipline", "-D", help="学科"),
+) -> None:
+    """REC-29：跨文档题答联动。把全库（按学科）的题目一起跑 answer_linker，
+    解决"习题册 / 答案册分文件"时章末/独立答案文件无法回填到题干的问题。
+    """
+    from sciforge.pipeline.answer_linker import link_answers
+    from sciforge.storage.sqlite_backend import SQLiteStorageBackend
+
+    discipline_enum = _parse_discipline(discipline)
+    backend = SQLiteStorageBackend(db)
+    try:
+        questions = backend.load_questions_by_discipline(discipline_enum.value)
+        link = link_answers(questions)
+        for qid, sol in link.backfills:
+            backend.update_question_solution(qid, sol)
+        for did in link.delete_ids:
+            backend.delete_question(did)
+    finally:
+        backend.close()
+    console.print(
+        f"[green]跨文档题答联动完成[/green]：扫描 {len(questions)} 题，"
+        f"回填 {len(link.backfills)} 条，移除冗余答案 {len(link.delete_ids)} 条。"
+    )
+
+
+@parse_app.command("cost-report")
+def cost_report(
+    log_file: Path = typer.Argument(
+        ..., help='pipeline JSON Lines 日志文件（需 [logging] log_format="json"）', exists=True
+    ),
+) -> None:
+    """v11 §I.3 成本仪表盘：聚合日志里的 llm_call_metrics 事件（按 stage 分组）。
+
+    数据源要求 log_format="json"（默认 "console" 人类可读格式不含可解析
+    JSON 行）。非 metric 事件与格式错误行静默跳过。
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    from sciforge.pipeline.cost_report import aggregate_cost, parse_metrics_from_jsonl
+
+    metrics = parse_metrics_from_jsonl(log_file)
+    if not metrics:
+        error(
+            f'{log_file} 中未解析出任何 llm_call_metrics 事件（确认运行时配置了 log_format="json"）'
+        )
+        raise typer.Exit(1)
+
+    summary = aggregate_cost(metrics)
+    # 固定宽度避免窄终端/非 TTY 环境下 stage 名等长字段被截断换行
+    wide_console = Console(width=160)
+
+    table = Table(title=f"成本仪表盘: {log_file.name}")
+    table.add_column("Stage", style="cyan")
+    table.add_column("调用数", justify="right")
+    table.add_column("Input Tokens", justify="right")
+    table.add_column("Output Tokens", justify="right")
+    table.add_column("Cache Read", justify="right")
+    table.add_column("Retry 次数", justify="right")
+    for stage_cost in summary.by_stage:
+        table.add_row(
+            stage_cost.stage,
+            str(stage_cost.calls),
+            str(stage_cost.input_tokens),
+            str(stage_cost.output_tokens),
+            str(stage_cost.cache_read_tokens),
+            str(stage_cost.retry_attempts),
+        )
+    wide_console.print(table)
+
+    hit_rate = summary.cache_hit_rate
+    hit_rate_str = f"{hit_rate:.1%}" if hit_rate is not None else "N/A"
+    wide_console.print(
+        f"\n[bold]总计[/]: {summary.total_calls} 次调用, "
+        f"input={summary.total_input_tokens}, output={summary.total_output_tokens}, "
+        f"cache 命中率={hit_rate_str}"
+    )
+
+
 @parse_app.command("db-stats")
 def db_stats(
     db: Path = typer.Argument(..., help="SQLite 数据库路径", exists=True),
@@ -763,8 +864,7 @@ def validate(
     checks.add_row(
         "[#2] 编号连续性",
         _verdict(gap_groups == 0, warn=True),
-        f"疑似缺号分组 {gap_groups}"
-        + (f"；样例 {gap_samples[:2]}" if gap_samples else ""),
+        f"疑似缺号分组 {gap_groups}" + (f"；样例 {gap_samples[:2]}" if gap_samples else ""),
     )
     console.print(checks)
 
@@ -775,3 +875,183 @@ def validate(
             "[yellow]存在 WARN 项：编号缺口/缺解答多为原文特性，"
             "请结合 items/persisted/ 镜像与原文人工抽查少量样本确认。[/yellow]"
         )
+
+
+def _render_bench_table(report: Any) -> None:
+    """BenchReport → rich 表格（None 显示为 —）。"""
+    from rich.table import Table
+
+    def _fmt(value: float | None) -> str:
+        return f"{value:.3f}" if value is not None else "—"
+
+    table = Table(title="Golden Benchmark 跑分", show_header=True)
+    table.add_column("doc_id", style="cyan", no_wrap=True)
+    table.add_column("marker召回", justify="right")
+    table.add_column("item召回", justify="right")
+    table.add_column("char IoU", justify="right")
+    table.add_column("配对正确", justify="right")
+    table.add_column("跨窗合并", justify="right")
+    table.add_column("gt/提取/匹配", justify="right", style="white")
+    for d in report.docs:
+        table.add_row(
+            d.doc_id,
+            _fmt(d.marker_recall),
+            _fmt(d.item_recall),
+            _fmt(d.char_iou),
+            _fmt(d.pairing_accuracy),
+            _fmt(d.cross_window_merge_rate),
+            f"{d.gt_items}/{d.extracted_items}/{d.matched_items}",
+        )
+    if report.aggregate:
+        table.add_row(
+            "[bold]聚合均值[/bold]",
+            *(
+                _fmt(report.aggregate.get(f))
+                for f in (
+                    "marker_recall",
+                    "item_recall",
+                    "char_iou",
+                    "pairing_accuracy",
+                    "cross_window_merge_rate",
+                )
+            ),
+            "",
+        )
+    console.print(table)
+
+
+@parse_app.command("bench")
+def parse_bench(
+    doc: list[str] = typer.Option(
+        [], "--doc", help="golden doc_id（可多次；缺省 = 全部已标注文档）"
+    ),
+    golden_root: Path = typer.Option(
+        Path("tests/golden"), "--golden-root", help="golden 根目录（docs/ + gt/）"
+    ),
+    from_checkpoint: Path | None = typer.Option(
+        None,
+        "--from-checkpoint",
+        help="复用已有单文件 checkpoint（<checkpoint>/<hash>）离线跑分，0 LLM；需恰好一个 --doc",
+    ),
+    workdir: Path = typer.Option(
+        Path("data/bench"),
+        "--workdir",
+        help="run 模式隔离工作目录（checkpoint 落此处，不污染 data/checkpoint）",
+    ),
+    output: Path | None = typer.Option(None, "--output", "-o", help="报告 JSON 输出路径"),
+    compare: Path | None = typer.Option(
+        None, "--compare", help="基线报告 JSON；出现退化（> tolerance）时报红并以退出码 1 结束"
+    ),
+    tolerance: float = typer.Option(0.05, "--tolerance", help="退化容忍度（指标绝对值）"),
+    restart: bool = typer.Option(False, "--restart", help="run 模式忽略既有 bench checkpoint 重跑"),
+    llm_provider: str | None = typer.Option(None, "--llm-provider", help="LLM 提供者"),
+    llm_model: str | None = typer.Option(None, "--llm-model", help="LLM 模型"),
+    llm_config_file: Path | None = typer.Option(
+        None, "--llm-config", help="LLM TOML 配置文件路径（未指定时默认读 config/sciforge.toml）"
+    ),
+) -> None:
+    """golden benchmark 跑分（v11 §I）：对 pinned fixture 提取并对照 gt 算指标。
+
+    两种模式：
+
+    - run 模式（默认）：对选中 golden 文档跑 Stage1 提取（隔离 workdir，不入库），
+      读 checkpoint 镜像算指标——每文档一次真实 LLM 提取。
+    - --from-checkpoint：直接消费已有提取镜像（0 LLM），适合 CI 前离线复算或
+      对全量 parse run 的产出跑分。
+    """
+    from sciforge.bench import aggregate_report, compare_reports, load_report
+    from sciforge.bench.runner import bench_doc_from_checkpoint, select_golden_docs
+
+    try:
+        selected = select_golden_docs(golden_root, doc or None)
+    except (ValueError, FileNotFoundError) as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+    if not selected:
+        error(f"无已标注 golden 文档（{golden_root / 'gt'} 为空）——先完成 gt 标注（WP-02）")
+        raise typer.Exit(1)
+
+    try:
+        if from_checkpoint is not None:
+            if len(selected) != 1:
+                error("--from-checkpoint 模式需恰好一个 --doc")
+                raise typer.Exit(1)
+            results = [bench_doc_from_checkpoint(selected[0], golden_root, from_checkpoint)]
+        else:
+            results = _bench_run_docs(
+                selected,
+                golden_root=golden_root,
+                workdir=workdir,
+                restart=restart,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                llm_config_file=llm_config_file,
+            )
+    except FileNotFoundError as exc:
+        error(str(exc))
+        raise typer.Exit(1) from exc
+
+    report = aggregate_report(results)
+    _render_bench_table(report)
+
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(report.to_json(), encoding="utf-8")
+        success(f"报告已写入 {output}")
+
+    if compare is not None:
+        regressions = compare_reports(load_report(compare), report, tolerance=tolerance)
+        if regressions:
+            for line in regressions:
+                console.print(f"[red]退化: {line}[/red]")
+            raise typer.Exit(1)
+        success(f"与基线 {compare.name} 对比无退化（容忍度 {tolerance}）")
+
+
+def _bench_run_docs(
+    docs: list[Any],
+    *,
+    golden_root: Path,
+    workdir: Path,
+    restart: bool,
+    llm_provider: str | None,
+    llm_model: str | None,
+    llm_config_file: Path | None,
+) -> list[Any]:
+    """run 模式：逐 golden 文档跑 Stage1 提取（隔离 workdir、不入库）→ 跑分。"""
+    from sciforge.bench.runner import bench_doc_from_checkpoint, fixture_path
+    from sciforge.config.settings import AppConfig
+    from sciforge.pipeline.resume_state import compute_file_hash
+
+    llm_config = _resolve_llm_config(llm_config_file)
+    results: list[Any] = []
+    for gt_doc in docs:
+        fixture = fixture_path(golden_root, gt_doc)
+        doc_work = workdir / gt_doc.doc_id
+        config = AppConfig(
+            **cast(
+                Any,
+                {
+                    "data_dir": doc_work,
+                    "checkpoint_dir": doc_work / "checkpoint",
+                    "llm_config_file": llm_config,
+                },
+            )
+        )
+        orchestrator = _build_orchestrator(
+            config,
+            db=None,
+            dry_run=True,
+            skip_llm=False,
+            backend="vlm",
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            discipline=_parse_discipline(gt_doc.discipline),
+        )
+        if restart:
+            orchestrator.purge_checkpoint(fixture)
+        console.print(f"[cyan]bench[/cyan] {gt_doc.doc_id}: 提取 {fixture.name} …")
+        asyncio.run(orchestrator.process_file(fixture))
+        checkpoint_dir = doc_work / "checkpoint" / compute_file_hash(fixture)
+        results.append(bench_doc_from_checkpoint(gt_doc, golden_root, checkpoint_dir))
+    return results

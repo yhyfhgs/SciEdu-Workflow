@@ -43,6 +43,7 @@ def test_per_page_fallback_isolates_sensitive_page(tmp_path: Path) -> None:
         out = []
         async for tup in conv._recognize_pages_individually(
             doc=doc,
+            doc_lock=asyncio.Lock(),
             page_nums_0based=[0, 1, 2],
             total_pages=3,
             output_dir=tmp_path,
@@ -83,6 +84,7 @@ def test_per_page_fallback_all_succeed(tmp_path: Path) -> None:
             tup
             async for tup in conv._recognize_pages_individually(
                 doc=doc,
+                doc_lock=asyncio.Lock(),
                 page_nums_0based=[0, 1],
                 total_pages=2,
                 output_dir=tmp_path,

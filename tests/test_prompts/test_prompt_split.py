@@ -23,9 +23,15 @@ _PARTS_GETTERS = [
 ]
 
 _ALL_RUNTIME_PH = [
-    "{current_block}", "{window_text}", "{items_json}", "{item_json}",
-    "{tag_subtree}", "{taxonomy_tree}", "{annotation_json}",
-    "{source_genre_hint}", "{retry_feedback}",
+    "{current_block}",
+    "{window_text}",
+    "{items_json}",
+    "{item_json}",
+    "{tag_subtree}",
+    "{taxonomy_tree}",
+    "{annotation_json}",
+    "{source_genre_hint}",
+    "{retry_feedback}",
 ]
 
 

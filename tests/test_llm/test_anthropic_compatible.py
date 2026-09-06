@@ -56,14 +56,8 @@ class TestAnthropicCompatibleBackend:
                     base_url="https://openrouter.ai/api/v1",
                 )
             )
-            assert (
-                mock_sync.call_args.kwargs["base_url"]
-                == "https://openrouter.ai/api/v1"
-            )
-            assert (
-                mock_async.call_args.kwargs["base_url"]
-                == "https://openrouter.ai/api/v1"
-            )
+            assert mock_sync.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
+            assert mock_async.call_args.kwargs["base_url"] == "https://openrouter.ai/api/v1"
             assert mock_sync.call_args.kwargs["api_key"] == "sk-or-xyz"
 
     def test_generate_sync_calls_anthropic_sdk(self):
@@ -97,9 +91,7 @@ class TestAnthropicCompatibleBackend:
             call_kwargs = backend.client.messages.create.call_args.kwargs
             assert call_kwargs["model"] == "claude-sonnet-4-20250514"
             assert call_kwargs["system"] == "sys"
-            assert call_kwargs["messages"] == [
-                {"role": "user", "content": "hi"}
-            ]
+            assert call_kwargs["messages"] == [{"role": "user", "content": "hi"}]
 
     def test_is_vision_and_tool_backend(self):
         """继承 AnthropicBackend 的 Vision / Tool Calling Protocol"""
