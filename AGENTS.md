@@ -4,10 +4,8 @@
 
 ## 团队工作流与分发
 
-- 每次协作任务先读取 `../team-hub/AI维护/同步工作流.md`、`协作规范.md`，每日任务另读 `每日同步.md`；缺少本地 team-hub 时读取已发布的[同步工作流](https://github.com/ActionMesh-AI/team-hub/blob/main/AI维护/同步工作流.md)与[协作规范](https://github.com/ActionMesh-AI/team-hub/blob/main/AI维护/协作规范.md)，记录实际来源，不能默默沿用旧规则。
-- team-hub 在现有 Vault 内切个人短分支，允许待审内容先上传；本轮未审时保留短分支并回 collab。作者先审可合入 collab 共享；每日清点全部未结束 head，标记自动流转通过并创建／更新个人 PR 到 main，管理人和审核员均为 fhgs（GitHub：yhyfhgs）。不额外创建 clone／worktree；切换／合并时仅短暂隔离插件。自动送审不冒充人工审核通过，正式规则经 main 发布后由 Actions 回流 collab。
-- 本仓库当前开发线与未提交内容保持原样。更新所有分支指将适用的协作入口补丁分别合入各分支，不合并不同开发线的产品代码；日常下载仅对干净、身份核验通过的当前上游快进，不强推，不更改子模块或 mirror。
-- Git 只分发已提交文件，不安装他人的插件、不创建其他用户的定时任务，也不自动扩展本机上传、PR 或合并权限。默认仓库与排除项以[工作区清单](https://github.com/ActionMesh-AI/team-hub/blob/main/AI维护/工作区.json)为准。
+- 先读本仓库 AGENTS；涉及团队协作时，从 `../team-hub/AI维护/README.md` 按任务选读参考，不全量加载或复制整套流程。独立克隆可读[已发布参考列表](https://github.com/ActionMesh-AI/team-hub/blob/main/AI维护/README.md)，缺失项如实报告。
+- team-hub 成员任务只同步和上传，不操作 PR；fhgs 管理员统一处理 PR 与每日收录。配置及权限边界见[每日同步](https://github.com/ActionMesh-AI/team-hub/blob/main/AI维护/每日同步.md)。本仓库产品要求、开发线和子模块保持原样。
 
 
 ## 任务范围
