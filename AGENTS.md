@@ -2,8 +2,17 @@
 
 本文件维护 AI 协作的入口、常用命令与关键约束；详细设计留在对应文档，`CLAUDE.md` 仅导入本文件。
 
+## 团队工作流与分发
+
+- 每次协作任务先读取 `../team-hub/AI维护/同步工作流.md`、`协作规范.md`，每日任务另读 `每日同步.md`；缺少本地 team-hub 时读取已发布的[同步工作流](https://github.com/ActionMesh-AI/team-hub/blob/main/AI维护/同步工作流.md)与[协作规范](https://github.com/ActionMesh-AI/team-hub/blob/main/AI维护/协作规范.md)，记录实际来源，不能默默沿用旧规则。
+- team-hub 的日常 Vault 固定 `collab`；AI 在 Vault 外独立 clone 的短分支修改，作者审核后共享。日报使用从 `main` 创建的个人 `report/...` 分支；未审不自动合并。规则经 PR 发布到 `main`，Actions 回流 `collab`，各成员插件自动拉取，AI 下次任务重读。
+- 本仓库当前开发线与未提交内容保持原样。更新所有分支指将适用的协作入口补丁分别合入各分支，不合并不同开发线的产品代码；日常下载仅对干净、身份核验通过的当前上游快进，不强推，不更改子模块或 mirror。
+- Git 只分发已提交文件，不安装他人的插件、不创建其他用户的定时任务，也不自动扩展本机上传、PR 或合并权限。默认仓库与排除项以[工作区清单](https://github.com/ActionMesh-AI/team-hub/blob/main/AI维护/工作区.json)为准。
+
+
 ## 任务范围
 
+- `team-hub`、`WeAnalysis`、`homework-grading`、`Shopping-Router` 为默认初始化和自动同步仓库，以 `../team-hub/AI维护/工作区.json` 为准。本仓库仍按需下载，不要求指定主要负责人；默认仓库负责人记录见 `../team-hub/开发/项目索引.md`，定时同步见 `../team-hub/AI维护/每日同步.md`。
 - SciForge 是 Python 3.11+ 的理工科内容处理与生成平台，入口为 CLI 与 FastAPI/Chatbox；先读 `README.md` 和所改模块。
 - 属于 ActionMesh AI。跨仓库/初始化读 `../AGENTS.md`；Git/PR/发布读 `../team-hub/AI维护/协作规范.md`。独立克隆可从 [team-hub](https://github.com/ActionMesh-AI/team-hub) 获取已发布规范，按本次任务读取相关章节。
 - 保留当前开发线与已有修改。本仓库 `CONTRIBUTING.md` 的 `dev` 流程与组织默认 `main + 短分支` 存在已记录差异；分支迁移作为独立任务处理，当前 Git 操作按本次授权执行。
